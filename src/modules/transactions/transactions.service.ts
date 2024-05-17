@@ -25,6 +25,7 @@ export class TransactionsService {
       .where({ holding_id: holdingId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
+      .orderBy('transaction.timestamp', 'DESC')
       .getMany();
   }
 }
