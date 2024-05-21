@@ -3,15 +3,15 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
-import { HoldingsService } from '../holdings/holdings.service';
+import { WalletsService } from '../wallets/wallets.service';
 import { Transaction } from '../../entities/transaction.entity';
-import { Holding } from '../../entities/holding.entity';
+import { Wallet } from '../../entities/wallet.entity';
 import { AuthMiddleware } from '../../shared/middlewares/auth.middleware';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Transaction, Holding])],
+  imports: [TypeOrmModule.forFeature([Transaction, Wallet])],
   controllers: [TransactionsController],
-  providers: [TransactionsService, HoldingsService],
+  providers: [TransactionsService, WalletsService],
 })
 export class TransactionsModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

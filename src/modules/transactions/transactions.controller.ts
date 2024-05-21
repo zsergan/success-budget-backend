@@ -5,15 +5,13 @@ import {
   Get,
   HttpException,
   HttpStatus,
-  ParseIntPipe,
   Post,
-  Query,
   Request,
   UseInterceptors,
 } from '@nestjs/common';
 
 import { TransactionsService } from './transactions.service';
-import { HoldingsService } from '../holdings/holdings.service';
+import { WalletsService } from '../wallets/wallets.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
@@ -24,24 +22,24 @@ import { ErrorMessages } from '../../shared/error-messages';
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
-    private readonly holdingsService: HoldingsService,
+    private readonly walletsService: WalletsService,
   ) {}
 
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createTransactionDto: CreateTransactionDto) {
-    const holding = await this.holdingsService.getOne(createTransactionDto.holding_id);
+    const wallet = await this.walletsService.getOne(createTransactionDto.wallet_id);
 
-    if (holding.user_id !== req.user.id) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_HOLDING, HttpStatus.FORBIDDEN);
+    if (wallet.user_id !== req.user.id) {
+      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
     }
 
-    await this.holdingsService.update(holding.id, {
+    await this.walletsService.update(wallet.id, {
       balance:
-        Number(holding.balance) +
+        Number(wallet.balance) +
         (createTransactionDto.transaction_type === TransactionType.INCOME
           ? Number(createTransactionDto.amount)
           : -Number(createTransactionDto.amount)),
-      name: holding.name,
+      wallet_name: wallet.wallet_name,
     });
 
     return this.transactionsService.create(createTransactionDto);
@@ -49,13 +47,16 @@ export class TransactionsController {
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
-  async getAll(@Request() req: AuthedRequest, @Query('holdingId', ParseIntPipe) holdingId: number) {
-    const holding = await this.holdingsService.getOne(holdingId);
+  async getAll(@Request() req: AuthedRequest) {
+    const transactions = await this.transactionsService.getForAllWallets(
+      req.user.id,
+      getStartOfMonth(new Date()),
+      getEndOfMonth(new Date()),
+    );
 
-    if (holding.user_id !== req.user.id) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_HOLDING, HttpStatus.FORBIDDEN);
-    }
-
-    return this.transactionsService.getAll(holdingId, getStartOfMonth(new Date()), getEndOfMonth(new Date()));
+    return transactions.map((transaction) => ({
+      ...transaction,
+      wallet: transaction.wallet.is_deleted ? null : transaction.wallet,
+    }));
   }
 }

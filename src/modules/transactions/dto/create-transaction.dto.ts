@@ -5,7 +5,7 @@ import { TransactionType } from '../../../shared/enums';
 export class CreateTransactionDto {
   @IsNotEmpty()
   @IsNumber()
-  holding_id: number;
+  wallet_id: number;
 
   @IsNotEmpty()
   @IsNumber()

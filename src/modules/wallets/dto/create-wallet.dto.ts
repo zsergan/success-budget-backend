@@ -1,9 +1,9 @@
 import { IsNotEmpty, IsString, IsDecimal, IsNumber } from 'class-validator';
 
-export class CreateHoldingDto {
+export class CreateWalletDto {
   @IsNotEmpty()
   @IsString()
-  name: string;
+  wallet_name: string;
 
   @IsNotEmpty()
   @IsDecimal()
