@@ -17,12 +17,24 @@ export class TransactionsService {
     return await this.transactionRepository.save(transaction);
   }
 
-  async getAll(holdingId: number, from: Date, to: Date): Promise<Transaction[]> {
+  async getAll(walletId: number, from: Date, to: Date): Promise<Transaction[]> {
     return this.transactionRepository
       .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.holding', 'holding')
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
-      .where({ holding_id: holdingId })
+      .where({ wallet_id: walletId })
+      .andWhere('transaction.timestamp >= :from', { from })
+      .andWhere('transaction.timestamp <= :to', { to })
+      .orderBy('transaction.timestamp', 'DESC')
+      .getMany();
+  }
+
+  async getForAllWallets(userId: number, from: Date, to: Date): Promise<Transaction[]> {
+    return this.transactionRepository
+      .createQueryBuilder('transaction')
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
+      .where('wallet.user_id = :userId', { userId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
       .orderBy('transaction.timestamp', 'DESC')

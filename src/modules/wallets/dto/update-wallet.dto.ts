@@ -1,9 +1,9 @@
 import { IsNotEmpty, IsString, IsDecimal } from 'class-validator';
 
-export class UpdateHoldingDto {
+export class UpdateWalletDto {
   @IsNotEmpty()
   @IsString()
-  name: string;
+  wallet_name: string;
 
   @IsNotEmpty()
   @IsDecimal()

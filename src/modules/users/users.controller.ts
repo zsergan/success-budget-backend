@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 
 import { UsersService } from './users.service';
-import { HoldingsService } from '../holdings/holdings.service';
+import { WalletsService } from '../wallets/wallets.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
 import type { AuthedRequest } from '../../shared/types';
@@ -21,7 +21,7 @@ import { ErrorMessages } from '../../shared/error-messages';
 export class UsersController {
   constructor(
     private readonly usersService: UsersService,
-    private readonly holdingsService: HoldingsService,
+    private readonly walletsService: WalletsService,
   ) {}
 
   @Post('register')
@@ -33,7 +33,7 @@ export class UsersController {
     }
 
     const { user, accessToken } = await this.usersService.register(createUserDto);
-    await this.holdingsService.create(user.id, { name: 'Cash', balance: 0, currency_id: user.base_currency_id });
+    await this.walletsService.create(user.id, { wallet_name: 'Cash', balance: 0, currency_id: user.base_currency_id });
 
     return accessToken;
   }

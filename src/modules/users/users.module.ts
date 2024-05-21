@@ -3,15 +3,15 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
-import { HoldingsService } from '../holdings/holdings.service';
+import { WalletsService } from '../wallets/wallets.service';
 import { User } from '../../entities/user.entity';
-import { Holding } from '../../entities/holding.entity';
+import { Wallet } from '../../entities/wallet.entity';
 import { AuthMiddleware } from '../../shared/middlewares/auth.middleware';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Holding])],
+  imports: [TypeOrmModule.forFeature([User, Wallet])],
   controllers: [UsersController],
-  providers: [UsersService, HoldingsService],
+  providers: [UsersService, WalletsService],
 })
 export class UsersModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

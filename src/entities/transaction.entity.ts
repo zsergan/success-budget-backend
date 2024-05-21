@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
-import { Holding } from './holding.entity';
+import { Wallet } from './wallet.entity';
 import { Category } from './category.entity';
 import { TransactionType } from '../shared/enums';
 
@@ -9,9 +10,11 @@ export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Exclude()
   @Column({ type: 'int' })
-  holding_id: number;
+  wallet_id: number;
 
+  @Exclude()
   @Column({ type: 'int' })
   category_id: number;
 
@@ -30,9 +33,9 @@ export class Transaction {
   @Column({ type: 'text', nullable: true })
   description: string;
 
-  @ManyToOne(() => Holding)
-  @JoinColumn({ name: 'holding_id' })
-  holding: Holding;
+  @ManyToOne(() => Wallet)
+  @JoinColumn({ name: 'wallet_id' })
+  wallet: Wallet;
 
   @ManyToOne(() => Category)
   @JoinColumn({ name: 'category_id' })

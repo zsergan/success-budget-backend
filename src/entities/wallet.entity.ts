@@ -4,8 +4,8 @@ import { Exclude } from 'class-transformer';
 import { User } from './user.entity';
 import { Currency } from './currency.entity';
 
-@Entity('holdings')
-export class Holding {
+@Entity('wallets')
+export class Wallet {
   @PrimaryGeneratedColumn()
   id: number;
 
@@ -14,7 +14,7 @@ export class Holding {
   user_id: number;
 
   @Column({ type: 'varchar', length: 255 })
-  name: string;
+  wallet_name: string;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   balance: number;
@@ -22,6 +22,14 @@ export class Holding {
   @Exclude()
   @Column({ type: 'int' })
   currency_id: number;
+
+  @Exclude()
+  @Column({ type: 'tinyint', default: 0 })
+  is_deleted: number;
+
+  @Exclude()
+  @Column({ type: 'timestamp', nullable: true })
+  deleted_at: Date;
 
   @ManyToOne(() => User)
   @JoinColumn({ name: 'user_id' })
