@@ -12,8 +12,8 @@ export class TransactionsService {
     private readonly transactionRepository: Repository<Transaction>,
   ) {}
 
-  async create(createTransactionDto: CreateTransactionDto): Promise<Transaction> {
-    const transaction = this.transactionRepository.create(createTransactionDto);
+  async create(currencyId: number, createTransactionDto: CreateTransactionDto): Promise<Transaction> {
+    const transaction = this.transactionRepository.create({ ...createTransactionDto, currency_id: currencyId });
     return await this.transactionRepository.save(transaction);
   }
 
@@ -22,6 +22,7 @@ export class TransactionsService {
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
+      .innerJoinAndSelect('transaction.currency', 'currency')
       .where({ wallet_id: walletId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
@@ -34,6 +35,7 @@ export class TransactionsService {
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
+      .innerJoinAndSelect('transaction.currency', 'currency')
       .where('wallet.user_id = :userId', { userId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })

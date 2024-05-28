@@ -6,9 +6,17 @@ import { UsersModule } from './modules/users/users.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { WalletsModule } from './modules/wallets/wallets.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
+import { CurrenciesModule } from './modules/currencies/currencies.module';
 
 @Module({
-  imports: [TypeOrmModule.forRoot(ormConfig), UsersModule, CategoriesModule, WalletsModule, TransactionsModule],
+  imports: [
+    TypeOrmModule.forRoot(ormConfig),
+    UsersModule,
+    CategoriesModule,
+    WalletsModule,
+    TransactionsModule,
+    CurrenciesModule,
+  ],
   controllers: [],
   providers: [],
 })

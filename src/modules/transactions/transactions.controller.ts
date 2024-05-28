@@ -40,9 +40,10 @@ export class TransactionsController {
           ? Number(createTransactionDto.amount)
           : -Number(createTransactionDto.amount)),
       wallet_name: wallet.wallet_name,
+      design: wallet.design,
     });
 
-    return this.transactionsService.create(createTransactionDto);
+    return this.transactionsService.create(wallet.currency_id, createTransactionDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)

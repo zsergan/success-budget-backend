@@ -1,13 +1,13 @@
 import {
   Body,
-  Request,
+  ClassSerializerInterceptor,
   Controller,
   Get,
-  Post,
   HttpException,
   HttpStatus,
+  Post,
+  Request,
   UseInterceptors,
-  ClassSerializerInterceptor,
 } from '@nestjs/common';
 
 import { UsersService } from './users.service';
@@ -16,6 +16,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { ErrorMessages } from '../../shared/error-messages';
+import { WalletDesign } from '../../shared/enums';
 
 @Controller('users')
 export class UsersController {
@@ -33,7 +34,12 @@ export class UsersController {
     }
 
     const { user, accessToken } = await this.usersService.register(createUserDto);
-    await this.walletsService.create(user.id, { wallet_name: 'Cash', balance: 0, currency_id: user.base_currency_id });
+    await this.walletsService.create(user.id, {
+      wallet_name: 'Cash',
+      balance: 0,
+      design: WalletDesign.GREEN,
+      currency_id: user.base_currency_id,
+    });
 
     return accessToken;
   }

@@ -3,6 +3,7 @@ import { Exclude } from 'class-transformer';
 
 import { Wallet } from './wallet.entity';
 import { Category } from './category.entity';
+import { Currency } from './currency.entity';
 import { TransactionType } from '../shared/enums';
 
 @Entity('transactions')
@@ -17,6 +18,10 @@ export class Transaction {
   @Exclude()
   @Column({ type: 'int' })
   category_id: number;
+
+  @Exclude()
+  @Column({ type: 'int' })
+  currency_id: number;
 
   @Column({
     type: 'enum',
@@ -40,4 +45,8 @@ export class Transaction {
   @ManyToOne(() => Category)
   @JoinColumn({ name: 'category_id' })
   category: Category;
+
+  @ManyToOne(() => Currency)
+  @JoinColumn({ name: 'currency_id' })
+  currency: Currency;
 }

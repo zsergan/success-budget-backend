@@ -19,6 +19,7 @@ export class WalletsModule implements NestModule {
       .apply(AuthMiddleware)
       .forRoutes(
         { path: 'wallets', method: RequestMethod.POST },
+        { path: 'wallets/:walletId', method: RequestMethod.PUT },
         { path: 'wallets', method: RequestMethod.GET },
         { path: 'wallets/:walletId', method: RequestMethod.DELETE },
       );
