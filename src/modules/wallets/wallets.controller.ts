@@ -8,12 +8,14 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Put,
   Query,
   Request,
 } from '@nestjs/common';
 
 import { WalletsService } from './wallets.service';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
+import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
 import { TransactionsService } from '../transactions/transactions.service';
@@ -31,6 +33,21 @@ export class WalletsController {
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createWalletDto: CreateWalletDto) {
     return this.walletsService.create(req.user.id, createWalletDto);
+  }
+
+  @Put(':walletId')
+  async update(
+    @Request() req: AuthedRequest,
+    @Param('walletId', ParseIntPipe) walletId: number,
+    @Body() updateWalletDto: UpdateWalletDto,
+  ) {
+    const wallet = await this.walletsService.getOne(walletId);
+
+    if (wallet.user_id !== req.user.id) {
+      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
+    }
+
+    return this.walletsService.update(walletId, updateWalletDto);
   }
 
   @Get()
