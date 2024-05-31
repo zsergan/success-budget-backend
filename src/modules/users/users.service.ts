@@ -21,16 +21,19 @@ export class UsersService {
     return jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: 1000 * 60 * 60 * 24 * 90 });
   }
 
-  async register(createUserDto: CreateUserDto): Promise<{ user: User; accessToken: string }> {
+  async register(createUserDto: CreateUserDto): Promise<User> {
     const user = this.userRepository.create(createUserDto);
-    await this.userRepository.save(user);
-
-    const accessToken = this.generateAccessToken(user);
-
-    return { user, accessToken };
+    return await this.userRepository.save(user);
   }
 
-  async login(loginUserDto: LoginUserDto): Promise<{ accessToken: string }> {
+  async verify(id: number): Promise<string> {
+    await this.userRepository.update(id, { email_verified: 1 });
+    const user = await this.findById(id);
+
+    return this.generateAccessToken(user);
+  }
+
+  async login(loginUserDto: LoginUserDto): Promise<string> {
     const { email, password } = loginUserDto;
     const user = await this.userRepository.findOne({ where: { email } });
 
@@ -44,9 +47,7 @@ export class UsersService {
       throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
     }
 
-    const accessToken = this.generateAccessToken(user);
-
-    return { accessToken };
+    return this.generateAccessToken(user);
   }
 
   async findById(id: number): Promise<User> {

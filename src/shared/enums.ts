@@ -10,3 +10,8 @@ export enum WalletDesign {
   RED = 'red',
   PINK = 'pink',
 }
+
+export enum ConfirmationType {
+  EMAIL = 'email',
+  RESET_PASSWORD = 'reset_password',
+}

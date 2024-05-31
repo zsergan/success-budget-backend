@@ -12,28 +12,68 @@ import {
 
 import { UsersService } from './users.service';
 import { WalletsService } from '../wallets/wallets.service';
+import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
+import { VerifyUserDto } from './dto/verify-user.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { ErrorMessages } from '../../shared/error-messages';
-import { WalletDesign } from '../../shared/enums';
+import { ConfirmationType, WalletDesign } from '../../shared/enums';
+import { generateRandomNumberString } from '../../shared/utils';
 
 @Controller('users')
 export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly walletsService: WalletsService,
+    private readonly confirmationCodesService: ConfirmationCodesService,
   ) {}
 
+  @UseInterceptors(ClassSerializerInterceptor)
   @Post('register')
   async register(@Body() createUserDto: CreateUserDto) {
     const userExists = await this.usersService.findByEmail(createUserDto.email);
 
-    if (userExists) {
+    if (userExists && userExists.email_verified) {
       throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
-    const { user, accessToken } = await this.usersService.register(createUserDto);
+    const user = userExists ? userExists : await this.usersService.register(createUserDto);
+
+    const isConfirmationCodeCreated = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
+
+    if (!isConfirmationCodeCreated) {
+      await this.confirmationCodesService.create({
+        user_id: user.id,
+        confirmation_code: generateRandomNumberString(),
+        confirmation_type: ConfirmationType.EMAIL,
+      });
+    }
+
+    return user;
+  }
+
+  @Post('verify-email')
+  async verifyEmail(@Body() verifyUser: VerifyUserDto) {
+    const user = await this.usersService.findByEmail(verifyUser.email);
+
+    if (!user) {
+      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    const confirmationCode = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
+
+    if (!confirmationCode) {
+      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    if (confirmationCode.confirmation_code !== verifyUser.code) {
+      throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
+    }
+
+    const accessToken = await this.usersService.verify(user.id);
+    await this.confirmationCodesService.expire(user.id, ConfirmationType.EMAIL);
+
     await this.walletsService.create(user.id, {
       wallet_name: 'Cash',
       balance: 0,
