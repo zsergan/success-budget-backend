@@ -4,14 +4,16 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { WalletsService } from '../wallets/wallets.service';
+import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
 import { User } from '../../entities/user.entity';
 import { Wallet } from '../../entities/wallet.entity';
+import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 import { AuthMiddleware } from '../../shared/middlewares/auth.middleware';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Wallet])],
+  imports: [TypeOrmModule.forFeature([User, Wallet, ConfirmationCode])],
   controllers: [UsersController],
-  providers: [UsersService, WalletsService],
+  providers: [UsersService, WalletsService, ConfirmationCodesService],
 })
 export class UsersModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

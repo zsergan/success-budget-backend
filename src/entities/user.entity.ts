@@ -28,6 +28,10 @@ export class User {
   @Column({ type: 'int' })
   base_currency_id: number;
 
+  @Exclude()
+  @Column({ type: 'tinyint', default: 0 })
+  email_verified: number;
+
   @ManyToOne(() => Currency)
   @JoinColumn({ name: 'base_currency_id' })
   baseCurrency: Currency;
