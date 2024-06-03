@@ -100,10 +100,91 @@ export class Init1715331806394 implements MigrationInterface {
       }),
     );
 
-    // create holdings table
+    // create wallets table
     await queryRunner.createTable(
       new Table({
-        name: 'holdings',
+        name: 'wallets',
+        columns: [
+          {
+            name: 'id',
+            type: 'int',
+            isPrimary: true,
+            isGenerated: true,
+            generationStrategy: 'increment',
+          },
+          {
+            name: 'user_id',
+            type: 'int',
+            isNullable: false,
+          },
+          {
+            name: 'wallet_name',
+            type: 'varchar',
+            length: '255',
+            isNullable: false,
+          },
+          {
+            name: 'balance',
+            type: 'decimal',
+            precision: 10,
+            scale: 2,
+            isNullable: false,
+          },
+          {
+            name: 'design',
+            type: 'enum',
+            enum: ['green', 'yellow', 'blue', 'red', 'pink'],
+            isNullable: false,
+            default: '"green"',
+          },
+          {
+            name: 'currency_id',
+            type: 'int',
+            isNullable: false,
+          },
+          {
+            name: 'is_deleted',
+            type: 'tinyint',
+            length: '1',
+            isNullable: false,
+            default: 0,
+          },
+          {
+            name: 'deleted_at',
+            type: 'timestamp',
+            isNullable: true,
+          },
+        ],
+      }),
+      true,
+    );
+
+    // create foreign key for user_id in wallets table
+    await queryRunner.createForeignKey(
+      'wallets',
+      new TableForeignKey({
+        columnNames: ['user_id'],
+        referencedColumnNames: ['id'],
+        referencedTableName: 'users',
+        onDelete: 'CASCADE',
+      }),
+    );
+
+    // create foreign key for currency_id in wallets table
+    await queryRunner.createForeignKey(
+      'wallets',
+      new TableForeignKey({
+        columnNames: ['currency_id'],
+        referencedColumnNames: ['id'],
+        referencedTableName: 'currencies',
+        onDelete: 'CASCADE',
+      }),
+    );
+
+    // create user categories table
+    await queryRunner.createTable(
+      new Table({
+        name: 'categories',
         columns: [
           {
             name: 'id',
@@ -120,29 +201,44 @@ export class Init1715331806394 implements MigrationInterface {
           {
             name: 'name',
             type: 'varchar',
+            length: '20',
+            isNullable: false,
+          },
+          {
+            name: 'transaction_type',
+            type: 'enum',
+            enum: ['income', 'expense'],
+            isNullable: false,
+          },
+          {
+            name: 'icon',
+            type: 'varchar',
             length: '255',
             isNullable: false,
+            default: "'store'",
           },
           {
-            name: 'balance',
-            type: 'decimal',
-            precision: 10,
-            scale: 2,
+            name: 'color',
+            type: 'varchar',
+            length: '7',
             isNullable: false,
+            default: "'#222831'",
           },
           {
-            name: 'currency_id',
-            type: 'int',
+            name: 'is_active',
+            type: 'tinyint',
+            length: '1',
             isNullable: false,
+            default: 1,
           },
         ],
       }),
       true,
     );
 
-    // create foreign key for user_id in holdings table
+    // create foreign key for user_id in user_categories table
     await queryRunner.createForeignKey(
-      'holdings',
+      'categories',
       new TableForeignKey({
         columnNames: ['user_id'],
         referencedColumnNames: ['id'],
@@ -150,68 +246,6 @@ export class Init1715331806394 implements MigrationInterface {
         onDelete: 'CASCADE',
       }),
     );
-
-    // create foreign key for currency_id in holdings table
-    await queryRunner.createForeignKey(
-      'holdings',
-      new TableForeignKey({
-        columnNames: ['currency_id'],
-        referencedColumnNames: ['id'],
-        referencedTableName: 'currencies',
-        onDelete: 'CASCADE',
-      }),
-    );
-
-    // create categories table
-    await queryRunner.createTable(
-      new Table({
-        name: 'categories',
-        columns: [
-          {
-            name: 'id',
-            type: 'int',
-            isPrimary: true,
-            isGenerated: true,
-            generationStrategy: 'increment',
-          },
-          {
-            name: 'name',
-            type: 'varchar',
-            length: '255',
-            isNullable: false,
-          },
-          {
-            name: 'is_income',
-            type: 'tinyint',
-            length: '1',
-            isNullable: false,
-          },
-        ],
-      }),
-      true,
-    );
-
-    // insert default categories
-    await queryRunner.query(`
-      INSERT INTO categories (name, is_income) VALUES
-      ('Salary', 1),
-      ('Gift', 1),
-      ('Housing', 0),
-      ('Transportation', 0),
-      ('Groceries', 0),
-      ('Restaurants', 0),
-      ('Car', 0),
-      ('Fuel', 0),
-      ('Clothing', 0),
-      ('Health', 0),
-      ('Entertainment', 0),
-      ('Education', 0),
-      ('Rent', 0),
-      ('Travel', 0),
-      ('Pets', 0),
-      ('Electronics', 0),
-      ('Utilities', 0);
-    `);
 
     // create transactions table
     await queryRunner.createTable(
@@ -226,12 +260,17 @@ export class Init1715331806394 implements MigrationInterface {
             generationStrategy: 'uuid',
           },
           {
-            name: 'holding_id',
+            name: 'wallet_id',
             type: 'int',
             isNullable: false,
           },
           {
             name: 'category_id',
+            type: 'int',
+            isNullable: false,
+          },
+          {
+            name: 'currency_id',
             type: 'int',
             isNullable: false,
           },
@@ -264,13 +303,13 @@ export class Init1715331806394 implements MigrationInterface {
       true,
     );
 
-    // create foreign key for holding_id in transactions table
+    // create foreign key for wallet_id in transactions table
     await queryRunner.createForeignKey(
       'transactions',
       new TableForeignKey({
-        columnNames: ['holding_id'],
+        columnNames: ['wallet_id'],
         referencedColumnNames: ['id'],
-        referencedTableName: 'holdings',
+        referencedTableName: 'wallets',
         onDelete: 'CASCADE',
       }),
     );
@@ -285,29 +324,66 @@ export class Init1715331806394 implements MigrationInterface {
         onDelete: 'CASCADE',
       }),
     );
+
+    // Add foreign key for currency_id in transactions table
+    await queryRunner.createForeignKey(
+      'transactions',
+      new TableForeignKey({
+        columnNames: ['currency_id'],
+        referencedColumnNames: ['id'],
+        referencedTableName: 'currencies',
+        onDelete: 'CASCADE',
+      }),
+    );
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    const usersTable = await queryRunner.getTable('users');
-    const foreignKey = usersTable.foreignKeys.find((fk) => fk.columnNames.indexOf('base_currency_id') !== -1);
-    await queryRunner.dropForeignKey('users', foreignKey);
-
-    const holdingsTable = await queryRunner.getTable('holdings');
-    const userForeignKey = holdingsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
-    await queryRunner.dropForeignKey('holdings', userForeignKey);
-    const currencyForeignKey = holdingsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('currency_id') !== -1);
-    await queryRunner.dropForeignKey('holdings', currencyForeignKey);
-
+    // drop foreign keys from transactions table
     const transactionsTable = await queryRunner.getTable('transactions');
-    const holdingForeignKey = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('holding_id') !== -1);
-    await queryRunner.dropForeignKey('transactions', holdingForeignKey);
-    const categoryForeignKey = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
-    await queryRunner.dropForeignKey('transactions', categoryForeignKey);
+    const foreignKeyCurrency = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('currency_id') !== -1);
+    await queryRunner.dropForeignKey('transactions', foreignKeyCurrency);
 
-    await queryRunner.dropTable('users');
-    await queryRunner.dropTable('currencies');
-    await queryRunner.dropTable('holdings');
-    await queryRunner.dropTable('categories');
+    const foreignKeyCategory = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
+    await queryRunner.dropForeignKey('transactions', foreignKeyCategory);
+
+    const foreignKeyWallet = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('wallet_id') !== -1);
+    await queryRunner.dropForeignKey('transactions', foreignKeyWallet);
+
+    // drop transactions table
     await queryRunner.dropTable('transactions');
+
+    // drop foreign key for user_id in user_categories table
+    const categoriesTable = await queryRunner.getTable('categories');
+    const foreignKeyUser = categoriesTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
+    await queryRunner.dropForeignKey('categories', foreignKeyUser);
+
+    // drop user categories table
+    await queryRunner.dropTable('categories');
+
+    // drop foreign keys for wallets table
+    const walletsTable = await queryRunner.getTable('wallets');
+    const foreignKeyCurrencyWallet = walletsTable.foreignKeys.find(
+      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
+    );
+    await queryRunner.dropForeignKey('wallets', foreignKeyCurrencyWallet);
+
+    const foreignKeyUserWallet = walletsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
+    await queryRunner.dropForeignKey('wallets', foreignKeyUserWallet);
+
+    // drop wallets table
+    await queryRunner.dropTable('wallets');
+
+    // drop foreign key for base_currency_id in users table
+    const usersTable = await queryRunner.getTable('users');
+    const foreignKeyBaseCurrency = usersTable.foreignKeys.find(
+      (fk) => fk.columnNames.indexOf('base_currency_id') !== -1,
+    );
+    await queryRunner.dropForeignKey('users', foreignKeyBaseCurrency);
+
+    // drop currencies table
+    await queryRunner.dropTable('currencies');
+
+    // drop users table
+    await queryRunner.dropTable('users');
   }
 }

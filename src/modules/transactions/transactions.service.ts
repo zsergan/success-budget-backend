@@ -21,7 +21,7 @@ export class TransactionsService {
     return this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.user_category', 'user_category')
+      .innerJoinAndSelect('transaction.category', 'category')
       .innerJoinAndSelect('transaction.currency', 'currency')
       .where({ wallet_id: walletId })
       .andWhere('transaction.timestamp >= :from', { from })
@@ -34,7 +34,7 @@ export class TransactionsService {
     return this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.user_category', 'user_category')
+      .innerJoinAndSelect('transaction.category', 'category')
       .innerJoinAndSelect('transaction.currency', 'currency')
       .where('wallet.user_id = :userId', { userId })
       .andWhere('transaction.timestamp >= :from', { from })
