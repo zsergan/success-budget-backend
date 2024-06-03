@@ -15,4 +15,7 @@ export class Category {
     enum: TransactionType,
   })
   transaction_type: TransactionType;
+
+  @Column({ type: 'varchar', length: 255 })
+  icon: string;
 }

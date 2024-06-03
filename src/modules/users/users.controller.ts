@@ -13,6 +13,8 @@ import {
 import { UsersService } from './users.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
+import { CategoriesService } from '../categories/categories.service';
+import { UserCategoriesService } from '../user-categories/user-categories.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
 import { VerifyUserDto } from './dto/verify-user.dto';
@@ -27,6 +29,8 @@ export class UsersController {
     private readonly usersService: UsersService,
     private readonly walletsService: WalletsService,
     private readonly confirmationCodesService: ConfirmationCodesService,
+    private readonly categoriesService: CategoriesService,
+    private readonly userCategoriesService: UserCategoriesService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -80,6 +84,9 @@ export class UsersController {
       design: WalletDesign.GREEN,
       currency_id: user.base_currency_id,
     });
+
+    const defaultCategories = await this.categoriesService.getAll();
+    await this.userCategoriesService.initiateUserCategories(user.id, defaultCategories);
 
     return accessToken;
   }
