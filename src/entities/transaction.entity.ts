@@ -2,7 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 't
 import { Exclude } from 'class-transformer';
 
 import { Wallet } from './wallet.entity';
-import { Category } from './category.entity';
+import { UserCategory } from './user-category.entity';
 import { Currency } from './currency.entity';
 import { TransactionType } from '../shared/enums';
 
@@ -17,7 +17,7 @@ export class Transaction {
 
   @Exclude()
   @Column({ type: 'int' })
-  category_id: number;
+  user_category_id: number;
 
   @Exclude()
   @Column({ type: 'int' })
@@ -42,9 +42,9 @@ export class Transaction {
   @JoinColumn({ name: 'wallet_id' })
   wallet: Wallet;
 
-  @ManyToOne(() => Category)
-  @JoinColumn({ name: 'category_id' })
-  category: Category;
+  @ManyToOne(() => UserCategory)
+  @JoinColumn({ name: 'user_category_id' })
+  user_category: UserCategory;
 
   @ManyToOne(() => Currency)
   @JoinColumn({ name: 'currency_id' })
