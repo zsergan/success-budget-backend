@@ -1,13 +1,19 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
 import { TransactionType } from '../shared/enums';
+import { User } from './user.entity';
 
 @Entity('categories')
 export class Category {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 255 })
+  @Exclude()
+  @Column({ type: 'int' })
+  user_id: number;
+
+  @Column({ type: 'varchar', length: 20 })
   name: string;
 
   @Column({
@@ -18,4 +24,14 @@ export class Category {
 
   @Column({ type: 'varchar', length: 255 })
   icon: string;
+
+  @Column({ type: 'varchar', length: 7 })
+  color: string;
+
+  @Column({ type: 'tinyint' })
+  is_active: number;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'user_id' })
+  user: User;
 }

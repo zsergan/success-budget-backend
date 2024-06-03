@@ -9,7 +9,7 @@ export class CreateTransactionDto {
 
   @IsNotEmpty()
   @IsNumber()
-  user_category_id: number;
+  category_id: number;
 
   @IsNotEmpty()
   @IsEnum(TransactionType)
