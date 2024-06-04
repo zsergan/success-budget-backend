@@ -1,9 +1,10 @@
-import { IsEnum, IsInt, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
 import { TransactionType } from '../../../shared/enums';
 
 export class UpdateCategoryDto {
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   name: string;
 
   @IsOptional()
@@ -12,10 +13,12 @@ export class UpdateCategoryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(255)
   icon: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(7)
   color: string;
 
   @IsOptional()

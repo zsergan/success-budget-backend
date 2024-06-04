@@ -47,16 +47,6 @@ export class CategoriesController {
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
-  @Get('active')
-  async getAllActive(@Request() req: AuthedRequest) {
-    const categories = await this.categoriesService.getAllActive(req.user.id);
-
-    const [incomes, expenses] = this.sortCategories(categories);
-
-    return { incomes, expenses };
-  }
-
-  @UseInterceptors(ClassSerializerInterceptor)
   @Put(':categoryId')
   async update(
     @Request() req: AuthedRequest,
