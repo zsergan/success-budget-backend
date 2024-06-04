@@ -21,10 +21,6 @@ export class CategoriesService {
     return this.categoryRepository.find({ where: { user_id: userId } });
   }
 
-  async getAllActive(userId: number): Promise<Category[]> {
-    return this.categoryRepository.find({ where: { is_active: 1, user_id: userId } });
-  }
-
   async initiateCategories(userId: number, categories: CreateCategoryDto[]) {
     const userCategories = categories.map((category) => ({
       ...category,

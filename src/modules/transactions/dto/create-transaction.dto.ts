@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum, IsDateString } from 'class-validator';
+import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum, IsDateString, MaxLength } from 'class-validator';
 
 import { TransactionType } from '../../../shared/enums';
 
@@ -24,5 +24,6 @@ export class CreateTransactionDto {
   timestamp: Date;
 
   @IsString()
+  @MaxLength(140)
   description: string;
 }

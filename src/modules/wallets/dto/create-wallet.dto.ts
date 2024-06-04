@@ -1,9 +1,10 @@
-import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum } from 'class-validator';
+import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum, MaxLength } from 'class-validator';
 import { WalletDesign } from '../../../shared/enums';
 
 export class CreateWalletDto {
   @IsNotEmpty()
   @IsString()
+  @MaxLength(20)
   wallet_name: string;
 
   @IsNotEmpty()
