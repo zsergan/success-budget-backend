@@ -18,7 +18,11 @@ export class CategoriesService {
   }
 
   async getAll(userId: number): Promise<Category[]> {
-    return this.categoryRepository.find({ where: { user_id: userId } });
+    return this.categoryRepository
+      .createQueryBuilder('category')
+      .where('category.user_id = :userId', { userId })
+      .orderBy('category.sort', 'ASC')
+      .getMany();
   }
 
   async initiateCategories(userId: number, categories: CreateCategoryDto[]) {
@@ -36,5 +40,9 @@ export class CategoriesService {
 
   async create(userId: number, category: CreateCategoryDto): Promise<Category> {
     return this.categoryRepository.save({ ...category, user_id: userId });
+  }
+
+  async save(categories: Category[]): Promise<Category | Category[]> {
+    return this.categoryRepository.save(categories);
   }
 }

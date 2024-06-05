@@ -31,6 +31,10 @@ export class Category {
   @Column({ type: 'tinyint' })
   is_active: number;
 
+  @Exclude()
+  @Column({ type: 'int' })
+  sort: number;
+
   @ManyToOne(() => User)
   @JoinColumn({ name: 'user_id' })
   user: User;
