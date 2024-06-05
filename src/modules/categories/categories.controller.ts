@@ -25,7 +25,7 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
-  private sortCategories(categories: Category[]): [incomes: Category[], expences: Category[]] {
+  private separateCategories(categories: Category[]): [incomes: Category[], expences: Category[]] {
     return categories.reduce(
       (acc, category) => {
         category.transaction_type === TransactionType.INCOME ? acc[0].push(category) : acc[1].push(category);
@@ -36,12 +36,23 @@ export class CategoriesController {
     );
   }
 
+  private sortCategories(categories: Category[], movedCategoryId: number, prefix: number) {
+    const movedCategory = categories.find((category) => category.id === movedCategoryId);
+    const otherCategories = categories.filter((category) => category.id !== movedCategoryId);
+    const otherCategoriesWithNewSort = otherCategories.map((category, index) => ({
+      ...category,
+      sort: prefix + index + 1,
+    }));
+
+    return [{ ...movedCategory, sort: prefix }, ...otherCategoriesWithNewSort];
+  }
+
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(@Request() req: AuthedRequest) {
     const categories = await this.categoriesService.getAll(req.user.id);
 
-    const [incomes, expenses] = this.sortCategories(categories);
+    const [incomes, expenses] = this.separateCategories(categories);
 
     return { incomes, expenses };
   }
@@ -66,5 +77,27 @@ export class CategoriesController {
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createCategory: CreateCategoryDto) {
     return this.categoriesService.create(req.user.id, createCategory);
+  }
+
+  @UseInterceptors(ClassSerializerInterceptor)
+  @Put('move-forward/:categoryId')
+  async moveForward(@Request() req: AuthedRequest, @Param('categoryId', ParseIntPipe) categoryId: number) {
+    const category = await this.categoriesService.getOne(categoryId);
+
+    if (category.user_id !== req.user.id) {
+      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
+    }
+
+    const categories = await this.categoriesService.getAll(req.user.id);
+    const [incomes, expenses] = this.separateCategories(categories);
+    let movedCategories: Category[];
+
+    if (category.transaction_type === TransactionType.INCOME) {
+      movedCategories = this.sortCategories(incomes, categoryId, 100);
+    } else {
+      movedCategories = this.sortCategories(expenses, categoryId, 200);
+    }
+
+    await this.categoriesService.save(movedCategories);
   }
 }

@@ -20,6 +20,7 @@ export class CategoriesModule implements NestModule {
         { path: 'categories/active', method: RequestMethod.GET },
         { path: 'categories/:categoryId', method: RequestMethod.PUT },
         { path: 'categories', method: RequestMethod.POST },
+        { path: 'categories/move-forward/:categoryId', method: RequestMethod.PUT },
       );
   }
 }
