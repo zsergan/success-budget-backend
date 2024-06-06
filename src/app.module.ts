@@ -8,6 +8,7 @@ import { WalletsModule } from './modules/wallets/wallets.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { ConfirmationCodesModule } from './modules/confirmation-codes/confirmation-codes.module';
+import { LimitsModule } from './modules/limits/limits.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ConfirmationCodesModule } from './modules/confirmation-codes/confirmati
     TransactionsModule,
     CurrenciesModule,
     ConfirmationCodesModule,
+    LimitsModule,
   ],
   controllers: [],
   providers: [],

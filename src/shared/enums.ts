@@ -15,3 +15,8 @@ export enum ConfirmationType {
   EMAIL = 'email',
   RESET_PASSWORD = 'reset_password',
 }
+
+export enum LimitType {
+  CATEGORY = 'category',
+  OTHERS = 'others',
+}
