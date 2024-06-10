@@ -34,8 +34,9 @@ export class CategoriesService {
     return this.categoryRepository.save(userCategories);
   }
 
-  async update(categoryId: number, category: UpdateCategoryDto): Promise<void> {
-    await this.categoryRepository.update({ id: categoryId }, category);
+  async update(categoryId: number, updateCategory: UpdateCategoryDto) {
+    const category = await this.getOne(categoryId);
+    return await this.categoryRepository.save({ ...category, ...updateCategory });
   }
 
   async create(userId: number, category: CreateCategoryDto): Promise<Category> {
