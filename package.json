@@ -24,7 +24,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "migration:create": "typeorm migration:create",
     "migration:run": "ts-node ./node_modules/typeorm/cli.js migration:run",
-    "migration:revert": "ts-node ./node_modules/typeorm/cli.js migration:revert"
+    "migration:revert": "ts-node ./node_modules/typeorm/cli.js migration:revert",
+    "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.1",
