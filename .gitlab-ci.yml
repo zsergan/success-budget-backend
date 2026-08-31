@@ -1,0 +1,66 @@
+image: node:24
+
+stages:
+  - install
+  - lint
+  - test
+  - build
+
+variables:
+  npm_config_cache: '$CI_PROJECT_DIR/.npm'
+
+.node_cache: &node_cache
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm/
+    - node_modules/
+
+install:
+  stage: install
+  cache:
+    <<: *node_cache
+    policy: pull-push
+  script:
+    - npm ci
+  artifacts:
+    paths:
+      - node_modules/
+    expire_in: 1 hour
+
+lint:
+  stage: lint
+  needs: ['install']
+  cache:
+    <<: *node_cache
+    policy: pull
+  script:
+    - npm run lint
+
+test:
+  stage: test
+  needs: ['install']
+  cache:
+    <<: *node_cache
+    policy: pull
+  script:
+    - npm run test:cov
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    paths:
+      - coverage/
+    expire_in: 1 week
+
+build:
+  stage: build
+  needs: ['install']
+  cache:
+    <<: *node_cache
+    policy: pull
+  script:
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week

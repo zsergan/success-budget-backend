@@ -28,7 +28,11 @@ export class CategoriesController {
   private separateCategories(categories: Category[]): [incomes: Category[], expences: Category[]] {
     return categories.reduce(
       (acc, category) => {
-        category.transaction_type === TransactionType.INCOME ? acc[0].push(category) : acc[1].push(category);
+        if (category.transaction_type === TransactionType.INCOME) {
+          acc[0].push(category);
+        } else {
+          acc[1].push(category);
+        }
 
         return acc;
       },
