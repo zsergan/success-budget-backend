@@ -23,9 +23,9 @@ describe('HealthController', () => {
   });
 
   it('runs a database ping check through the Terminus health check service', async () => {
-    health.check.mockImplementation(async (indicators: Array<() => unknown>) => {
+    health.check.mockImplementation(async (indicators) => {
       for (const indicator of indicators) {
-        await indicator();
+        await (indicator as () => unknown)();
       }
       return { status: 'ok', info: {}, error: {}, details: {} } as any;
     });

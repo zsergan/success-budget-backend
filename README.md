@@ -49,10 +49,17 @@ them from the UI directly.
    npm install
    ```
 
-2. **Create a local MySQL database**
+2. **Start a local MySQL database**
 
-   Create a database and a user matching what you'll put in `.env` (see
-   below) - for example, with the MySQL CLI:
+   Easiest: use the provided docker-compose file, which already matches
+   `.env.example`'s credentials -
+
+   ```bash
+   docker compose up -d
+   ```
+
+   Or, without Docker, create a database and user matching what you'll put
+   in `.env` (see below) yourself:
 
    ```sql
    CREATE DATABASE success_budget;
@@ -140,14 +147,23 @@ npm run test
 # unit tests with coverage
 npm run test:cov
 
-# e2e tests (scaffolded, no e2e specs written yet)
+# e2e tests - needs a real, running MySQL (see Local setup above) and a
+# .env with valid credentials; boots the full app and hits it over HTTP
 npm run test:e2e
 ```
 
 Unit tests use mocked TypeORM repositories via `@nestjs/testing` - no
-database is required to run them. There is no docker-compose/integration
-test setup against a real database yet; that is a deliberately deferred
-follow-up, not an oversight.
+database is required to run them. `npm run test:cov` enforces a coverage
+floor (see `coverageThreshold` in `package.json`) so it does not silently
+regress.
+
+e2e tests (`test/app.e2e-spec.ts`) boot the real `AppModule` against a real
+database and exercise it over HTTP with `supertest` - registration, mass
+assignment rejection, the full register/verify/login/profile flow, and a
+protected route. They clean up the test user they create afterward (which,
+thanks to `onDelete: CASCADE` on the relevant foreign keys, also removes the
+wallet/categories/confirmation code created for it). CI runs them against a
+MySQL service container on every push/PR.
 
 ## Linting
 
@@ -157,4 +173,6 @@ npm run lint
 
 ## License
 
-UNLICENSED (private project).
+All rights reserved. The source is public for reference (portfolio/code
+review purposes), but no license is granted to use, copy, modify, or
+distribute it without permission from the author.
