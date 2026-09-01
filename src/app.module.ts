@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
 import { ThrottlerModule } from '@nestjs/throttler';
 
-import { ormConfig } from './config/ormconfig';
+import { getOrmConfig } from './config/ormconfig';
+import { envValidationSchema } from './config/env.validation';
 import { UsersModule } from './modules/users/users.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { WalletsModule } from './modules/wallets/wallets.module';
@@ -17,7 +19,11 @@ import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot(ormConfig),
+    ConfigModule.forRoot({ isGlobal: true, validationSchema: envValidationSchema }),
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: getOrmConfig,
+    }),
     PassportModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
     UsersModule,
