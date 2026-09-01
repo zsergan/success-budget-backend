@@ -4,12 +4,14 @@ import { HttpException } from '@nestjs/common';
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
 import { TransactionsService } from '../transactions/transactions.service';
+import { CategoriesService } from '../categories/categories.service';
 import { ErrorMessages } from '../../shared/error-messages';
 
 describe('LimitsController', () => {
   let controller: LimitsController;
   let limitsService: jest.Mocked<LimitsService>;
   let transactionsService: jest.Mocked<TransactionsService>;
+  let categoriesService: jest.Mocked<CategoriesService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -26,12 +28,14 @@ describe('LimitsController', () => {
           },
         },
         { provide: TransactionsService, useValue: { getForAllWallets: jest.fn() } },
+        { provide: CategoriesService, useValue: { getOne: jest.fn() } },
       ],
     }).compile();
 
     controller = module.get(LimitsController);
     limitsService = module.get(LimitsService);
     transactionsService = module.get(TransactionsService);
+    categoriesService = module.get(CategoriesService);
   });
 
   const req = { user: { id: 1 } } as any;
@@ -51,6 +55,7 @@ describe('LimitsController', () => {
 
   describe('create', () => {
     it('delegates to LimitsService.create', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 5, user_id: 1 } as any);
       limitsService.create.mockResolvedValue({ id: 1 } as any);
 
       const result = await controller.create(req, { category_id: 5, amount: 10 } as any);
@@ -59,7 +64,17 @@ describe('LimitsController', () => {
       expect(result).toEqual({ id: 1 });
     });
 
+    it('rejects creating a limit for a category belonging to someone else', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 5, user_id: 2 } as any);
+
+      await expect(controller.create(req, { category_id: 5, amount: 10 } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
+      );
+      expect(limitsService.create).not.toHaveBeenCalled();
+    });
+
     it('propagates a duplicate-limit rejection from the service', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 5, user_id: 1 } as any);
       limitsService.create.mockRejectedValue(new HttpException(ErrorMessages.LIMIT_EXISTS, 400));
 
       await expect(controller.create(req, { category_id: 5, amount: 10 } as any)).rejects.toMatchObject(
@@ -73,6 +88,16 @@ describe('LimitsController', () => {
       limitsService.getOne.mockResolvedValue({ id: 1, user_id: 2, category_id: 5 } as any);
 
       await expect(controller.update(req, 1, { category_id: 5, amount: 20 } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_LIMIT, 403),
+      );
+      expect(limitsService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects updating a limit to reference a category belonging to someone else', async () => {
+      limitsService.getOne.mockResolvedValue({ id: 1, user_id: 1, category_id: 5 } as any);
+      categoriesService.getOne.mockResolvedValue({ id: 6, user_id: 2 } as any);
+
+      await expect(controller.update(req, 1, { category_id: 6, amount: 20 } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
       expect(limitsService.update).not.toHaveBeenCalled();
@@ -80,6 +105,7 @@ describe('LimitsController', () => {
 
     it('delegates to LimitsService.update with the current category id', async () => {
       limitsService.getOne.mockResolvedValue({ id: 1, user_id: 1, category_id: 5 } as any);
+      categoriesService.getOne.mockResolvedValue({ id: 6, user_id: 1 } as any);
 
       await controller.update(req, 1, { category_id: 6, amount: 20 } as any);
 
