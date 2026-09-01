@@ -5,9 +5,21 @@
 Идёт плановая модернизация legacy-проекта (был не обновлён ~2 года).
 
 **Репозиторий переехал с GitLab на GitHub**: живёт на
-`github.com/zsergan/success-budget-backend` (private), ветка `main` —
-основная. GitLab-репозиторий физически не удалён и не тронут, но больше не
+`github.com/zsergan/success-budget-backend`, ветка `main` — основная.
+GitLab-репозиторий физически не удалён и не тронут, но больше не
 используется из этого рабочего дерева.
+
+**Update (2026-09-01):** the repo is now **public** (deliberately, for
+portfolio visibility) under `UNLICENSED`/all-rights-reserved terms (code is
+visible but not legally reusable - preserves the option to monetize later).
+Git history was rewritten with `git-filter-repo` to strip personal
+session-transcript links from commit trailers (kept `Co-Authored-By`
+trailers - AI authorship stays visible, only the session link was removed);
+`.env` was verified absent from history before doing this. Secret scanning,
+push protection, Dependabot, and `delete_branch_on_merge` are all enabled.
+Phases 6 and 7 are merged (PRs #6, #7); phase 8 (NestJS 12) was
+investigated and deferred - see the "Важные технические решения" entry
+below.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
 baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
@@ -153,6 +165,23 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   name in the `migrations` table, so renaming it now would also need a
   manual `UPDATE` against that table on every environment that already ran
   it - not worth the risk for a cosmetic fix.
+- **NestJS 12 upgrade (plan phase 8) is deferred, not done.** Investigated
+  2026-09-01: NestJS 12 is a full ESM-only migration, not a normal breaking
+  major. Verified directly (`npm view @nestjs/core@12.0.1 type` / `exports`):
+  `@nestjs/core@12.0.1` has `"type": "module"` with no CommonJS export
+  condition at all, across the whole ecosystem (`common`, `core`,
+  `platform-express`, `testing`, `typeorm`, `schematics`, `cli`) - v11.2.1 by
+  contrast has no `type` field (plain CJS). Confirmed this is a genuine
+  stable `latest` release, not a mistagged pre-release (`dist-tags` +
+  version history: `alpha.0` through `alpha.7`, then `12.0.0`/`12.0.1`). No
+  official v11-to-v12 migration guide exists yet. This project is entirely
+  CommonJS (`tsconfig.json`: `"module": "commonjs"`), so this is a
+  project-wide ESM migration disguised as a dependency bump, not something
+  to fold into a routine "read the guide, run the tests" phase. **Do not
+  merge the Dependabot `@nestjs/*` v12 PRs individually** - the ecosystem
+  requires coordinated versions across packages. See
+  `.private/modernization-plan.md` ("Отложено / переоценить позже") for the
+  full writeup; re-evaluate once an official migration guide exists.
 
 ## Известные, намеренно не исправленные проблемы (задокументированы, не трогать втихую)
 
@@ -196,7 +225,11 @@ whitelist-конфигурация.
 
 ## Что осталось / следующие шаги
 
-**Приоритет — `.private/modernization-plan.md`, этапы 0 и 2** (критические
-security/correctness фиксы), не "доп. полировка". Полный поэтапный план
-(9 этапов, от хотфиксов до апгрейда NestJS 11→12) лежит там же — читай его
-перед тем, как предлагать следующие шаги, не изобретай план заново.
+Phases 0-7 are done and merged. **Phase 8 (NestJS 11→12) is investigated
+and deferred**, not done - it turned out to be a full ESM migration with no
+migration guide yet (see "Важные технические решения" above). Full staged
+plan and status lives in `.private/modernization-plan.md` - read it before
+proposing next steps, do not invent a plan from scratch. Open items there
+include closing/handling the 8 open Dependabot PRs for the deferred NestJS
+12 bump and the `@types/node` 26 bump (contradicts the documented decision
+to hold `@types/node` at `^24`).
