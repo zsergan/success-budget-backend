@@ -11,6 +11,36 @@ budget limits and categories, with JWT-based authentication.
 - Jest 30 + `@swc/jest` for unit tests
 - ESLint 10 (flat config) + Prettier
 
+## Architecture
+
+A modular NestJS app - one module per domain area, each with its own
+controller/service/DTOs. All routes are protected by a global JWT guard by
+default (`src/shared/guards/jwt-auth.guard.ts`); a `@Public()` decorator
+opts specific handlers out (registration, login, email verification,
+currencies, health check).
+
+| Module                | Purpose                                                              |
+| ---------------------- | --------------------------------------------------------------------- |
+| `users`                | Registration, email verification, login, profile                    |
+| `wallets`              | User wallets (balance, currency, soft-delete)                       |
+| `transactions`         | Income/expense entries against a wallet, with atomic balance updates |
+| `categories`           | Income/expense categories - user-defined plus defaults on signup    |
+| `limits`               | Monthly spending limits, per category or overall                    |
+| `currencies`           | Read-only list of supported currencies (public)                     |
+| `confirmation-codes`   | Email verification codes (internal service, no controller)          |
+| `health`               | `/health` liveness/readiness check for deployment tooling (public)  |
+
+All API routes are prefixed with `/api` and URI-versioned, e.g.
+`/api/v1/wallets`.
+
+## API documentation
+
+Interactive Swagger UI is served at `/docs` while the app is running (e.g.
+`http://localhost:3000/docs`), with the raw OpenAPI JSON at `/docs-json`.
+Protected endpoints are marked with a lock icon - use the "Authorize" button
+and paste an access token (obtained from `POST /api/v1/users/login`) to try
+them from the UI directly.
+
 ## Local setup
 
 1. **Install dependencies**
