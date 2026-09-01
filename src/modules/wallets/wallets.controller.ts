@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 
 import { WalletsService } from './wallets.service';
-import type { CreateWalletDto } from './dto/create-wallet.dto';
+import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
