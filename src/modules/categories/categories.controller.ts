@@ -12,6 +12,7 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { Category } from '../../entities/category.entity';
 import { CategoriesService } from './categories.service';
@@ -21,6 +22,8 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { ErrorMessages } from '../../shared/error-messages';
 import { CreateCategoryDto } from './dto/create-category.dto';
 
+@ApiTags('categories')
+@ApiBearerAuth()
 @Controller('categories')
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
