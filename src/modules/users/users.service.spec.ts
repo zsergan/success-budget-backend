@@ -17,9 +17,10 @@ const JWT_SECRET_FOR_TESTS = 'test-secret';
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
   hash: jest.fn(),
+  hashSync: jest.fn().mockReturnValue('dummy-password-hash'),
 }));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const bcrypt = require('bcrypt') as { compare: jest.Mock; hash: jest.Mock };
+const bcrypt = require('bcrypt') as { compare: jest.Mock; hash: jest.Mock; hashSync: jest.Mock };
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -202,6 +203,17 @@ describe('UsersService', () => {
       await expect(service.login({ email: 'missing@x.com', password: 'pw' } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
       );
+    });
+
+    it('still runs a bcrypt comparison when no user matches, to avoid a timing side-channel', async () => {
+      repository.findOne.mockResolvedValue(null);
+      bcrypt.compare.mockResolvedValue(false);
+
+      await expect(service.login({ email: 'missing@x.com', password: 'pw' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
+      );
+
+      expect(bcrypt.compare).toHaveBeenCalledWith('pw', 'dummy-password-hash');
     });
 
     it('rejects when the password does not match', async () => {

@@ -15,6 +15,8 @@ import { ErrorMessages } from '../../shared/error-messages';
 import { WalletDesign } from '../../shared/enums';
 import { DEFAULT_CATEGORIES } from '../../shared/constants';
 
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -88,13 +90,9 @@ export class UsersService {
     const { email, password } = loginUserDto;
     const user = await this.userRepository.findOne({ where: { email } });
 
-    if (!user) {
-      throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
-    }
+    const isPasswordValid = await bcrypt.compare(password, user ? user.password : DUMMY_PASSWORD_HASH);
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-
-    if (!isPasswordValid) {
+    if (!user || !isPasswordValid) {
       throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
     }
 
