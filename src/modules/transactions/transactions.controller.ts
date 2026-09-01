@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { WalletsService } from '../wallets/wallets.service';
+import { CategoriesService } from '../categories/categories.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
@@ -25,6 +26,7 @@ export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
     private readonly walletsService: WalletsService,
+    private readonly categoriesService: CategoriesService,
   ) {}
 
   @Post()
@@ -35,6 +37,9 @@ export class TransactionsController {
     if (wallet.is_deleted) {
       throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
     }
+
+    const category = await this.categoriesService.getOne(createTransactionDto.category_id);
+    assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
 
     return this.transactionsService.create(wallet.id, wallet.currency_id, createTransactionDto);
   }

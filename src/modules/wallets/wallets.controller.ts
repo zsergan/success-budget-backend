@@ -1,4 +1,17 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, Request } from '@nestjs/common';
+import {
+  Body,
+  ClassSerializerInterceptor,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  Request,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { WalletsService } from './wallets.service';
@@ -20,11 +33,13 @@ export class WalletsController {
     private readonly transactionsService: TransactionsService,
   ) {}
 
+  @UseInterceptors(ClassSerializerInterceptor)
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createWalletDto: CreateWalletDto) {
     return this.walletsService.create(req.user.id, createWalletDto);
   }
 
+  @UseInterceptors(ClassSerializerInterceptor)
   @Put(':walletId')
   async update(
     @Request() req: AuthedRequest,
@@ -37,6 +52,7 @@ export class WalletsController {
     return this.walletsService.update(walletId, updateWalletDto);
   }
 
+  @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(
     @Request() req: AuthedRequest,
@@ -69,7 +85,7 @@ export class WalletsController {
       );
 
       return {
-        wallet: { ...wallet },
+        wallet,
         totalSpend,
         totalIncome,
       };

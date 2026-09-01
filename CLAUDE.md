@@ -66,10 +66,13 @@ assuming otherwise.
 - Jest 30 + `@swc/jest` (не ts-jest!)
 - ESLint 10 flat config (`eslint.config.mjs`, не `.eslintrc.js`)
 - npm (не yarn/pnpm)
-- CI — **GitHub Actions** (`.github/workflows/ci.yml`): три джобы (`lint`,
-  `test` с `test:cov` + coverage-артефакт, `build` + dist-артефакт), каждая
-  через `actions/checkout` + `actions/setup-node` (`node-version-file:
-  .nvmrc`, `cache: npm`) + `npm ci`. Проверено живым прогоном — зелёный.
+- CI — **GitHub Actions** (`.github/workflows/ci.yml`): четыре джобы
+  (`lint`, `test` с `test:cov` + coverage-артефакт, `e2e` с сервис-контейнером
+  `mysql:8`, `build` + dist-артефакт), каждая через `actions/checkout@v7` +
+  `actions/setup-node@v7` (`node-version-file: .nvmrc`, `cache: npm`) +
+  `npm ci`, плюс `concurrency` (cancel-in-progress). Отдельно —
+  `.github/workflows/codeql.yml` (`github/codeql-action@v4`) и
+  `dependency-review.yml` (`actions/dependency-review-action@v5`) на PR.
   `.gitlab-ci.yml` удалён (GitLab больше не используется).
 
 ## Что сделано — по группам
@@ -130,16 +133,18 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   (`admin@dev.local` — это **только ярлык для читаемости**, без реальных прав).
   Если в будущем понадобится настоящий RBAC — это отдельная архитектурная
   задача, не путать с текущей "seed data" работой.
-- **Тесты — только unit с моками TypeORM-репозиториев.** Качество юнит-тестов
-  подтверждено аудитом как хорошее (не поверхностное, реальные edge cases).
-  Docker-compose и integration/e2e-тесты на реальной БД — всё ещё осознанно
-  отложены. При этом `npm run test:e2e` **сейчас реально падает**
-  (`No tests found`) — скрипт не просто "не используется", а буквально
-  ломается при вызове; см. план модернизации, этап 7.
-- **CI — GitHub Actions**, не GitLab CI (см. "Стек" выше). Экшены
-  (`checkout@v4`, `setup-node@v4`, `upload-artifact@v4`) на 2026-08-31 уже
-  отстают на 2 major-версии от актуальных (v6/v7/v6) — не критично (пайплайн
-  зелёный), но стоит обновить при следующей ревизии CI.
+- **Unit-тесты с моками TypeORM-репозиториев + реальные e2e-тесты.**
+  Качество юнит-тестов подтверждено аудитом как хорошее (не поверхностное,
+  реальные edge cases). `npm run test:e2e` **больше не падает** — phase 7
+  добавил `docker-compose.yml` для локальной MySQL, `test/app.e2e-spec.ts`
+  (register → verify-email → login → protected route, плюс 401/400 edge
+  cases) и `test/jest-e2e.json`/`test/tsconfig.json`; CI гоняет их в
+  отдельной `e2e`-джобе с сервис-контейнером `mysql:8`. e2e-покрытие пока
+  ограничено auth+currencies+health — транзакции/лимиты/категории без
+  e2e-тестов, см. план модернизации, этап 15 (раунд 2).
+- **CI — GitHub Actions**, не GitLab CI (см. "Стек" выше). Экшены обновлены
+  до `checkout@v7`/`setup-node@v7`/`upload-artifact@v7`, плюс CodeQL и
+  Dependency Review на PR — актуальное состояние см. "Стек" выше.
 - **`.private/` в корне репозитория** — гитигнорено (`/.private` в
   `.gitignore`), используется как личный scratch-space пользователя для
   заметок/планов, которые не должны попадать в git. Не удалять и не

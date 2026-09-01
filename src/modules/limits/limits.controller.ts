@@ -15,6 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { AuthedRequest } from '../../shared/types';
 import { LimitsService } from './limits.service';
 import { TransactionsService } from '../transactions/transactions.service';
+import { CategoriesService } from '../categories/categories.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
@@ -27,6 +28,7 @@ export class LimitsController {
   constructor(
     private readonly limitsService: LimitsService,
     private readonly transactionsService: TransactionsService,
+    private readonly categoriesService: CategoriesService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -45,6 +47,11 @@ export class LimitsController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createLimitDto: CreateLimitDto) {
+    if (createLimitDto.category_id) {
+      const category = await this.categoriesService.getOne(createLimitDto.category_id);
+      assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
+    }
+
     return this.limitsService.create(req.user.id, createLimitDto);
   }
 
@@ -56,7 +63,12 @@ export class LimitsController {
     @Body() updateLimitDto: UpdateLimitDto,
   ) {
     const limit = await this.limitsService.getOne(limitId);
-    assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
+    assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_LIMIT);
+
+    if (updateLimitDto.category_id) {
+      const category = await this.categoriesService.getOne(updateLimitDto.category_id);
+      assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
+    }
 
     return this.limitsService.update(limitId, req.user.id, limit.category_id, updateLimitDto);
   }
