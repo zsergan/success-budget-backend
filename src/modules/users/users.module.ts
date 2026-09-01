@@ -11,5 +11,6 @@ import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
   imports: [TypeOrmModule.forFeature([User, ConfirmationCode])],
   controllers: [UsersController],
   providers: [UsersService, ConfirmationCodesService],
+  exports: [UsersService],
 })
 export class UsersModule {}
