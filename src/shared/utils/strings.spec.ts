@@ -1,10 +1,11 @@
 jest.mock('node:crypto', () => ({
+  ...jest.requireActual('node:crypto'),
   randomInt: jest.fn(),
 }));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const crypto = require('node:crypto') as { randomInt: jest.Mock };
 
-import { generateRandomNumberString } from './strings';
+import { constantTimeEquals, generateRandomNumberString } from './strings';
 
 describe('generateRandomNumberString', () => {
   afterEach(() => {
@@ -34,5 +35,19 @@ describe('generateRandomNumberString', () => {
     generateRandomNumberString();
 
     expect(crypto.randomInt).toHaveBeenCalledWith(0, 1000000);
+  });
+});
+
+describe('constantTimeEquals', () => {
+  it('returns true for identical strings', () => {
+    expect(constantTimeEquals('123456', '123456')).toBe(true);
+  });
+
+  it('returns false for different strings of the same length', () => {
+    expect(constantTimeEquals('123456', '654321')).toBe(false);
+  });
+
+  it('returns false for strings of different lengths without throwing', () => {
+    expect(constantTimeEquals('123456', '1234567')).toBe(false);
   });
 });

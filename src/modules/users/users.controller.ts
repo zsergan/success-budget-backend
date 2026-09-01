@@ -22,6 +22,7 @@ import { ErrorMessages } from '../../shared/error-messages';
 import { ConfirmationType } from '../../shared/enums';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
 import { Public } from '../../shared/decorators/public.decorator';
+import { constantTimeEquals } from '../../shared/utils';
 
 @ApiTags('users')
 @Controller('users')
@@ -63,7 +64,7 @@ export class UsersController {
       throw new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    if (confirmationCode.confirmation_code !== verifyUser.code) {
+    if (!constantTimeEquals(confirmationCode.confirmation_code, verifyUser.code)) {
       await this.confirmationCodesService.incrementAttempts(confirmationCode.id);
       throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
     }
