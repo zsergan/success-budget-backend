@@ -5,7 +5,6 @@ import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
 import { TransactionsService } from '../transactions/transactions.service';
 import { ErrorMessages } from '../../shared/error-messages';
-import { TransactionType } from '../../shared/enums';
 
 describe('LimitsController', () => {
   let controller: LimitsController;
@@ -18,7 +17,13 @@ describe('LimitsController', () => {
       providers: [
         {
           provide: LimitsService,
-          useValue: { getAll: jest.fn(), getOne: jest.fn(), create: jest.fn(), update: jest.fn() },
+          useValue: {
+            getAll: jest.fn(),
+            getOne: jest.fn(),
+            create: jest.fn(),
+            update: jest.fn(),
+            calculateSpending: jest.fn(),
+          },
         },
         { provide: TransactionsService, useValue: { getForAllWallets: jest.fn() } },
       ],
@@ -32,63 +37,34 @@ describe('LimitsController', () => {
   const req = { user: { id: 1 } } as any;
 
   describe('getAll', () => {
-    it('computes spent amounts and percentages per limit and overall', async () => {
-      limitsService.getAll.mockResolvedValue([
-        { id: 1, user_id: 1, category_id: 1, amount: 100 },
-        { id: 2, user_id: 1, category_id: null, amount: 50 },
-      ] as any);
-      transactionsService.getForAllWallets.mockResolvedValue([
-        { category_id: 1, transaction_type: TransactionType.EXPENSE, amount: 40 },
-        { category_id: 2, transaction_type: TransactionType.EXPENSE, amount: 10 },
-        { category_id: 1, transaction_type: TransactionType.INCOME, amount: 1000 },
-      ] as any);
+    it('fetches limits and transactions, then delegates the spending calculation to the service', async () => {
+      limitsService.getAll.mockResolvedValue([{ id: 1 }] as any);
+      transactionsService.getForAllWallets.mockResolvedValue([{ id: 'tx-1' }] as any);
+      limitsService.calculateSpending.mockReturnValue({ limits: [], overall: {} } as any);
 
       const result = await controller.getAll(req);
 
-      expect(result.limits[0]).toMatchObject({ spent: 40, in_percent: 40 });
-      expect(result.limits[1]).toMatchObject({ spent: 10, in_percent: 20 });
-      expect(result.overall).toMatchObject({ spent: 50, sum: 150, in_percent: 33 });
-    });
-
-    it('returns 0 percent instead of Infinity/NaN when a limit amount is 0', async () => {
-      limitsService.getAll.mockResolvedValue([{ id: 1, user_id: 1, category_id: 1, amount: 0 }] as any);
-      transactionsService.getForAllWallets.mockResolvedValue([
-        { category_id: 1, transaction_type: TransactionType.EXPENSE, amount: 40 },
-      ] as any);
-
-      const result = await controller.getAll(req);
-
-      expect(result.limits[0]).toMatchObject({ spent: 40, in_percent: 0 });
-      expect(result.overall).toMatchObject({ spent: 40, sum: 0, in_percent: 0 });
+      expect(limitsService.calculateSpending).toHaveBeenCalledWith([{ id: 1 }], [{ id: 'tx-1' }]);
+      expect(result).toEqual({ limits: [], overall: {} });
     });
   });
 
   describe('create', () => {
-    it('rejects a duplicate category limit', async () => {
-      limitsService.getAll.mockResolvedValue([{ category_id: 5 }] as any);
-
-      await expect(controller.create(req, { category_id: 5, amount: 10 } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
-      );
-      expect(limitsService.create).not.toHaveBeenCalled();
-    });
-
-    it('rejects a duplicate "others" limit', async () => {
-      limitsService.getAll.mockResolvedValue([{ category_id: null }] as any);
-
-      await expect(controller.create(req, { amount: 10 } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
-      );
-    });
-
-    it('creates a limit when no conflicting one exists', async () => {
-      limitsService.getAll.mockResolvedValue([]);
+    it('delegates to LimitsService.create', async () => {
       limitsService.create.mockResolvedValue({ id: 1 } as any);
 
       const result = await controller.create(req, { category_id: 5, amount: 10 } as any);
 
       expect(limitsService.create).toHaveBeenCalledWith(1, { category_id: 5, amount: 10 });
       expect(result).toEqual({ id: 1 });
+    });
+
+    it('propagates a duplicate-limit rejection from the service', async () => {
+      limitsService.create.mockRejectedValue(new HttpException(ErrorMessages.LIMIT_EXISTS, 400));
+
+      await expect(controller.create(req, { category_id: 5, amount: 10 } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
+      );
     });
   });
 
@@ -102,23 +78,12 @@ describe('LimitsController', () => {
       expect(limitsService.update).not.toHaveBeenCalled();
     });
 
-    it('re-validates for duplicates only when the category changes', async () => {
+    it('delegates to LimitsService.update with the current category id', async () => {
       limitsService.getOne.mockResolvedValue({ id: 1, user_id: 1, category_id: 5 } as any);
 
-      await controller.update(req, 1, { category_id: 5, amount: 20 } as any);
+      await controller.update(req, 1, { category_id: 6, amount: 20 } as any);
 
-      expect(limitsService.getAll).not.toHaveBeenCalled();
-      expect(limitsService.update).toHaveBeenCalledWith(1, { category_id: 5, amount: 20 });
-    });
-
-    it('rejects switching to a category that already has a limit', async () => {
-      limitsService.getOne.mockResolvedValue({ id: 1, user_id: 1, category_id: 5 } as any);
-      limitsService.getAll.mockResolvedValue([{ category_id: 6 }] as any);
-
-      await expect(controller.update(req, 1, { category_id: 6, amount: 20 } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
-      );
-      expect(limitsService.update).not.toHaveBeenCalled();
+      expect(limitsService.update).toHaveBeenCalledWith(1, 1, 5, { category_id: 6, amount: 20 });
     });
   });
 });
