@@ -1,14 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
 import { Transaction } from '../../entities/transaction.entity';
+import { Wallet } from '../../entities/wallet.entity';
+import { TransactionType } from '../../shared/enums';
 
 describe('TransactionsService', () => {
   let service: TransactionsService;
-  let repository: jest.Mocked<Repository<Transaction>>;
   let queryBuilder: Record<string, jest.Mock>;
+  let walletRepositoryInTx: { findOne: jest.Mock; update: jest.Mock };
+  let transactionRepositoryInTx: { create: jest.Mock; save: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     queryBuilder = {
@@ -18,6 +22,13 @@ describe('TransactionsService', () => {
       orderBy: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
     };
+
+    walletRepositoryInTx = { findOne: jest.fn(), update: jest.fn() };
+    transactionRepositoryInTx = { create: jest.fn(), save: jest.fn() };
+    const manager = {
+      getRepository: jest.fn((entity) => (entity === Wallet ? walletRepositoryInTx : transactionRepositoryInTx)),
+    };
+    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -30,24 +41,42 @@ describe('TransactionsService', () => {
             createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
           },
         },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
 
     service = module.get(TransactionsService);
-    repository = module.get(getRepositoryToken(Transaction));
   });
 
   describe('create', () => {
-    it('creates a transaction stamped with the wallet currency', async () => {
-      const dto = { wallet_id: 1, amount: 10 } as any;
+    it('locks the wallet row, applies the balance change, and creates the transaction in one DB transaction', async () => {
+      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 100 });
+      const dto = { wallet_id: 1, amount: 10, transaction_type: TransactionType.INCOME } as any;
       const created = { ...dto, currency_id: 3 } as Transaction;
-      repository.create.mockReturnValue(created);
-      repository.save.mockResolvedValue(created);
+      transactionRepositoryInTx.create.mockReturnValue(created);
+      transactionRepositoryInTx.save.mockResolvedValue(created);
 
-      const result = await service.create(3, dto);
+      const result = await service.create(1, 3, dto);
 
-      expect(repository.create).toHaveBeenCalledWith({ ...dto, currency_id: 3 });
+      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(walletRepositoryInTx.findOne).toHaveBeenCalledWith({
+        where: { id: 1 },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 110 });
+      expect(transactionRepositoryInTx.create).toHaveBeenCalledWith({ ...dto, currency_id: 3 });
       expect(result).toBe(created);
+    });
+
+    it('subtracts the amount for an expense transaction', async () => {
+      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 100 });
+      const dto = { wallet_id: 1, amount: 30, transaction_type: TransactionType.EXPENSE } as any;
+      transactionRepositoryInTx.create.mockReturnValue(dto);
+      transactionRepositoryInTx.save.mockResolvedValue(dto);
+
+      await service.create(1, 3, dto);
+
+      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 70 });
     });
   });
 

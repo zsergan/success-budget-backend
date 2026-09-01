@@ -3,18 +3,14 @@ import { HttpException } from '@nestjs/common';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
-import { WalletsService } from '../wallets/wallets.service';
 import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
-import { CategoriesService } from '../categories/categories.service';
 import { ErrorMessages } from '../../shared/error-messages';
 import { ConfirmationType } from '../../shared/enums';
 
 describe('UsersController', () => {
   let controller: UsersController;
   let usersService: jest.Mocked<UsersService>;
-  let walletsService: jest.Mocked<WalletsService>;
   let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
-  let categoriesService: jest.Mocked<CategoriesService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -27,24 +23,21 @@ describe('UsersController', () => {
             register: jest.fn(),
             updateUnverified: jest.fn(),
             verify: jest.fn(),
+            completeEmailVerification: jest.fn(),
             login: jest.fn(),
             findById: jest.fn(),
           },
         },
-        { provide: WalletsService, useValue: { create: jest.fn() } },
         {
           provide: ConfirmationCodesService,
           useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
         },
-        { provide: CategoriesService, useValue: { initiateCategories: jest.fn() } },
       ],
     }).compile();
 
     controller = module.get(UsersController);
     usersService = module.get(UsersService);
-    walletsService = module.get(WalletsService);
     confirmationCodesService = module.get(ConfirmationCodesService);
-    categoriesService = module.get(CategoriesService);
   });
 
   describe('register', () => {
@@ -128,21 +121,15 @@ describe('UsersController', () => {
       expect(confirmationCodesService.incrementAttempts).not.toHaveBeenCalled();
     });
 
-    it('verifies the user, creates a default wallet and default categories on success', async () => {
+    it('completes email verification on a matching code', async () => {
       const user = { id: 1, base_currency_id: 5 } as any;
       usersService.findByEmail.mockResolvedValue(user);
-      confirmationCodesService.getOne.mockResolvedValue({ confirmation_code: '1234' } as any);
-      usersService.verify.mockResolvedValue('access-token');
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '1234' } as any);
+      usersService.completeEmailVerification.mockResolvedValue('access-token');
 
       const result = await controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any);
 
-      expect(usersService.verify).toHaveBeenCalledWith(1);
-      expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
-      expect(walletsService.create).toHaveBeenCalledWith(
-        1,
-        expect.objectContaining({ wallet_name: 'Cash', currency_id: 5 }),
-      );
-      expect(categoriesService.initiateCategories).toHaveBeenCalledWith(1, expect.any(Array));
+      expect(usersService.completeEmailVerification).toHaveBeenCalledWith(user, 7);
       expect(result).toBe('access-token');
     });
   });

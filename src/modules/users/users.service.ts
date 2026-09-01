@@ -1,20 +1,26 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
 import 'dotenv/config';
 
 import { User } from '../../entities/user.entity';
+import { Wallet } from '../../entities/wallet.entity';
+import { Category } from '../../entities/category.entity';
+import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 import type { CreateUserDto } from './dto/create-user.dto';
 import type { LoginUserDto } from './dto/login-user.dto';
 import { ErrorMessages } from '../../shared/error-messages';
+import { WalletDesign } from '../../shared/enums';
+import { DEFAULT_CATEGORIES } from '../../shared/constants';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly dataSource: DataSource,
   ) {}
 
   private generateAccessToken(user: User): string {
@@ -41,6 +47,27 @@ export class UsersService {
   async verify(id: number): Promise<string> {
     await this.userRepository.update(id, { email_verified: 1 });
     const user = await this.findById(id);
+
+    return this.generateAccessToken(user);
+  }
+
+  async completeEmailVerification(user: User, confirmationCodeId: number): Promise<string> {
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(User).update(user.id, { email_verified: 1 });
+      await manager.getRepository(ConfirmationCode).update(confirmationCodeId, { expired_at: new Date() });
+
+      const wallet = manager.getRepository(Wallet).create({
+        user_id: user.id,
+        wallet_name: 'Cash',
+        balance: 0,
+        design: WalletDesign.GREEN,
+        currency_id: user.base_currency_id,
+      });
+      await manager.getRepository(Wallet).save(wallet);
+
+      const categories = DEFAULT_CATEGORIES.map((category) => ({ ...category, user_id: user.id }));
+      await manager.getRepository(Category).save(categories);
+    });
 
     return this.generateAccessToken(user);
   }
