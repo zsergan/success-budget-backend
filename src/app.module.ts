@@ -3,7 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
 import { getOrmConfig } from './config/ormconfig';
 import { envValidationSchema } from './config/env.validation';
@@ -26,7 +26,7 @@ import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
       useFactory: getOrmConfig,
     }),
     PassportModule,
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     HealthModule,
     UsersModule,
     CategoriesModule,
@@ -37,6 +37,10 @@ import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
     LimitsModule,
   ],
   controllers: [],
-  providers: [JwtStrategy, { provide: APP_GUARD, useClass: JwtAuthGuard }],
+  providers: [
+    JwtStrategy,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+  ],
 })
 export class AppModule {}

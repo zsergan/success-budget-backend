@@ -7,10 +7,9 @@ import {
   HttpStatus,
   Post,
   Request,
-  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { UsersService } from './users.service';
@@ -33,7 +32,6 @@ export class UsersController {
   ) {}
 
   @Public()
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post('register')
@@ -45,7 +43,6 @@ export class UsersController {
   }
 
   @Public()
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('verify-email')
   async verifyEmail(@Body() verifyUser: VerifyUserDto) {
@@ -75,7 +72,6 @@ export class UsersController {
   }
 
   @Public()
-  @UseGuards(ThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   async login(@Body() loginUserDto: LoginUserDto) {
