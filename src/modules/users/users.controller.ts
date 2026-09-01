@@ -7,8 +7,10 @@ import {
   HttpStatus,
   Post,
   Request,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 import { UsersService } from './users.service';
 import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
@@ -30,6 +32,8 @@ export class UsersController {
   ) {}
 
   @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post('register')
   async register(@Body() createUserDto: CreateUserDto) {
@@ -57,6 +61,8 @@ export class UsersController {
   }
 
   @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('verify-email')
   async verifyEmail(@Body() verifyUser: VerifyUserDto) {
     const user = await this.usersService.findByEmail(verifyUser.email);
@@ -85,6 +91,8 @@ export class UsersController {
   }
 
   @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   async login(@Body() loginUserDto: LoginUserDto) {
     return this.usersService.login(loginUserDto);
