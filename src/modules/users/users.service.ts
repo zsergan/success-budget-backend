@@ -18,7 +18,7 @@ export class UsersService {
   ) {}
 
   private generateAccessToken(user: User): string {
-    return jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: 1000 * 60 * 60 * 24 * 90 });
+    return jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: 60 * 60 * 24 * 90 });
   }
 
   async register(createUserDto: CreateUserDto): Promise<User> {
@@ -45,6 +45,10 @@ export class UsersService {
 
     if (!isPasswordValid) {
       throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
+    }
+
+    if (!user.email_verified) {
+      throw new HttpException(ErrorMessages.EMAIL_NOT_VERIFIED, HttpStatus.FORBIDDEN);
     }
 
     return this.generateAccessToken(user);
