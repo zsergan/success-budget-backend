@@ -1,18 +1,11 @@
+import { ConfigService } from '@nestjs/config';
+
 import { JwtStrategy } from './jwt.strategy';
 
 describe('JwtStrategy', () => {
-  const originalSecret = process.env.JWT_SECRET;
-
-  beforeAll(() => {
-    process.env.JWT_SECRET = 'test-secret';
-  });
-
-  afterAll(() => {
-    process.env.JWT_SECRET = originalSecret;
-  });
-
   it('maps the JWT payload to the request user shape', () => {
-    const strategy = new JwtStrategy();
+    const configService = { getOrThrow: jest.fn().mockReturnValue('test-secret') } as unknown as ConfigService;
+    const strategy = new JwtStrategy(configService);
 
     const result = strategy.validate({ id: 42 });
 

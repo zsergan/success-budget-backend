@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { HttpException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
@@ -10,6 +11,8 @@ import { Wallet } from '../../entities/wallet.entity';
 import { Category } from '../../entities/category.entity';
 import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 import { ErrorMessages } from '../../shared/error-messages';
+
+const JWT_SECRET_FOR_TESTS = 'test-secret';
 
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
@@ -26,15 +29,6 @@ describe('UsersService', () => {
   let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
-  const originalSecret = process.env.JWT_SECRET;
-
-  beforeAll(() => {
-    process.env.JWT_SECRET = 'test-secret';
-  });
-
-  afterAll(() => {
-    process.env.JWT_SECRET = originalSecret;
-  });
 
   beforeEach(async () => {
     const queryBuilder = {
@@ -72,6 +66,7 @@ describe('UsersService', () => {
           },
         },
         { provide: DataSource, useValue: dataSource },
+        { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue(JWT_SECRET_FOR_TESTS) } },
       ],
     }).compile();
 
@@ -129,7 +124,7 @@ describe('UsersService', () => {
       const token = await service.verify(7);
 
       expect(repository.update).toHaveBeenCalledWith(7, { email_verified: 1 });
-      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
+      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
       expect(decoded.id).toBe(7);
     });
   });
@@ -151,7 +146,7 @@ describe('UsersService', () => {
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ user_id: 1 })]),
       );
-      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
+      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
       expect(decoded.id).toBe(1);
     });
 
@@ -196,7 +191,7 @@ describe('UsersService', () => {
 
       const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
+      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
       expect(decoded.id).toBe(3);
     });
 
@@ -206,7 +201,7 @@ describe('UsersService', () => {
 
       const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number; exp: number; iat: number };
+      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number; exp: number; iat: number };
       const ninetyDaysInSeconds = 60 * 60 * 24 * 90;
       expect(decoded.exp - decoded.iat).toBe(ninetyDaysInSeconds);
     });

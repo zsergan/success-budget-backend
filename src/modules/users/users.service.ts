@@ -1,9 +1,9 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { DataSource, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
-import 'dotenv/config';
 
 import { User } from '../../entities/user.entity';
 import { Wallet } from '../../entities/wallet.entity';
@@ -21,10 +21,12 @@ export class UsersService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
   ) {}
 
   private generateAccessToken(user: User): string {
-    return jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: 60 * 60 * 24 * 90 });
+    const jwtSecret = this.configService.getOrThrow<string>('JWT_SECRET');
+    return jwt.sign({ id: user.id }, jwtSecret, { expiresIn: 60 * 60 * 24 * 90 });
   }
 
   async register(createUserDto: CreateUserDto): Promise<User> {
