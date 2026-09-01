@@ -3,15 +3,13 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
-import { TransactionsService } from '../transactions/transactions.service';
-import { CategoriesService } from '../categories/categories.service';
-import { Transaction } from '../../entities/transaction.entity';
+import { TransactionsModule } from '../transactions/transactions.module';
+import { CategoriesModule } from '../categories/categories.module';
 import { Limit } from '../../entities/limit.entity';
-import { Category } from '../../entities/category.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Limit, Transaction, Category])],
+  imports: [TypeOrmModule.forFeature([Limit]), TransactionsModule, CategoriesModule],
   controllers: [LimitsController],
-  providers: [LimitsService, TransactionsService, CategoriesService],
+  providers: [LimitsService],
 })
 export class LimitsModule {}

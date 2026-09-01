@@ -8,5 +8,6 @@ import { ConfirmationCodesService } from './confirmation-codes.service';
   imports: [TypeOrmModule.forFeature([ConfirmationCode])],
   controllers: [],
   providers: [ConfirmationCodesService],
+  exports: [ConfirmationCodesService],
 })
 export class ConfirmationCodesModule {}

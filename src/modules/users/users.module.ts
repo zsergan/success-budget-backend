@@ -3,14 +3,13 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
-import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
+import { ConfirmationCodesModule } from '../confirmation-codes/confirmation-codes.module';
 import { User } from '../../entities/user.entity';
-import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, ConfirmationCode])],
+  imports: [TypeOrmModule.forFeature([User]), ConfirmationCodesModule],
   controllers: [UsersController],
-  providers: [UsersService, ConfirmationCodesService],
+  providers: [UsersService],
   exports: [UsersService],
 })
 export class UsersModule {}
