@@ -14,14 +14,12 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
-import { WalletsService } from './wallets.service';
+import { WalletsService, WalletSummary } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
 import { TransactionsService } from '../transactions/transactions.service';
-import { TransactionType } from '../../shared/enums';
-import { Wallet } from '../../entities/wallet.entity';
 import { ErrorMessages } from '../../shared/error-messages';
 
 @ApiTags('wallets')
@@ -58,7 +56,7 @@ export class WalletsController {
     @Request() req: AuthedRequest,
     @Query('from') from: Date = getStartOfMonth(new Date()),
     @Query('to') to: Date = getEndOfMonth(new Date()),
-  ): Promise<{ wallet: Wallet; totalSpend: number; totalIncome: number }[]> {
+  ): Promise<WalletSummary[]> {
     const wallets = await this.walletsService.getAll(req.user.id);
     const transactions = await this.transactionsService.getAllForWallets(
       wallets.map((wallet) => wallet.id),
@@ -66,30 +64,7 @@ export class WalletsController {
       to,
     );
 
-    return wallets.map((wallet) => {
-      const walletTransactions = transactions.filter((transaction) => transaction.wallet_id === wallet.id);
-      const { totalSpend, totalIncome } = walletTransactions.reduce(
-        (acc, transaction) => {
-          if (transaction.transaction_type === TransactionType.INCOME) {
-            acc.totalIncome += Number(transaction.amount);
-          } else {
-            acc.totalSpend += Number(transaction.amount);
-          }
-
-          return acc;
-        },
-        {
-          totalSpend: 0,
-          totalIncome: 0,
-        },
-      );
-
-      return {
-        wallet,
-        totalSpend,
-        totalIncome,
-      };
-    });
+    return this.walletsService.summarize(wallets, transactions);
   }
 
   @Delete(':walletId')

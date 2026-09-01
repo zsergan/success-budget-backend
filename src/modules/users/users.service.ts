@@ -11,9 +11,12 @@ import { Category } from '../../entities/category.entity';
 import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 import type { CreateUserDto } from './dto/create-user.dto';
 import type { LoginUserDto } from './dto/login-user.dto';
+import type { VerifyUserDto } from './dto/verify-user.dto';
+import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
 import { ErrorMessages } from '../../shared/error-messages';
-import { WalletDesign } from '../../shared/enums';
-import { DEFAULT_CATEGORIES } from '../../shared/constants';
+import { ConfirmationType, WalletDesign } from '../../shared/enums';
+import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
+import { constantTimeEquals } from '../../shared/utils';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
 
@@ -24,6 +27,7 @@ export class UsersService {
     private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
+    private readonly confirmationCodesService: ConfirmationCodesService,
   ) {}
 
   private generateAccessToken(user: User): string {
@@ -84,6 +88,32 @@ export class UsersService {
     });
 
     return this.generateAccessToken(user);
+  }
+
+  async verifyEmail(verifyUserDto: VerifyUserDto): Promise<string> {
+    const user = await this.findByEmail(verifyUserDto.email);
+
+    if (!user) {
+      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    const confirmationCode = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
+
+    if (!confirmationCode) {
+      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    if (confirmationCode.attempts >= MAX_CONFIRMATION_CODE_ATTEMPTS) {
+      await this.confirmationCodesService.expire(user.id, ConfirmationType.EMAIL);
+      throw new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    if (!constantTimeEquals(confirmationCode.confirmation_code, verifyUserDto.code)) {
+      await this.confirmationCodesService.incrementAttempts(confirmationCode.id);
+      throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
+    }
+
+    return this.completeEmailVerification(user, confirmationCode.id);
   }
 
   async login(loginUserDto: LoginUserDto): Promise<string> {

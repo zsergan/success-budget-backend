@@ -10,7 +10,9 @@ import { User } from '../../entities/user.entity';
 import { Wallet } from '../../entities/wallet.entity';
 import { Category } from '../../entities/category.entity';
 import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
+import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
 import { ErrorMessages } from '../../shared/error-messages';
+import { ConfirmationType } from '../../shared/enums';
 
 const JWT_SECRET_FOR_TESTS = 'test-secret';
 
@@ -30,6 +32,7 @@ describe('UsersService', () => {
   let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
+  let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
 
   beforeEach(async () => {
     const queryBuilder = {
@@ -68,11 +71,16 @@ describe('UsersService', () => {
         },
         { provide: DataSource, useValue: dataSource },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue(JWT_SECRET_FOR_TESTS) } },
+        {
+          provide: ConfirmationCodesService,
+          useValue: { getOne: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
+        },
       ],
     }).compile();
 
     service = module.get(UsersService);
     repository = module.get(getRepositoryToken(User));
+    confirmationCodesService = module.get(ConfirmationCodesService);
   });
 
   afterEach(() => {
@@ -193,6 +201,59 @@ describe('UsersService', () => {
       walletRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
 
       await expect(service.completeEmailVerification(user, 7)).rejects.toThrow('db unavailable');
+    });
+  });
+
+  describe('verifyEmail', () => {
+    it('rejects when the user does not exist', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.NOT_FOUND, 404),
+      );
+    });
+
+    it('rejects when there is no active confirmation code', async () => {
+      repository.findOne.mockResolvedValue({ id: 1 } as User);
+      confirmationCodesService.getOne.mockResolvedValue(null);
+
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.NOT_FOUND, 404),
+      );
+    });
+
+    it('rejects when the code does not match and records the failed attempt', async () => {
+      repository.findOne.mockResolvedValue({ id: 1 } as User);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 0 } as any);
+
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
+      );
+      expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7);
+    });
+
+    it('rejects and expires the code once the attempt limit is reached', async () => {
+      repository.findOne.mockResolvedValue({ id: 1 } as User);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 5 } as any);
+
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, 429),
+      );
+      expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
+      expect(confirmationCodesService.incrementAttempts).not.toHaveBeenCalled();
+    });
+
+    it('completes email verification on a matching code', async () => {
+      const user = { id: 1, base_currency_id: 5 } as User;
+      repository.findOne.mockResolvedValue(user);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '1234' } as any);
+      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+
+      const token = await service.verifyEmail({ email: 'x@x.com', code: '1234' } as any);
+
+      expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
+      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
+      expect(decoded.id).toBe(1);
     });
   });
 

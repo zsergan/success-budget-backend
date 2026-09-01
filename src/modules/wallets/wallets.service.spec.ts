@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 
 import { WalletsService } from './wallets.service';
 import { Wallet } from '../../entities/wallet.entity';
+import { TransactionType } from '../../shared/enums';
 
 describe('WalletsService', () => {
   let service: WalletsService;
@@ -88,6 +89,21 @@ describe('WalletsService', () => {
       await service.delete(1);
 
       expect(repository.update).toHaveBeenCalledWith({ id: 1 }, expect.objectContaining({ is_deleted: 1 }));
+    });
+  });
+
+  describe('summarize', () => {
+    it('aggregates spend and income per wallet from its own transactions', () => {
+      const wallets = [{ id: 1 }, { id: 2 }] as Wallet[];
+      const transactions = [
+        { wallet_id: 1, transaction_type: TransactionType.INCOME, amount: '100' },
+        { wallet_id: 1, transaction_type: TransactionType.EXPENSE, amount: '30' },
+      ] as any;
+
+      const result = service.summarize(wallets, transactions);
+
+      expect(result[0]).toMatchObject({ total_income: 100, total_spend: 30 });
+      expect(result[1]).toMatchObject({ total_income: 0, total_spend: 0 });
     });
   });
 });
