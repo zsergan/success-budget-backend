@@ -12,9 +12,10 @@ import {
   Query,
   Request,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { WalletsService } from './wallets.service';
-import type { CreateWalletDto } from './dto/create-wallet.dto';
+import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
@@ -23,6 +24,8 @@ import { TransactionType } from '../../shared/enums';
 import { Wallet } from '../../entities/wallet.entity';
 import { ErrorMessages } from '../../shared/error-messages';
 
+@ApiTags('wallets')
+@ApiBearerAuth()
 @Controller('wallets')
 export class WalletsController {
   constructor(
