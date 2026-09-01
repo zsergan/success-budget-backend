@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { PassportModule } from '@nestjs/passport';
 
 import { ormConfig } from './config/ormconfig';
 import { UsersModule } from './modules/users/users.module';
@@ -9,10 +11,13 @@ import { TransactionsModule } from './modules/transactions/transactions.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { ConfirmationCodesModule } from './modules/confirmation-codes/confirmation-codes.module';
 import { LimitsModule } from './modules/limits/limits.module';
+import { JwtStrategy } from './shared/strategies/jwt.strategy';
+import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
 
 @Module({
   imports: [
     TypeOrmModule.forRoot(ormConfig),
+    PassportModule,
     UsersModule,
     CategoriesModule,
     WalletsModule,
@@ -22,6 +27,6 @@ import { LimitsModule } from './modules/limits/limits.module';
     LimitsModule,
   ],
   controllers: [],
-  providers: [],
+  providers: [JwtStrategy, { provide: APP_GUARD, useClass: JwtAuthGuard }],
 })
 export class AppModule {}

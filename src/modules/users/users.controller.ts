@@ -20,6 +20,7 @@ import { ErrorMessages } from '../../shared/error-messages';
 import { ConfirmationType } from '../../shared/enums';
 import { generateRandomNumberString } from '../../shared/utils';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
+import { Public } from '../../shared/decorators/public.decorator';
 
 @Controller('users')
 export class UsersController {
@@ -28,6 +29,7 @@ export class UsersController {
     private readonly confirmationCodesService: ConfirmationCodesService,
   ) {}
 
+  @Public()
   @UseInterceptors(ClassSerializerInterceptor)
   @Post('register')
   async register(@Body() createUserDto: CreateUserDto) {
@@ -54,6 +56,7 @@ export class UsersController {
     return user;
   }
 
+  @Public()
   @Post('verify-email')
   async verifyEmail(@Body() verifyUser: VerifyUserDto) {
     const user = await this.usersService.findByEmail(verifyUser.email);
@@ -81,6 +84,7 @@ export class UsersController {
     return this.usersService.completeEmailVerification(user, confirmationCode.id);
   }
 
+  @Public()
   @Post('login')
   async login(@Body() loginUserDto: LoginUserDto) {
     return this.usersService.login(loginUserDto);
