@@ -1,4 +1,13 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, BeforeInsert } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  BeforeInsert,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { Exclude } from 'class-transformer';
 import * as bcrypt from 'bcrypt';
 
@@ -32,7 +41,13 @@ export class User {
   @Column({ type: 'tinyint', default: 0 })
   email_verified: number;
 
-  @ManyToOne(() => Currency)
+  @ManyToOne(() => Currency, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'base_currency_id' })
   baseCurrency: Currency;
+
+  @CreateDateColumn({ type: 'timestamp' })
+  created_at: Date;
+
+  @UpdateDateColumn({ type: 'timestamp' })
+  updated_at: Date;
 }

@@ -38,15 +38,15 @@ export class Transaction {
   @Column({ type: 'text', nullable: true })
   description: string;
 
-  @ManyToOne(() => Wallet)
+  @ManyToOne(() => Wallet, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'wallet_id' })
   wallet: Wallet;
 
-  @ManyToOne(() => Category)
+  @ManyToOne(() => Category, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'category_id' })
   category: Category;
 
-  @ManyToOne(() => Currency)
+  @ManyToOne(() => Currency, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'currency_id' })
   currency: Currency;
 }

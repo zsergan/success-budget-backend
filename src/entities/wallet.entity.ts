@@ -1,4 +1,12 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { Exclude } from 'class-transformer';
 
 import { User } from './user.entity';
@@ -35,11 +43,17 @@ export class Wallet {
   @Column({ type: 'timestamp', nullable: true })
   deleted_at: Date;
 
-  @ManyToOne(() => User)
+  @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   user: User;
 
-  @ManyToOne(() => Currency)
+  @ManyToOne(() => Currency, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'currency_id' })
   currency: Currency;
+
+  @CreateDateColumn({ type: 'timestamp' })
+  created_at: Date;
+
+  @UpdateDateColumn({ type: 'timestamp' })
+  updated_at: Date;
 }
