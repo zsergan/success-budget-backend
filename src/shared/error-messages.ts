@@ -7,4 +7,5 @@ export const ErrorMessages = {
   LIMIT_EXISTS: 'Limit already exists',
   EMAIL_ALREADY_EXISTS: 'Email already exists',
   NOT_FOUND: 'Not found',
+  TOO_MANY_ATTEMPTS: 'Too many attempts, request a new confirmation code',
 };

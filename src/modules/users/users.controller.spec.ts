@@ -34,7 +34,7 @@ describe('UsersController', () => {
         { provide: WalletsService, useValue: { create: jest.fn() } },
         {
           provide: ConfirmationCodesService,
-          useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn() },
+          useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
         },
         { provide: CategoriesService, useValue: { initiateCategories: jest.fn() } },
       ],
@@ -107,13 +107,25 @@ describe('UsersController', () => {
       );
     });
 
-    it('rejects when the code does not match', async () => {
+    it('rejects when the code does not match and records the failed attempt', async () => {
       usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
-      confirmationCodesService.getOne.mockResolvedValue({ confirmation_code: '9999' } as any);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 0 } as any);
 
       await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
       );
+      expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7);
+    });
+
+    it('rejects and expires the code once the attempt limit is reached', async () => {
+      usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 5 } as any);
+
+      await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, 429),
+      );
+      expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
+      expect(confirmationCodesService.incrementAttempts).not.toHaveBeenCalled();
     });
 
     it('verifies the user, creates a default wallet and default categories on success', async () => {

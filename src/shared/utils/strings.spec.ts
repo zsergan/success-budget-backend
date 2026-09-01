@@ -1,20 +1,38 @@
+jest.mock('node:crypto', () => ({
+  randomInt: jest.fn(),
+}));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const crypto = require('node:crypto') as { randomInt: jest.Mock };
+
 import { generateRandomNumberString } from './strings';
 
 describe('generateRandomNumberString', () => {
-  it('always returns a 4-character numeric string', () => {
+  afterEach(() => {
+    crypto.randomInt.mockReset();
+  });
+
+  it('always returns a 6-character numeric string', () => {
+    crypto.randomInt.mockImplementation((_min: number, max: number) => Math.floor(Math.random() * max));
+
     for (let i = 0; i < 50; i++) {
       const result = generateRandomNumberString();
 
-      expect(result).toHaveLength(4);
-      expect(result).toMatch(/^\d{4}$/);
+      expect(result).toHaveLength(6);
+      expect(result).toMatch(/^\d{6}$/);
     }
   });
 
-  it('zero-pads values below 1000', () => {
-    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0.00001);
+  it('zero-pads values below 100000', () => {
+    crypto.randomInt.mockReturnValue(1);
 
-    expect(generateRandomNumberString()).toBe('0000');
+    expect(generateRandomNumberString()).toBe('000001');
+  });
 
-    randomSpy.mockRestore();
+  it('draws from the full 6-digit range via node:crypto.randomInt', () => {
+    crypto.randomInt.mockReturnValue(0);
+
+    generateRandomNumberString();
+
+    expect(crypto.randomInt).toHaveBeenCalledWith(0, 1000000);
   });
 });
