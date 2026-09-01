@@ -12,6 +12,7 @@ import {
   Query,
   Request,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
@@ -23,6 +24,8 @@ import { TransactionType } from '../../shared/enums';
 import { Wallet } from '../../entities/wallet.entity';
 import { ErrorMessages } from '../../shared/error-messages';
 
+@ApiTags('wallets')
+@ApiBearerAuth()
 @Controller('wallets')
 export class WalletsController {
   constructor(

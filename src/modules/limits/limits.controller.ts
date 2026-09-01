@@ -12,6 +12,7 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { Limit } from '../../entities/limit.entity';
 import { Transaction } from '../../entities/transaction.entity';
@@ -24,6 +25,8 @@ import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
 import { ErrorMessages } from '../../shared/error-messages';
 import { TransactionType } from '../../shared/enums';
 
+@ApiTags('limits')
+@ApiBearerAuth()
 @Controller('limits')
 export class LimitsController {
   constructor(

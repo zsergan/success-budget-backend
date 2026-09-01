@@ -11,6 +11,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { UsersService } from './users.service';
 import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
@@ -24,6 +25,7 @@ import { generateRandomNumberString } from '../../shared/utils';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
 import { Public } from '../../shared/decorators/public.decorator';
 
+@ApiTags('users')
 @Controller('users')
 export class UsersController {
   constructor(
@@ -98,6 +100,7 @@ export class UsersController {
     return this.usersService.login(loginUserDto);
   }
 
+  @ApiBearerAuth()
   @UseInterceptors(ClassSerializerInterceptor)
   @Get('profile')
   async getProfile(@Request() req: AuthedRequest) {
