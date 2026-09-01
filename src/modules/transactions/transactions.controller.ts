@@ -15,7 +15,6 @@ import { WalletsService } from '../wallets/wallets.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
-import { TransactionType } from '../../shared/enums';
 import { ErrorMessages } from '../../shared/error-messages';
 
 @Controller('transactions')
@@ -33,17 +32,7 @@ export class TransactionsController {
       throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
     }
 
-    await this.walletsService.update(wallet.id, {
-      balance:
-        Number(wallet.balance) +
-        (createTransactionDto.transaction_type === TransactionType.INCOME
-          ? Number(createTransactionDto.amount)
-          : -Number(createTransactionDto.amount)),
-      wallet_name: wallet.wallet_name,
-      design: wallet.design,
-    });
-
-    return this.transactionsService.create(wallet.currency_id, createTransactionDto);
+    return this.transactionsService.create(wallet.id, wallet.currency_id, createTransactionDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
