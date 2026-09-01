@@ -9,6 +9,7 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { WalletsService } from '../wallets/wallets.service';
@@ -17,6 +18,8 @@ import type { AuthedRequest } from '../../shared/types';
 import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
 import { ErrorMessages } from '../../shared/error-messages';
 
+@ApiTags('transactions')
+@ApiBearerAuth()
 @Controller('transactions')
 export class TransactionsController {
   constructor(
