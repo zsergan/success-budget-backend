@@ -10,6 +10,12 @@
     "sourceMap": true,
     "outDir": "./dist",
     "rootDir": "./src",
+    "paths": {
+      "@entities/*": ["./src/entities/*"],
+      "@modules/*": ["./src/modules/*"],
+      "@shared/*": ["./src/shared/*"],
+      "@config/*": ["./src/config/*"]
+    },
     "skipLibCheck": true,
     "strictNullChecks": false,
     "noImplicitAny": false,
