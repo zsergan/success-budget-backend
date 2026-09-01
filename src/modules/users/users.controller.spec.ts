@@ -25,6 +25,7 @@ describe('UsersController', () => {
           useValue: {
             findByEmail: jest.fn(),
             register: jest.fn(),
+            updateUnverified: jest.fn(),
             verify: jest.fn(),
             login: jest.fn(),
             findById: jest.fn(),
@@ -71,16 +72,20 @@ describe('UsersController', () => {
       expect(result).toBe(created);
     });
 
-    it('re-uses an existing unverified user and skips creating a duplicate confirmation code', async () => {
+    it('re-uses an existing unverified user, applying the new password, and skips a duplicate confirmation code', async () => {
       const existing = { id: 3, email: 'a@b.com', email_verified: 0 } as any;
+      const updated = { id: 3, email: 'a@b.com', email_verified: 0, name: 'New Name' } as any;
       usersService.findByEmail.mockResolvedValue(existing);
+      usersService.updateUnverified.mockResolvedValue(updated);
       confirmationCodesService.getOne.mockResolvedValue({ id: 9 } as any);
 
-      const result = await controller.register({ email: 'a@b.com' } as any);
+      const dto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 1 } as any;
+      const result = await controller.register(dto);
 
       expect(usersService.register).not.toHaveBeenCalled();
+      expect(usersService.updateUnverified).toHaveBeenCalledWith(3, dto);
       expect(confirmationCodesService.create).not.toHaveBeenCalled();
-      expect(result).toBe(existing);
+      expect(result).toBe(updated);
     });
   });
 
