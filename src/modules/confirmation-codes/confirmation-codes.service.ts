@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 import { CreateConfirmationCodeDto } from './dto/create-confirmation-code.dto';
 import { ConfirmationType } from '../../shared/enums';
+import { generateRandomNumberString } from '../../shared/utils';
 
 @Injectable()
 export class ConfirmationCodesService {
@@ -29,6 +30,20 @@ export class ConfirmationCodesService {
     });
 
     await this.confirmationCodeRepository.save(confirmation_code);
+  }
+
+  async ensureCode(userId: number, confirmationType: ConfirmationType): Promise<void> {
+    const existing = await this.getOne(userId, confirmationType);
+
+    if (existing) {
+      return;
+    }
+
+    await this.create({
+      user_id: userId,
+      confirmation_code: generateRandomNumberString(),
+      confirmation_type: confirmationType,
+    });
   }
 
   async incrementAttempts(id: number): Promise<void> {
