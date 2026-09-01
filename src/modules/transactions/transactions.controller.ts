@@ -15,7 +15,7 @@ import { TransactionsService } from './transactions.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '../../shared/types';
-import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
+import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
 import { ErrorMessages } from '../../shared/error-messages';
 
 @ApiTags('transactions')
@@ -30,8 +30,9 @@ export class TransactionsController {
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createTransactionDto: CreateTransactionDto) {
     const wallet = await this.walletsService.getOne(createTransactionDto.wallet_id);
+    assertOwnership(wallet, req.user.id, ErrorMessages.FORBIDDEN_WALLET);
 
-    if (!wallet || wallet.is_deleted || wallet.user_id !== req.user.id) {
+    if (wallet.is_deleted) {
       throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
     }
 

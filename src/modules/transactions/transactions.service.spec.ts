@@ -13,6 +13,7 @@ describe('TransactionsService', () => {
   let walletRepositoryInTx: { findOne: jest.Mock; update: jest.Mock };
   let transactionRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
+  let transactionRepository: { createQueryBuilder: jest.Mock };
 
   beforeEach(async () => {
     queryBuilder = {
@@ -29,6 +30,9 @@ describe('TransactionsService', () => {
       getRepository: jest.fn((entity) => (entity === Wallet ? walletRepositoryInTx : transactionRepositoryInTx)),
     };
     dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    transactionRepository = {
+      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -38,7 +42,7 @@ describe('TransactionsService', () => {
           useValue: {
             create: jest.fn(),
             save: jest.fn(),
-            createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+            ...transactionRepository,
           },
         },
         { provide: DataSource, useValue: dataSource },
@@ -91,6 +95,29 @@ describe('TransactionsService', () => {
       expect(queryBuilder.where).toHaveBeenCalledWith({ wallet_id: 5 });
       expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
       expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
+    });
+  });
+
+  describe('getAllForWallets', () => {
+    it('filters transactions for a set of wallets by date range in one query', async () => {
+      const from = new Date('2026-01-01');
+      const to = new Date('2026-01-31');
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getAllForWallets([1, 2, 3], from, to);
+
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
+        walletIds: [1, 2, 3],
+      });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
+    });
+
+    it('returns an empty array without querying when there are no wallets', async () => {
+      const result = await service.getAllForWallets([], new Date(), new Date());
+
+      expect(result).toEqual([]);
+      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 

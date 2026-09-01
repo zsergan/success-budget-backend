@@ -16,7 +16,15 @@ describe('CategoriesController', () => {
       providers: [
         {
           provide: CategoriesService,
-          useValue: { getAll: jest.fn(), getOne: jest.fn(), update: jest.fn(), create: jest.fn(), save: jest.fn() },
+          useValue: {
+            getAll: jest.fn(),
+            getOne: jest.fn(),
+            update: jest.fn(),
+            create: jest.fn(),
+            save: jest.fn(),
+            separateCategories: jest.fn(),
+            moveToFront: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -28,17 +36,14 @@ describe('CategoriesController', () => {
   const req = { user: { id: 1 } } as any;
 
   describe('getAll', () => {
-    it('separates categories into incomes and expenses', async () => {
-      categoriesService.getAll.mockResolvedValue([
-        { id: 1, transaction_type: TransactionType.INCOME },
-        { id: 2, transaction_type: TransactionType.EXPENSE },
-        { id: 3, transaction_type: TransactionType.INCOME },
-      ] as any);
+    it('fetches categories and delegates the income/expense split to the service', async () => {
+      categoriesService.getAll.mockResolvedValue([{ id: 1 }] as any);
+      categoriesService.separateCategories.mockReturnValue([[{ id: 1 }], []] as any);
 
       const result = await controller.getAll(req);
 
-      expect(result.incomes.map((c: any) => c.id)).toEqual([1, 3]);
-      expect(result.expenses.map((c: any) => c.id)).toEqual([2]);
+      expect(categoriesService.separateCategories).toHaveBeenCalledWith([{ id: 1 }]);
+      expect(result).toEqual({ incomes: [{ id: 1 }], expenses: [] });
     });
   });
 
@@ -79,47 +84,16 @@ describe('CategoriesController', () => {
       await expect(controller.moveForward(req, 1)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
-      expect(categoriesService.save).not.toHaveBeenCalled();
+      expect(categoriesService.moveToFront).not.toHaveBeenCalled();
     });
 
-    it('moves an expense category to the front of the expense group with prefix 200', async () => {
-      categoriesService.getOne.mockResolvedValue({
-        id: 2,
-        user_id: 1,
-        transaction_type: TransactionType.EXPENSE,
-      } as any);
-      categoriesService.getAll.mockResolvedValue([
-        { id: 1, user_id: 1, transaction_type: TransactionType.EXPENSE },
-        { id: 2, user_id: 1, transaction_type: TransactionType.EXPENSE },
-        { id: 3, user_id: 1, transaction_type: TransactionType.EXPENSE },
-      ] as any);
+    it('delegates the reordering to the service for an owned category', async () => {
+      const category = { id: 2, user_id: 1, transaction_type: TransactionType.EXPENSE };
+      categoriesService.getOne.mockResolvedValue(category as any);
 
       await controller.moveForward(req, 2);
 
-      expect(categoriesService.save).toHaveBeenCalledWith([
-        expect.objectContaining({ id: 2, sort: 200 }),
-        expect.objectContaining({ id: 1, sort: 201 }),
-        expect.objectContaining({ id: 3, sort: 202 }),
-      ]);
-    });
-
-    it('moves an income category to the front of the income group with prefix 100', async () => {
-      categoriesService.getOne.mockResolvedValue({
-        id: 1,
-        user_id: 1,
-        transaction_type: TransactionType.INCOME,
-      } as any);
-      categoriesService.getAll.mockResolvedValue([
-        { id: 1, user_id: 1, transaction_type: TransactionType.INCOME },
-        { id: 2, user_id: 1, transaction_type: TransactionType.INCOME },
-      ] as any);
-
-      await controller.moveForward(req, 1);
-
-      expect(categoriesService.save).toHaveBeenCalledWith([
-        expect.objectContaining({ id: 1, sort: 100 }),
-        expect.objectContaining({ id: 2, sort: 101 }),
-      ]);
+      expect(categoriesService.moveToFront).toHaveBeenCalledWith(1, category);
     });
   });
 });

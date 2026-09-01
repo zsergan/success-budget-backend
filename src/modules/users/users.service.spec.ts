@@ -129,6 +129,43 @@ describe('UsersService', () => {
     });
   });
 
+  describe('registerOrRefresh', () => {
+    it('rejects when the email already belongs to a verified user', async () => {
+      repository.findOne.mockResolvedValue({ id: 1, email_verified: 1 } as User);
+
+      await expect(service.registerOrRefresh({ email: 'a@b.com' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
+      );
+    });
+
+    it('creates a new user when none exists yet', async () => {
+      repository.findOne.mockResolvedValue(null);
+      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+      const created = { ...dto } as User;
+      repository.create.mockReturnValue(created);
+      repository.save.mockResolvedValue({ ...created, id: 2 } as User);
+
+      const result = await service.registerOrRefresh(dto);
+
+      expect(repository.save).toHaveBeenCalledWith(created);
+      expect(result).toMatchObject({ id: 2 });
+    });
+
+    it('refreshes an existing unverified user instead of creating a duplicate', async () => {
+      const existing = { id: 3, email: 'a@b.com', email_verified: 0 } as User;
+      repository.findOne.mockResolvedValue(existing);
+      bcrypt.hash.mockResolvedValue('hashed');
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue({ id: 3, name: 'New' } as User);
+
+      const dto = { email: 'a@b.com', name: 'New', password: 'newpw', base_currency_id: 1 } as any;
+      const result = await service.registerOrRefresh(dto);
+
+      expect(repository.update).toHaveBeenCalledWith(3, expect.objectContaining({ name: 'New' }));
+      expect(result).toMatchObject({ id: 3, name: 'New' });
+    });
+  });
+
   describe('completeEmailVerification', () => {
     it('marks the user verified, expires the code, provisions defaults, and returns a token in one transaction', async () => {
       const user = { id: 1, base_currency_id: 5 } as User;

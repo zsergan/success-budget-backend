@@ -65,6 +65,30 @@ describe('ConfirmationCodesService', () => {
     });
   });
 
+  describe('ensureCode', () => {
+    it('does nothing when a non-expired code already exists', async () => {
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue({ id: 1 } as ConfirmationCode);
+
+      await service.ensureCode(1, ConfirmationType.EMAIL);
+
+      expect(repository.create).not.toHaveBeenCalled();
+      expect(repository.save).not.toHaveBeenCalled();
+    });
+
+    it('creates a new code when none exists yet', async () => {
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue(null);
+
+      await service.ensureCode(1, ConfirmationType.EMAIL);
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ user_id: 1, confirmation_type: ConfirmationType.EMAIL }),
+      );
+      expect(repository.save).toHaveBeenCalled();
+    });
+  });
+
   describe('incrementAttempts', () => {
     it('atomically increments the attempts counter by id', async () => {
       await service.incrementAttempts(7);

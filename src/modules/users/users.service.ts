@@ -34,6 +34,16 @@ export class UsersService {
     return await this.userRepository.save(user);
   }
 
+  async registerOrRefresh(createUserDto: CreateUserDto): Promise<User> {
+    const existing = await this.findByEmail(createUserDto.email);
+
+    if (existing && existing.email_verified) {
+      throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+    }
+
+    return existing ? this.updateUnverified(existing.id, createUserDto) : this.register(createUserDto);
+  }
+
   async updateUnverified(id: number, createUserDto: CreateUserDto): Promise<User> {
     const password = await bcrypt.hash(createUserDto.password, 10);
 
