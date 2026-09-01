@@ -7,8 +7,10 @@ import {
   HttpStatus,
   Post,
   Request,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 
 import { UsersService } from './users.service';
 import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
@@ -20,6 +22,7 @@ import { ErrorMessages } from '../../shared/error-messages';
 import { ConfirmationType } from '../../shared/enums';
 import { generateRandomNumberString } from '../../shared/utils';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
+import { Public } from '../../shared/decorators/public.decorator';
 
 @Controller('users')
 export class UsersController {
@@ -28,6 +31,9 @@ export class UsersController {
     private readonly confirmationCodesService: ConfirmationCodesService,
   ) {}
 
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post('register')
   async register(@Body() createUserDto: CreateUserDto) {
@@ -54,6 +60,9 @@ export class UsersController {
     return user;
   }
 
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('verify-email')
   async verifyEmail(@Body() verifyUser: VerifyUserDto) {
     const user = await this.usersService.findByEmail(verifyUser.email);
@@ -81,6 +90,9 @@ export class UsersController {
     return this.usersService.completeEmailVerification(user, confirmationCode.id);
   }
 
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   async login(@Body() loginUserDto: LoginUserDto) {
     return this.usersService.login(loginUserDto);
