@@ -31,6 +31,10 @@ export class ConfirmationCodesService {
     await this.confirmationCodeRepository.save(confirmation_code);
   }
 
+  async incrementAttempts(id: number): Promise<void> {
+    await this.confirmationCodeRepository.increment({ id }, 'attempts', 1);
+  }
+
   async expire(userId: number, confirmationType: ConfirmationType): Promise<void> {
     const confirmationCode = await this.confirmationCodeRepository.findOne({
       where: { user_id: userId, confirmation_type: confirmationType },
