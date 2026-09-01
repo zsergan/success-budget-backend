@@ -17,7 +17,7 @@ describe('TransactionsController', () => {
       controllers: [TransactionsController],
       providers: [
         { provide: TransactionsService, useValue: { create: jest.fn(), getForAllWallets: jest.fn() } },
-        { provide: WalletsService, useValue: { getOne: jest.fn(), update: jest.fn() } },
+        { provide: WalletsService, useValue: { getOne: jest.fn() } },
       ],
     }).compile();
 
@@ -56,49 +56,15 @@ describe('TransactionsController', () => {
       expect(transactionsService.create).not.toHaveBeenCalled();
     });
 
-    it('increases the wallet balance for an income transaction', async () => {
-      walletsService.getOne.mockResolvedValue({
-        id: 1,
-        user_id: 1,
-        balance: 100,
-        currency_id: 3,
-        wallet_name: 'Cash',
-        design: 'green',
-      } as any);
+    it('delegates to TransactionsService with the wallet id and currency', async () => {
+      walletsService.getOne.mockResolvedValue({ id: 1, user_id: 1, currency_id: 3 } as any);
+      const dto = { wallet_id: 1, transaction_type: TransactionType.INCOME, amount: 50 } as any;
+      transactionsService.create.mockResolvedValue({ id: 99 } as any);
 
-      await controller.create(req, {
-        wallet_id: 1,
-        transaction_type: TransactionType.INCOME,
-        amount: 50,
-      } as any);
+      const result = await controller.create(req, dto);
 
-      expect(walletsService.update).toHaveBeenCalledWith(
-        1,
-        expect.objectContaining({ balance: 150, wallet_name: 'Cash', design: 'green' }),
-      );
-      expect(transactionsService.create).toHaveBeenCalledWith(
-        3,
-        expect.objectContaining({ wallet_id: 1, transaction_type: TransactionType.INCOME }),
-      );
-    });
-
-    it('decreases the wallet balance for an expense transaction', async () => {
-      walletsService.getOne.mockResolvedValue({
-        id: 1,
-        user_id: 1,
-        balance: 100,
-        currency_id: 3,
-        wallet_name: 'Cash',
-        design: 'green',
-      } as any);
-
-      await controller.create(req, {
-        wallet_id: 1,
-        transaction_type: TransactionType.EXPENSE,
-        amount: 30,
-      } as any);
-
-      expect(walletsService.update).toHaveBeenCalledWith(1, expect.objectContaining({ balance: 70 }));
+      expect(transactionsService.create).toHaveBeenCalledWith(1, 3, dto);
+      expect(result).toEqual({ id: 99 });
     });
   });
 
