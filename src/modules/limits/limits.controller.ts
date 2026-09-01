@@ -55,7 +55,7 @@ export class LimitsController {
           ? this.filterTransactionsForAllOtherLimits(transactions, specificLimitsCategoriesIds)
           : this.filterTransactionsForSpecificLimit(transactions, limit.category_id);
       const spent = transactionsForLimit.reduce((acc, transaction) => Number(acc) + Number(transaction.amount), 0);
-      const in_percent = Math.floor((spent / limit.amount) * 100);
+      const in_percent = Number(limit.amount) > 0 ? Math.floor((spent / Number(limit.amount)) * 100) : 0;
 
       return {
         ...limit,
@@ -74,7 +74,7 @@ export class LimitsController {
       { spent: 0, sum: 0 },
     );
 
-    const overallInPercent = Math.floor((overall.spent / overall.sum) * 100);
+    const overallInPercent = overall.sum > 0 ? Math.floor((overall.spent / overall.sum) * 100) : 0;
 
     return {
       limits: countedLimits,
