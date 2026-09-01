@@ -1,24 +1,11 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  HttpException,
-  HttpStatus,
-  Param,
-  ParseIntPipe,
-  Post,
-  Put,
-  Query,
-  Request,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, Request } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '../../shared/types';
-import { getEndOfMonth, getStartOfMonth } from '../../shared/utils';
+import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
 import { TransactionsService } from '../transactions/transactions.service';
 import { TransactionType } from '../../shared/enums';
 import { Wallet } from '../../entities/wallet.entity';
@@ -45,10 +32,7 @@ export class WalletsController {
     @Body() updateWalletDto: UpdateWalletDto,
   ) {
     const wallet = await this.walletsService.getOne(walletId);
-
-    if (wallet.user_id !== req.user.id) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
-    }
+    assertOwnership(wallet, req.user.id, ErrorMessages.FORBIDDEN_WALLET);
 
     return this.walletsService.update(walletId, updateWalletDto);
   }
@@ -60,12 +44,15 @@ export class WalletsController {
     @Query('to') to: Date = getEndOfMonth(new Date()),
   ): Promise<{ wallet: Wallet; totalSpend: number; totalIncome: number }[]> {
     const wallets = await this.walletsService.getAll(req.user.id);
-    const transactions = await Promise.all(
-      wallets.map((wallet) => this.transactionsService.getAll(wallet.id, from, to)),
+    const transactions = await this.transactionsService.getAllForWallets(
+      wallets.map((wallet) => wallet.id),
+      from,
+      to,
     );
 
-    return wallets.map((wallet, index) => {
-      const { totalSpend, totalIncome } = transactions[index].reduce(
+    return wallets.map((wallet) => {
+      const walletTransactions = transactions.filter((transaction) => transaction.wallet_id === wallet.id);
+      const { totalSpend, totalIncome } = walletTransactions.reduce(
         (acc, transaction) => {
           if (transaction.transaction_type === TransactionType.INCOME) {
             acc.totalIncome += Number(transaction.amount);
@@ -92,10 +79,7 @@ export class WalletsController {
   @Delete(':walletId')
   async delete(@Request() req: AuthedRequest, @Param('walletId', ParseIntPipe) walletId: number): Promise<boolean> {
     const wallet = await this.walletsService.getOne(walletId);
-
-    if (wallet.user_id !== req.user.id) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
-    }
+    assertOwnership(wallet, req.user.id, ErrorMessages.FORBIDDEN_WALLET);
 
     await this.walletsService.delete(walletId);
 

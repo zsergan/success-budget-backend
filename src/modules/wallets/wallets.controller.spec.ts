@@ -20,7 +20,7 @@ describe('WalletsController', () => {
           provide: WalletsService,
           useValue: { create: jest.fn(), getOne: jest.fn(), update: jest.fn(), getAll: jest.fn(), delete: jest.fn() },
         },
-        { provide: TransactionsService, useValue: { getAll: jest.fn() } },
+        { provide: TransactionsService, useValue: { getAllForWallets: jest.fn() } },
       ],
     }).compile();
 
@@ -82,21 +82,18 @@ describe('WalletsController', () => {
   });
 
   describe('getAll', () => {
-    it('aggregates income and spend per wallet from its transactions', async () => {
+    it('fetches every wallet transaction in a single query and aggregates per wallet', async () => {
       walletsService.getAll.mockResolvedValue([{ id: 1 }, { id: 2 }] as any);
-      transactionsService.getAll
-        .mockResolvedValueOnce([
-          { transaction_type: TransactionType.INCOME, amount: '100' },
-          { transaction_type: TransactionType.EXPENSE, amount: '30' },
-        ] as any)
-        .mockResolvedValueOnce([]);
+      transactionsService.getAllForWallets.mockResolvedValue([
+        { wallet_id: 1, transaction_type: TransactionType.INCOME, amount: '100' },
+        { wallet_id: 1, transaction_type: TransactionType.EXPENSE, amount: '30' },
+      ] as any);
 
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       const result = await controller.getAll(req, from, to);
 
-      expect(transactionsService.getAll).toHaveBeenNthCalledWith(1, 1, from, to);
-      expect(transactionsService.getAll).toHaveBeenNthCalledWith(2, 2, from, to);
+      expect(transactionsService.getAllForWallets).toHaveBeenCalledWith([1, 2], from, to);
       expect(result[0]).toMatchObject({ totalIncome: 100, totalSpend: 30 });
       expect(result[1]).toMatchObject({ totalIncome: 0, totalSpend: 0 });
     });
