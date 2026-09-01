@@ -10,7 +10,7 @@
     "npm": ">=10.0.0"
   },
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && tsc-alias -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -29,9 +29,11 @@
   },
   "dependencies": {
     "@nestjs/common": "^11.2.1",
+    "@nestjs/config": "^12.0.0",
     "@nestjs/core": "^11.2.1",
     "@nestjs/passport": "^12.0.0",
     "@nestjs/platform-express": "^11.2.1",
+    "@nestjs/terminus": "^12.0.0",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.3",
     "bcrypt": "^6.0.0",
@@ -39,6 +41,7 @@
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
     "helmet": "^8.3.0",
+    "joi": "^18.2.5",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.24.2",
     "passport": "^0.7.0",
@@ -69,6 +72,7 @@
     "supertest": "^7.2.2",
     "ts-loader": "^9.4.3",
     "ts-node": "^10.9.1",
+    "tsc-alias": "^1.9.3",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.69.0"
@@ -81,6 +85,12 @@
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "moduleNameMapper": {
+      "^@entities/(.*)$": "<rootDir>/entities/$1",
+      "^@modules/(.*)$": "<rootDir>/modules/$1",
+      "^@shared/(.*)$": "<rootDir>/shared/$1",
+      "^@config/(.*)$": "<rootDir>/config/$1"
+    },
     "transform": {
       "^.+\\.(t|j)s$": [
         "@swc/jest",
@@ -100,7 +110,7 @@
       ]
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!(@nestjs/passport)/)"
+      "/node_modules/(?!(@nestjs/passport|@nestjs/config|@nestjs/terminus)/)"
     ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
