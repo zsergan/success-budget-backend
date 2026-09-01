@@ -25,6 +25,7 @@ describe('UsersController', () => {
           useValue: {
             findByEmail: jest.fn(),
             register: jest.fn(),
+            updateUnverified: jest.fn(),
             verify: jest.fn(),
             login: jest.fn(),
             findById: jest.fn(),
@@ -33,7 +34,7 @@ describe('UsersController', () => {
         { provide: WalletsService, useValue: { create: jest.fn() } },
         {
           provide: ConfirmationCodesService,
-          useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn() },
+          useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
         },
         { provide: CategoriesService, useValue: { initiateCategories: jest.fn() } },
       ],
@@ -71,16 +72,20 @@ describe('UsersController', () => {
       expect(result).toBe(created);
     });
 
-    it('re-uses an existing unverified user and skips creating a duplicate confirmation code', async () => {
+    it('re-uses an existing unverified user, applying the new password, and skips a duplicate confirmation code', async () => {
       const existing = { id: 3, email: 'a@b.com', email_verified: 0 } as any;
+      const updated = { id: 3, email: 'a@b.com', email_verified: 0, name: 'New Name' } as any;
       usersService.findByEmail.mockResolvedValue(existing);
+      usersService.updateUnverified.mockResolvedValue(updated);
       confirmationCodesService.getOne.mockResolvedValue({ id: 9 } as any);
 
-      const result = await controller.register({ email: 'a@b.com' } as any);
+      const dto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 1 } as any;
+      const result = await controller.register(dto);
 
       expect(usersService.register).not.toHaveBeenCalled();
+      expect(usersService.updateUnverified).toHaveBeenCalledWith(3, dto);
       expect(confirmationCodesService.create).not.toHaveBeenCalled();
-      expect(result).toBe(existing);
+      expect(result).toBe(updated);
     });
   });
 
@@ -102,13 +107,25 @@ describe('UsersController', () => {
       );
     });
 
-    it('rejects when the code does not match', async () => {
+    it('rejects when the code does not match and records the failed attempt', async () => {
       usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
-      confirmationCodesService.getOne.mockResolvedValue({ confirmation_code: '9999' } as any);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 0 } as any);
 
       await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
       );
+      expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7);
+    });
+
+    it('rejects and expires the code once the attempt limit is reached', async () => {
+      usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
+      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 5 } as any);
+
+      await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, 429),
+      );
+      expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
+      expect(confirmationCodesService.incrementAttempts).not.toHaveBeenCalled();
     });
 
     it('verifies the user, creates a default wallet and default categories on success', async () => {

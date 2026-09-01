@@ -10,9 +10,10 @@ import { ErrorMessages } from '../../shared/error-messages';
 
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
+  hash: jest.fn(),
 }));
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const bcrypt = require('bcrypt') as { compare: jest.Mock };
+const bcrypt = require('bcrypt') as { compare: jest.Mock; hash: jest.Mock };
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -75,6 +76,26 @@ describe('UsersService', () => {
     });
   });
 
+  describe('updateUnverified', () => {
+    it('re-hashes the new password and updates name/currency, then returns the refreshed user', async () => {
+      const dto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 2 } as any;
+      const refreshed = { id: 4, name: 'New Name' } as User;
+      bcrypt.hash.mockResolvedValue('hashed-newpw');
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue(refreshed);
+
+      const result = await service.updateUnverified(4, dto);
+
+      expect(bcrypt.hash).toHaveBeenCalledWith('newpw', 10);
+      expect(repository.update).toHaveBeenCalledWith(4, {
+        name: 'New Name',
+        password: 'hashed-newpw',
+        base_currency_id: 2,
+      });
+      expect(result).toBe(refreshed);
+    });
+  });
+
   describe('verify', () => {
     it('marks the user verified and returns a fresh access token', async () => {
       const user = { id: 7, email: 'a@b.com' } as User;
@@ -107,14 +128,34 @@ describe('UsersService', () => {
       );
     });
 
-    it('returns an access token on valid credentials', async () => {
-      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed' } as User);
+    it('rejects when the email is not verified yet', async () => {
+      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 0 } as User);
+      bcrypt.compare.mockResolvedValue(true);
+
+      await expect(service.login({ email: 'a@b.com', password: 'right' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.EMAIL_NOT_VERIFIED, 403),
+      );
+    });
+
+    it('returns an access token on valid credentials for a verified user', async () => {
+      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 1 } as User);
       bcrypt.compare.mockResolvedValue(true);
 
       const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
       expect(decoded.id).toBe(3);
+    });
+
+    it('sets a ~90 day expiry, not 90000 days', async () => {
+      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 1 } as User);
+      bcrypt.compare.mockResolvedValue(true);
+
+      const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
+
+      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number; exp: number; iat: number };
+      const ninetyDaysInSeconds = 60 * 60 * 24 * 90;
+      expect(decoded.exp - decoded.iat).toBe(ninetyDaysInSeconds);
     });
   });
 

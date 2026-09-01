@@ -49,6 +49,18 @@ describe('LimitsController', () => {
       expect(result.limits[1]).toMatchObject({ spent: 10, in_percent: 20 });
       expect(result.overall).toMatchObject({ spent: 50, sum: 150, in_percent: 33 });
     });
+
+    it('returns 0 percent instead of Infinity/NaN when a limit amount is 0', async () => {
+      limitsService.getAll.mockResolvedValue([{ id: 1, user_id: 1, category_id: 1, amount: 0 }] as any);
+      transactionsService.getForAllWallets.mockResolvedValue([
+        { category_id: 1, transaction_type: TransactionType.EXPENSE, amount: 40 },
+      ] as any);
+
+      const result = await controller.getAll(req);
+
+      expect(result.limits[0]).toMatchObject({ spent: 40, in_percent: 0 });
+      expect(result.overall).toMatchObject({ spent: 40, sum: 0, in_percent: 0 });
+    });
   });
 
   describe('create', () => {
