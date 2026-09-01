@@ -3,6 +3,13 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
+  "moduleNameMapper": {
+    "^@entities/(.*)$": "<rootDir>/../src/entities/$1",
+    "^@modules/(.*)$": "<rootDir>/../src/modules/$1",
+    "^@shared/(.*)$": "<rootDir>/../src/shared/$1",
+    "^@config/(.*)$": "<rootDir>/../src/config/$1"
+  },
+  "transformIgnorePatterns": ["/node_modules/(?!(@nestjs/passport|@nestjs/config|@nestjs/terminus)/)"],
   "transform": {
     "^.+\\.(t|j)s$": [
       "@swc/jest",
