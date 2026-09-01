@@ -1,11 +1,5 @@
-import { IsDecimal, IsNumber, IsOptional } from 'class-validator';
+import { PartialType } from '@nestjs/swagger';
 
-export class UpdateLimitDto {
-  @IsOptional()
-  @IsNumber()
-  category_id: number;
+import { CreateLimitDto } from './create-limit.dto';
 
-  @IsOptional()
-  @IsDecimal()
-  amount: number;
-}
+export class UpdateLimitDto extends PartialType(CreateLimitDto) {}

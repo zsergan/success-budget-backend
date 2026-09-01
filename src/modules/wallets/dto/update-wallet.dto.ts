@@ -1,13 +1,13 @@
-import { IsNotEmpty, IsString, IsEnum, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsEnum, MaxLength } from 'class-validator';
 import { WalletDesign } from '../../../shared/enums';
 
 export class UpdateWalletDto {
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @MaxLength(20)
   wallet_name: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsEnum(WalletDesign)
   design: WalletDesign;
 }

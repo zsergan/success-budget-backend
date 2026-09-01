@@ -1,26 +1,9 @@
-import { IsEnum, IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
-import { TransactionType } from '../../../shared/enums';
+import { PartialType } from '@nestjs/swagger';
+import { IsInt, IsOptional } from 'class-validator';
 
-export class UpdateCategoryDto {
-  @IsOptional()
-  @IsString()
-  @MaxLength(20)
-  name: string;
+import { CreateCategoryDto } from './create-category.dto';
 
-  @IsOptional()
-  @IsEnum(TransactionType)
-  transaction_type: TransactionType;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  icon: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(7)
-  color: string;
-
+export class UpdateCategoryDto extends PartialType(CreateCategoryDto) {
   @IsOptional()
   @IsInt()
   is_active: number;
