@@ -1,11 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 
 import { UsersService } from './users.service';
 import { User } from '../../entities/user.entity';
+import { Wallet } from '../../entities/wallet.entity';
+import { Category } from '../../entities/category.entity';
+import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
 import { ErrorMessages } from '../../shared/error-messages';
 
 jest.mock('bcrypt', () => ({
@@ -18,6 +21,11 @@ const bcrypt = require('bcrypt') as { compare: jest.Mock; hash: jest.Mock };
 describe('UsersService', () => {
   let service: UsersService;
   let repository: jest.Mocked<Repository<User>>;
+  let userRepositoryInTx: { update: jest.Mock };
+  let confirmationCodeRepositoryInTx: { update: jest.Mock };
+  let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
+  let categoryRepositoryInTx: { save: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
   const originalSecret = process.env.JWT_SECRET;
 
   beforeAll(() => {
@@ -35,6 +43,21 @@ describe('UsersService', () => {
       getOne: jest.fn(),
     };
 
+    userRepositoryInTx = { update: jest.fn() };
+    confirmationCodeRepositoryInTx = { update: jest.fn() };
+    walletRepositoryInTx = { create: jest.fn(), save: jest.fn() };
+    categoryRepositoryInTx = { save: jest.fn() };
+    const manager = {
+      getRepository: jest.fn((entity) => {
+        if (entity === User) return userRepositoryInTx;
+        if (entity === ConfirmationCode) return confirmationCodeRepositoryInTx;
+        if (entity === Wallet) return walletRepositoryInTx;
+        if (entity === Category) return categoryRepositoryInTx;
+        throw new Error(`Unexpected entity: ${entity}`);
+      }),
+    };
+    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UsersService,
@@ -48,6 +71,7 @@ describe('UsersService', () => {
             createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
           },
         },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
 
@@ -107,6 +131,35 @@ describe('UsersService', () => {
       expect(repository.update).toHaveBeenCalledWith(7, { email_verified: 1 });
       const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
       expect(decoded.id).toBe(7);
+    });
+  });
+
+  describe('completeEmailVerification', () => {
+    it('marks the user verified, expires the code, provisions defaults, and returns a token in one transaction', async () => {
+      const user = { id: 1, base_currency_id: 5 } as User;
+      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+
+      const token = await service.completeEmailVerification(user, 7);
+
+      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
+      expect(confirmationCodeRepositoryInTx.update).toHaveBeenCalledWith(7, { expired_at: expect.any(Date) });
+      expect(walletRepositoryInTx.create).toHaveBeenCalledWith(
+        expect.objectContaining({ user_id: 1, wallet_name: 'Cash', currency_id: 5 }),
+      );
+      expect(walletRepositoryInTx.save).toHaveBeenCalledWith({ id: 10 });
+      expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ user_id: 1 })]),
+      );
+      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
+      expect(decoded.id).toBe(1);
+    });
+
+    it('propagates a failure from inside the transaction instead of returning a token', async () => {
+      const user = { id: 1, base_currency_id: 5 } as User;
+      walletRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
+
+      await expect(service.completeEmailVerification(user, 7)).rejects.toThrow('db unavailable');
     });
   });
 
