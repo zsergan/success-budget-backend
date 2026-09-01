@@ -114,4 +114,9 @@ export class UsersService {
   async findByEmail(email: string): Promise<User> {
     return this.userRepository.findOne({ where: { email } });
   }
+
+  async exists(id: number): Promise<boolean> {
+    const count = await this.userRepository.count({ where: { id } });
+    return count > 0;
+  }
 }
