@@ -20,22 +20,15 @@ describe('UsersController', () => {
         {
           provide: UsersService,
           useValue: {
-            findByEmail: jest.fn(),
             registerOrRefresh: jest.fn(),
-            verify: jest.fn(),
-            completeEmailVerification: jest.fn(),
+            verifyEmail: jest.fn(),
             login: jest.fn(),
             findById: jest.fn(),
           },
         },
         {
           provide: ConfirmationCodesService,
-          useValue: {
-            getOne: jest.fn(),
-            ensureCode: jest.fn(),
-            expire: jest.fn(),
-            incrementAttempts: jest.fn(),
-          },
+          useValue: { ensureCode: jest.fn() },
         },
       ],
     })
@@ -72,54 +65,22 @@ describe('UsersController', () => {
   });
 
   describe('verifyEmail', () => {
-    it('rejects when the user does not exist', async () => {
-      usersService.findByEmail.mockResolvedValue(null);
+    it('delegates to UsersService.verifyEmail', async () => {
+      const dto = { email: 'x@x.com', code: '1234' } as any;
+      usersService.verifyEmail.mockResolvedValue('access-token');
 
-      await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.NOT_FOUND, 404),
-      );
+      const result = await controller.verifyEmail(dto);
+
+      expect(usersService.verifyEmail).toHaveBeenCalledWith(dto);
+      expect(result).toBe('access-token');
     });
 
-    it('rejects when there is no active confirmation code', async () => {
-      usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
-      confirmationCodesService.getOne.mockResolvedValue(null);
-
-      await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.NOT_FOUND, 404),
-      );
-    });
-
-    it('rejects when the code does not match and records the failed attempt', async () => {
-      usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 0 } as any);
+    it('propagates a rejection from the service (e.g. invalid code)', async () => {
+      usersService.verifyEmail.mockRejectedValue(new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400));
 
       await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
       );
-      expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7);
-    });
-
-    it('rejects and expires the code once the attempt limit is reached', async () => {
-      usersService.findByEmail.mockResolvedValue({ id: 1 } as any);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 5 } as any);
-
-      await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, 429),
-      );
-      expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
-      expect(confirmationCodesService.incrementAttempts).not.toHaveBeenCalled();
-    });
-
-    it('completes email verification on a matching code', async () => {
-      const user = { id: 1, base_currency_id: 5 } as any;
-      usersService.findByEmail.mockResolvedValue(user);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '1234' } as any);
-      usersService.completeEmailVerification.mockResolvedValue('access-token');
-
-      const result = await controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any);
-
-      expect(usersService.completeEmailVerification).toHaveBeenCalledWith(user, 7);
-      expect(result).toBe('access-token');
     });
   });
 

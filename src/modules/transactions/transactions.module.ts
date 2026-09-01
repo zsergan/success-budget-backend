@@ -1,17 +1,16 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
-import { WalletsService } from '../wallets/wallets.service';
-import { CategoriesService } from '../categories/categories.service';
+import { WalletsModule } from '../wallets/wallets.module';
+import { CategoriesModule } from '../categories/categories.module';
 import { Transaction } from '../../entities/transaction.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { Category } from '../../entities/category.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Transaction, Wallet, Category])],
+  imports: [TypeOrmModule.forFeature([Transaction]), forwardRef(() => WalletsModule), CategoriesModule],
   controllers: [TransactionsController],
-  providers: [TransactionsService, WalletsService, CategoriesService],
+  providers: [TransactionsService],
+  exports: [TransactionsService],
 })
 export class TransactionsModule {}
