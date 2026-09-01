@@ -50,6 +50,19 @@ export class TransactionsService {
       .getMany();
   }
 
+  async getAllForWallets(walletIds: number[], from: Date, to: Date): Promise<Transaction[]> {
+    if (walletIds.length === 0) {
+      return [];
+    }
+
+    return this.transactionRepository
+      .createQueryBuilder('transaction')
+      .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
+      .andWhere('transaction.timestamp >= :from', { from })
+      .andWhere('transaction.timestamp <= :to', { to })
+      .getMany();
+  }
+
   async getForAllWallets(userId: number, from: Date, to: Date): Promise<Transaction[]> {
     return this.transactionRepository
       .createQueryBuilder('transaction')
