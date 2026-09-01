@@ -41,7 +41,9 @@ export class UsersController {
       throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
-    const user = userExists ? userExists : await this.usersService.register(createUserDto);
+    const user = userExists
+      ? await this.usersService.updateUnverified(userExists.id, createUserDto)
+      : await this.usersService.register(createUserDto);
 
     const isConfirmationCodeCreated = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
 

@@ -26,6 +26,18 @@ export class UsersService {
     return await this.userRepository.save(user);
   }
 
+  async updateUnverified(id: number, createUserDto: CreateUserDto): Promise<User> {
+    const password = await bcrypt.hash(createUserDto.password, 10);
+
+    await this.userRepository.update(id, {
+      name: createUserDto.name,
+      password,
+      base_currency_id: createUserDto.base_currency_id,
+    });
+
+    return this.findById(id);
+  }
+
   async verify(id: number): Promise<string> {
     await this.userRepository.update(id, { email_verified: 1 });
     const user = await this.findById(id);
