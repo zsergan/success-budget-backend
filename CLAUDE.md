@@ -1,49 +1,46 @@
 # success-budget-backend — контекст модернизации
 
-## Статус (на 2026-08-31)
+## Статус (на 2026-09-01)
 
 Идёт плановая модернизация legacy-проекта (был не обновлён ~2 года).
 
-**Репозиторий переехал с GitLab на GitHub**: теперь живёт на
+**Репозиторий переехал с GitLab на GitHub**: живёт на
 `github.com/zsergan/success-budget-backend` (private), ветка `main` —
-основная, работа больше не ведётся в отдельной `feat/*` ветке (SBB-7.5 была
-смерджена в `main` и удалена вместе со всеми остальными старыми `feat/SBB-*`
-ветками, локально и на remote). GitLab-репозиторий физически не удалён и не
-тронут, но больше не используется из этого рабочего дерева — remote `gitlab`
-локально удалён. Если понадобится вернуться: `git remote add gitlab
-git@gitlab.com:success-budget/success-budget-backend.git`.
-
-Локальный SSH для `github.com` был неверно настроен (`~/.ssh/config` указывал
-на `another_key`, а на GitHub зарегистрирован `id_rsa`) — поправлено, `origin`
-работает по SSH.
+основная. GitLab-репозиторий физически не удалён и не тронут, но больше не
+используется из этого рабочего дерева.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
-baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI). Но **2026-08-31
-проведён повторный полный аудит** (5 параллельных ревьюеров: зависимости,
-архитектура/код, структура/tooling, тесты/CI/observability, безопасность) —
-найден ряд **критических security- и correctness-багов**, которые не были
-видны на этапе первой модернизации. Они **ещё не исправлены** (аудит был
-чисто read-only по явному запросу пользователя). Полный список находок и
-поэтапный план их устранения — в `.private/modernization-plan.md` (локальный
-файл, в `.gitignore`, никогда не коммитится — не пересоздавай его "с нуля"
-не читая, если он уже существует).
+baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
 
-Кратко, что нашёл аудит 2026-08-31 (детали и фиксы — в `.private/modernization-plan.md`):
-- **Критично**: JWT токены живут ~246 лет вместо 90 дней (баг единиц —
-  `expiresIn` в `jsonwebtoken` это секунды, а не мс); mass assignment из-за
-  отсутствия `whitelist`/`forbidNonWhitelisted` в `ValidationPipe` (может
-  переписывать чужие данные/самоверифицировать email через лишние поля в
-  теле запроса); `login()` не проверяет `email_verified`; confirmation-код
-  тривиально брутфорсится (4 цифры, `Math.random`, без лимита попыток, без
-  rate limiting где-либо в принципе).
-- **Критично для денежной логики**: обновление баланса кошелька и создание
-  транзакции не атомарны (нет DB-транзакций/lock нигде в проекте) — race
-  condition при параллельных запросах; онбординг после verify-email (verify →
-  wallet → categories) тоже не атомарен.
-- Плюс россыпь архитектурных/tooling-находок (бизнес-логика в контроллерах,
-  дублирование ownership-проверок, нет `@nestjs/config`+валидации env, нет
-  Swagger, нет health-check, нет rate limiting, устаревшие версии GitHub
-  Actions экшенов и т.д.) — см. план.
+A full 5-reviewer audit ran on 2026-08-31 (dependencies, architecture/code,
+structure/tooling, tests/CI/observability, security) and produced a staged
+remediation plan in `.private/modernization-plan.md` (local file, gitignored,
+never committed - read it before proposing next steps, do not recreate it
+from scratch if it already exists). Every phase since has been done on its
+own short-lived branch (`fix/*`/`feat/*`/`refactor/*`), merged via a GitHub
+PR, one phase per PR:
+
+- **Phase 0** (critical security/correctness hotfixes) - merged, PR #1
+- **Phase 1** (safe dependency bumps) - merged, part of PR #1
+- **Phase 2** (atomic money operations: wallet balance updates, email
+  verification onboarding) - merged, PR #2
+- **Phase 3** (auth hardening: passport-jwt global guard replacing the old
+  Express middleware, rate limiting on login/register/verify-email, helmet)
+  - merged, PR #3
+- **Phase 4** (env validation via `@nestjs/config`, health check endpoint,
+  graceful shutdown, TypeScript path alias infrastructure) - merged, PR #4
+- **Phase 5** (Swagger docs at `/docs`, global `/api` prefix + URI
+  versioning, README architecture overview) - merged, PR #5
+- **Phase 6** (architecture cleanup) - in progress, see the plan file for
+  the full scope
+
+All the critical bugs the 2026-08-31 audit found (JWT expiring in ~246 years
+instead of 90 days, mass assignment via a missing `ValidationPipe`
+whitelist, unverified users able to log in, a brute-forceable confirmation
+code, non-atomic wallet balance updates/onboarding) are **fixed and merged**
+- do not re-flag them as open findings. Check `git log` and
+`.private/modernization-plan.md` for what is actually still open before
+assuming otherwise.
 
 Оригинальный план первой модернизации лежал в
 `/Users/zsergan/.claude/plans/ancient-orbiting-bachman.md` (локальный файл
@@ -135,6 +132,27 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   `.gitignore`), используется как личный scratch-space пользователя для
   заметок/планов, которые не должны попадать в git. Не удалять и не
   переносить в трекаемую часть репозитория без явной просьбы.
+- **All DB foreign keys were already `onDelete: CASCADE` at the database
+  level** (set in the original migrations), even though no `@ManyToOne`
+  entity decorator declared it anywhere - found and fixed in phase 6
+  (entities now match reality; zero new migration needed for this part).
+  **Worth revisiting later, not changed now**: CASCADE on the
+  `Currency`/`Category` relations means deleting a currency would cascade-
+  delete every user who chose it as their base currency, and deleting a
+  category would cascade-delete its transaction history. Neither a
+  currency-delete nor a category-delete endpoint exists today, so this is a
+  latent design question, not an active bug - do not silently change the
+  actual DB cascade behavior without discussing it first, that is a real
+  behavior change, not a documentation fix.
+- **Soft-delete only exists on `Wallet`** (`is_deleted`/`deleted_at`) -
+  intentionally not added to `Category`/`Limit`/`Transaction` in phase 6,
+  since none of those has a delete endpoint at all yet. Add it if/when a
+  delete feature is actually built for them, not preemptively.
+- **Migration filename typo `CrateLimitsTable`** (missing the "e" in
+  "Create") intentionally left as-is. TypeORM stores the migration class
+  name in the `migrations` table, so renaming it now would also need a
+  manual `UPDATE` against that table on every environment that already ran
+  it - not worth the risk for a cosmetic fix.
 
 ## Известные, намеренно не исправленные проблемы (задокументированы, не трогать втихую)
 
@@ -148,12 +166,9 @@ git, детали не дублирую здесь. Ключевое: `npm audit
    мешать в коммит с чем-то другим.
 2. ~~Смоук-тест реального старта приложения и живой прогон `npm run seed` не
    выполнены~~ — **закрыто 2026-08-31**, см. "Что сделано" выше.
-3. **Критические security/correctness баги из аудита 2026-08-31 ещё не
-   исправлены** (см. "Статус" выше и `.private/modernization-plan.md`,
-   этапы 0 и 2). Это самое приоритетное, что осталось в проекте — не
-   "полировка", а реальные дыры (mass assignment, вечный JWT, брутфорсабельный
-   confirmation-код, race condition на балансе). Не считать модернизацию
-   законченной, пока эти пункты открыты.
+3. ~~Критические security/correctness баги из аудита 2026-08-31~~ — **fixed,
+   phases 0-2 merged (PRs #1-#2)**. See "Статус" above and
+   `.private/modernization-plan.md` for what is actually still open.
 
 ## Dev-окружение / сид-данные
 
