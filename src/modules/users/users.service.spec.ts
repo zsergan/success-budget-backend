@@ -107,14 +107,34 @@ describe('UsersService', () => {
       );
     });
 
-    it('returns an access token on valid credentials', async () => {
-      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed' } as User);
+    it('rejects when the email is not verified yet', async () => {
+      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 0 } as User);
+      bcrypt.compare.mockResolvedValue(true);
+
+      await expect(service.login({ email: 'a@b.com', password: 'right' } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.EMAIL_NOT_VERIFIED, 403),
+      );
+    });
+
+    it('returns an access token on valid credentials for a verified user', async () => {
+      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 1 } as User);
       bcrypt.compare.mockResolvedValue(true);
 
       const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number };
       expect(decoded.id).toBe(3);
+    });
+
+    it('sets a ~90 day expiry, not 90000 days', async () => {
+      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 1 } as User);
+      bcrypt.compare.mockResolvedValue(true);
+
+      const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
+
+      const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: number; exp: number; iat: number };
+      const ninetyDaysInSeconds = 60 * 60 * 24 * 90;
+      expect(decoded.exp - decoded.iat).toBe(ninetyDaysInSeconds);
     });
   });
 
