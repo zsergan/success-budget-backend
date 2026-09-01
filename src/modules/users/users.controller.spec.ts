@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
@@ -33,7 +34,10 @@ describe('UsersController', () => {
           useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(ThrottlerGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get(UsersController);
     usersService = module.get(UsersService);

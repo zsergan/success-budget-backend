@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PassportModule } from '@nestjs/passport';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 import { ormConfig } from './config/ormconfig';
 import { UsersModule } from './modules/users/users.module';
@@ -18,6 +19,7 @@ import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
   imports: [
     TypeOrmModule.forRoot(ormConfig),
     PassportModule,
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
     UsersModule,
     CategoriesModule,
     WalletsModule,
