@@ -29,7 +29,7 @@ export class TransactionsController {
   async create(@Request() req: AuthedRequest, @Body() createTransactionDto: CreateTransactionDto) {
     const wallet = await this.walletsService.getOne(createTransactionDto.wallet_id);
 
-    if (wallet.user_id !== req.user.id) {
+    if (!wallet || wallet.is_deleted || wallet.user_id !== req.user.id) {
       throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
     }
 

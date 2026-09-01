@@ -38,6 +38,24 @@ describe('TransactionsController', () => {
       expect(transactionsService.create).not.toHaveBeenCalled();
     });
 
+    it('rejects when the wallet was soft-deleted', async () => {
+      walletsService.getOne.mockResolvedValue({ id: 1, user_id: 1, is_deleted: 1 } as any);
+
+      await expect(
+        controller.create(req, { wallet_id: 1, transaction_type: TransactionType.EXPENSE, amount: 10 } as any),
+      ).rejects.toMatchObject(new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403));
+      expect(transactionsService.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the wallet does not exist', async () => {
+      walletsService.getOne.mockResolvedValue(null);
+
+      await expect(
+        controller.create(req, { wallet_id: 1, transaction_type: TransactionType.EXPENSE, amount: 10 } as any),
+      ).rejects.toMatchObject(new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403));
+      expect(transactionsService.create).not.toHaveBeenCalled();
+    });
+
     it('increases the wallet balance for an income transaction', async () => {
       walletsService.getOne.mockResolvedValue({
         id: 1,
