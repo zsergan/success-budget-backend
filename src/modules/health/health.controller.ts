@@ -1,7 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { HealthCheck, HealthCheckService, TypeOrmHealthIndicator } from '@nestjs/terminus';
 
-import { Public } from '../../shared/decorators/public.decorator';
+import { Public } from '@shared/decorators/public.decorator';
 
 @Controller('health')
 export class HealthController {
