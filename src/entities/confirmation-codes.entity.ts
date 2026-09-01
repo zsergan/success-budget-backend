@@ -14,6 +14,9 @@ export class ConfirmationCode {
   @Column({ type: 'varchar', length: '6' })
   confirmation_code: string;
 
+  @Column({ type: 'int', default: 0 })
+  attempts: number;
+
   @Column({ type: 'enum', enum: ConfirmationType })
   confirmation_type: ConfirmationType;
 

@@ -21,7 +21,7 @@ import type { AuthedRequest } from '../../shared/types';
 import { ErrorMessages } from '../../shared/error-messages';
 import { ConfirmationType, WalletDesign } from '../../shared/enums';
 import { generateRandomNumberString } from '../../shared/utils';
-import { DEFAULT_CATEGORIES } from '../../shared/constants';
+import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
 
 @Controller('users')
 export class UsersController {
@@ -41,7 +41,9 @@ export class UsersController {
       throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
-    const user = userExists ? userExists : await this.usersService.register(createUserDto);
+    const user = userExists
+      ? await this.usersService.updateUnverified(userExists.id, createUserDto)
+      : await this.usersService.register(createUserDto);
 
     const isConfirmationCodeCreated = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
 
@@ -70,7 +72,13 @@ export class UsersController {
       throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
     }
 
+    if (confirmationCode.attempts >= MAX_CONFIRMATION_CODE_ATTEMPTS) {
+      await this.confirmationCodesService.expire(user.id, ConfirmationType.EMAIL);
+      throw new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+    }
+
     if (confirmationCode.confirmation_code !== verifyUser.code) {
+      await this.confirmationCodesService.incrementAttempts(confirmationCode.id);
       throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
     }
 

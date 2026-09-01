@@ -27,6 +27,7 @@ describe('ConfirmationCodesService', () => {
             save: jest.fn(),
             findOne: jest.fn(),
             update: jest.fn(),
+            increment: jest.fn(),
             createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
           },
         },
@@ -61,6 +62,14 @@ describe('ConfirmationCodesService', () => {
       const created = repository.create.mock.calls[0][0] as Partial<ConfirmationCode>;
       expect(created.expired_at.getTime() - before).toBeGreaterThanOrEqual(1000 * 60 * 10 - 1000);
       expect(repository.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('incrementAttempts', () => {
+    it('atomically increments the attempts counter by id', async () => {
+      await service.incrementAttempts(7);
+
+      expect(repository.increment).toHaveBeenCalledWith({ id: 7 }, 'attempts', 1);
     });
   });
 

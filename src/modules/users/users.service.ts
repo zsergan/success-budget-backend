@@ -18,12 +18,24 @@ export class UsersService {
   ) {}
 
   private generateAccessToken(user: User): string {
-    return jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: 1000 * 60 * 60 * 24 * 90 });
+    return jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: 60 * 60 * 24 * 90 });
   }
 
   async register(createUserDto: CreateUserDto): Promise<User> {
     const user = this.userRepository.create(createUserDto);
     return await this.userRepository.save(user);
+  }
+
+  async updateUnverified(id: number, createUserDto: CreateUserDto): Promise<User> {
+    const password = await bcrypt.hash(createUserDto.password, 10);
+
+    await this.userRepository.update(id, {
+      name: createUserDto.name,
+      password,
+      base_currency_id: createUserDto.base_currency_id,
+    });
+
+    return this.findById(id);
   }
 
   async verify(id: number): Promise<string> {
@@ -45,6 +57,10 @@ export class UsersService {
 
     if (!isPasswordValid) {
       throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
+    }
+
+    if (!user.email_verified) {
+      throw new HttpException(ErrorMessages.EMAIL_NOT_VERIFIED, HttpStatus.FORBIDDEN);
     }
 
     return this.generateAccessToken(user);
