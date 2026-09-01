@@ -21,7 +21,6 @@ import { VerifyUserDto } from './dto/verify-user.dto';
 import type { AuthedRequest } from '../../shared/types';
 import { ErrorMessages } from '../../shared/error-messages';
 import { ConfirmationType } from '../../shared/enums';
-import { generateRandomNumberString } from '../../shared/utils';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
 import { Public } from '../../shared/decorators/public.decorator';
 
@@ -39,25 +38,8 @@ export class UsersController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Post('register')
   async register(@Body() createUserDto: CreateUserDto) {
-    const userExists = await this.usersService.findByEmail(createUserDto.email);
-
-    if (userExists && userExists.email_verified) {
-      throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
-    }
-
-    const user = userExists
-      ? await this.usersService.updateUnverified(userExists.id, createUserDto)
-      : await this.usersService.register(createUserDto);
-
-    const isConfirmationCodeCreated = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
-
-    if (!isConfirmationCodeCreated) {
-      await this.confirmationCodesService.create({
-        user_id: user.id,
-        confirmation_code: generateRandomNumberString(),
-        confirmation_type: ConfirmationType.EMAIL,
-      });
-    }
+    const user = await this.usersService.registerOrRefresh(createUserDto);
+    await this.confirmationCodesService.ensureCode(user.id, ConfirmationType.EMAIL);
 
     return user;
   }

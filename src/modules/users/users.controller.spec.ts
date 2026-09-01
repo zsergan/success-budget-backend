@@ -21,8 +21,7 @@ describe('UsersController', () => {
           provide: UsersService,
           useValue: {
             findByEmail: jest.fn(),
-            register: jest.fn(),
-            updateUnverified: jest.fn(),
+            registerOrRefresh: jest.fn(),
             verify: jest.fn(),
             completeEmailVerification: jest.fn(),
             login: jest.fn(),
@@ -31,7 +30,12 @@ describe('UsersController', () => {
         },
         {
           provide: ConfirmationCodesService,
-          useValue: { getOne: jest.fn(), create: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
+          useValue: {
+            getOne: jest.fn(),
+            ensureCode: jest.fn(),
+            expire: jest.fn(),
+            incrementAttempts: jest.fn(),
+          },
         },
       ],
     })
@@ -45,44 +49,25 @@ describe('UsersController', () => {
   });
 
   describe('register', () => {
-    it('rejects when the email already belongs to a verified user', async () => {
-      usersService.findByEmail.mockResolvedValue({ id: 1, email_verified: 1 } as any);
+    it('delegates to UsersService and ensures a confirmation code exists', async () => {
+      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+      const user = { id: 2, email: 'a@b.com' } as any;
+      usersService.registerOrRefresh.mockResolvedValue(user);
+
+      const result = await controller.register(dto);
+
+      expect(usersService.registerOrRefresh).toHaveBeenCalledWith(dto);
+      expect(confirmationCodesService.ensureCode).toHaveBeenCalledWith(2, ConfirmationType.EMAIL);
+      expect(result).toBe(user);
+    });
+
+    it('propagates a rejection from the service (e.g. email already verified)', async () => {
+      usersService.registerOrRefresh.mockRejectedValue(new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400));
 
       await expect(controller.register({ email: 'a@b.com' } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
       );
-      expect(usersService.register).not.toHaveBeenCalled();
-    });
-
-    it('creates a new user and a confirmation code when none exists yet', async () => {
-      usersService.findByEmail.mockResolvedValue(null);
-      const created = { id: 2, email: 'a@b.com' } as any;
-      usersService.register.mockResolvedValue(created);
-      confirmationCodesService.getOne.mockResolvedValue(null);
-
-      const result = await controller.register({ email: 'a@b.com' } as any);
-
-      expect(usersService.register).toHaveBeenCalled();
-      expect(confirmationCodesService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ user_id: 2, confirmation_type: ConfirmationType.EMAIL }),
-      );
-      expect(result).toBe(created);
-    });
-
-    it('re-uses an existing unverified user, applying the new password, and skips a duplicate confirmation code', async () => {
-      const existing = { id: 3, email: 'a@b.com', email_verified: 0 } as any;
-      const updated = { id: 3, email: 'a@b.com', email_verified: 0, name: 'New Name' } as any;
-      usersService.findByEmail.mockResolvedValue(existing);
-      usersService.updateUnverified.mockResolvedValue(updated);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 9 } as any);
-
-      const dto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 1 } as any;
-      const result = await controller.register(dto);
-
-      expect(usersService.register).not.toHaveBeenCalled();
-      expect(usersService.updateUnverified).toHaveBeenCalledWith(3, dto);
-      expect(confirmationCodesService.create).not.toHaveBeenCalled();
-      expect(result).toBe(updated);
+      expect(confirmationCodesService.ensureCode).not.toHaveBeenCalled();
     });
   });
 
