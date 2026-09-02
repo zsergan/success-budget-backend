@@ -42,11 +42,11 @@ export class Transaction {
   @JoinColumn({ name: 'wallet_id' })
   wallet: Wallet;
 
-  @ManyToOne(() => Category, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Category, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'category_id' })
   category: Category;
 
-  @ManyToOne(() => Currency, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'currency_id' })
   currency: Currency;
 }

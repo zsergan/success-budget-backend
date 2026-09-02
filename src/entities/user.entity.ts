@@ -41,7 +41,7 @@ export class User {
   @Column({ type: 'tinyint', default: 0 })
   email_verified: number;
 
-  @ManyToOne(() => Currency, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'base_currency_id' })
   baseCurrency: Currency;
 

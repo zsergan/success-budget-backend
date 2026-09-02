@@ -22,9 +22,9 @@ investigated and deferred - see the "Важные технические реш�
 below. A second 4-reviewer audit ran on 2026-09-01 (security, architecture,
 testing/CI/observability, dependencies) against the post-phase-8 state and
 produced phases 9-16 in `.private/modernization-plan.md` under "Раунд 2".
-Phases 9-12 from that round are done; phase 13 (Currency/Category cascade
-policy) explicitly needs your sign-off before implementation, not
-autonomous execution - see that section of the plan file.
+Phases 9-13 from that round are done - phase 13 (Currency/Category cascade
+policy) required your sign-off before implementation and got it on
+2026-09-02, see "Важные технические решения" below.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
 baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
@@ -175,14 +175,22 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   level** (set in the original migrations), even though no `@ManyToOne`
   entity decorator declared it anywhere - found and fixed in phase 6
   (entities now match reality; zero new migration needed for this part).
-  **Worth revisiting later, not changed now**: CASCADE on the
-  `Currency`/`Category` relations means deleting a currency would cascade-
-  delete every user who chose it as their base currency, and deleting a
-  category would cascade-delete its transaction history. Neither a
-  currency-delete nor a category-delete endpoint exists today, so this is a
-  latent design question, not an active bug - do not silently change the
-  actual DB cascade behavior without discussing it first, that is a real
-  behavior change, not a documentation fix.
+- **Currency/Category cascade policy changed from CASCADE to RESTRICT**
+  (phase 13, decided with the user 2026-09-02): the five FKs pointing at
+  `currencies`/`categories` - `users.base_currency_id`,
+  `wallets.currency_id`, `transactions.currency_id`,
+  `transactions.category_id`, `limits.category_id` - now reject a delete
+  while any row still references them, instead of silently cascading.
+  Migration `1788311197732-RestrictCurrencyCategoryCascade`. FKs pointing
+  at `users`/`wallets` (genuinely owned child data - a user's own wallets/
+  categories/limits/transactions) are unchanged, still CASCADE. **No
+  delete endpoint for Currency or Category is planned** - `Category`
+  already has `is_active` for taking a category out of active use without
+  touching its history, and there is no real use case for deleting a
+  reference-data currency. If a delete endpoint for either is ever
+  proposed, it now just gets a clean 500/FK-constraint error instead of
+  silently destroying other users' data or transaction history - map that
+  to a proper 409 at the service layer when/if the endpoint is built.
 - **Soft-delete only exists on `Wallet`** (`is_deleted`/`deleted_at`) -
   intentionally not added to `Category`/`Limit`/`Transaction` in phase 6,
   since none of those has a delete endpoint at all yet. Add it if/when a
@@ -300,9 +308,8 @@ above). Full staged plan and status lives in `.private/modernization-plan.md`
 - read it before proposing next steps, do not invent a plan from scratch.
 
 Remaining round-2 phases (see the plan file, "Раунд 2" section):
-- **Phase 13 - Currency/Category cascade-delete policy**: explicitly flagged
-  as needing your decision before any implementation, not something to do
-  autonomously.
+- **Phase 13 (Currency/Category cascade-delete policy) - done, decided
+  with the user 2026-09-02.** See "Важные технические решения" above.
 - **Phase 14** - observability (structured logging, request/correlation
   IDs).
 - **Phase 15** - e2e coverage for transactions/limits/categories (currently

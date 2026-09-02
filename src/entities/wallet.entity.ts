@@ -47,7 +47,7 @@ export class Wallet {
   @JoinColumn({ name: 'user_id' })
   user: User;
 
-  @ManyToOne(() => Currency, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'currency_id' })
   currency: Currency;
 
