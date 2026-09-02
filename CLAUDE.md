@@ -238,6 +238,17 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   Transactions modules import each other and therefore both wrap that
   import in `forwardRef()` - this is intentional NestJS practice for a
   genuine circular module dependency, not a hack to undo.
+- **Path aliases (`@entities/*`, `@modules/*`, `@shared/*`, `@config/*`)
+  are now used for every cross-directory import, not just declared in
+  config.** Phase 4 only wired the infrastructure (`tsconfig.json` paths,
+  jest `moduleNameMapper` in both `package.json` and `test/jest-e2e.json`,
+  `tsc-alias` in the `build` script); the codebase kept using `../../../`
+  relative imports until 2026-09-01, done as a standalone cleanup outside
+  the numbered plan (see `.private/modernization-plan.md`, phase 4 note).
+  Same-directory and same-module imports (e.g. a DTO's own module, one
+  entity file importing a sibling entity) intentionally stay relative -
+  aliases are only for crossing into `entities/`, `modules/`, `shared/`,
+  or `config/` from outside.
 
 ## Известные, намеренно не исправленные проблемы (задокументированы, не трогать втихую)
 
