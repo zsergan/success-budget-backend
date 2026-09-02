@@ -17,9 +17,14 @@ session-transcript links from commit trailers (kept `Co-Authored-By`
 trailers - AI authorship stays visible, only the session link was removed);
 `.env` was verified absent from history before doing this. Secret scanning,
 push protection, Dependabot, and `delete_branch_on_merge` are all enabled.
-Phases 6 and 7 are merged (PRs #6, #7); phase 8 (NestJS 12) was
+Phases 6 through 12 are merged (PRs #6-#20); phase 8 (NestJS 12) was
 investigated and deferred - see the "Важные технические решения" entry
-below.
+below. A second 4-reviewer audit ran on 2026-09-01 (security, architecture,
+testing/CI/observability, dependencies) against the post-phase-8 state and
+produced phases 9-16 in `.private/modernization-plan.md` under "Раунд 2".
+Phases 9-12 from that round are done; phase 13 (Currency/Category cascade
+policy) explicitly needs your sign-off before implementation, not
+autonomous execution - see that section of the plan file.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
 baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
@@ -43,8 +48,25 @@ PR, one phase per PR:
   graceful shutdown, TypeScript path alias infrastructure) - merged, PR #4
 - **Phase 5** (Swagger docs at `/docs`, global `/api` prefix + URI
   versioning, README architecture overview) - merged, PR #5
-- **Phase 6** (architecture cleanup) - in progress, see the plan file for
-  the full scope
+- **Phase 6** (architecture cleanup: services own their business logic,
+  `assertOwnership()`, explicit `onDelete: 'CASCADE'`, audit columns) -
+  merged, PR #6
+- **Phase 7** (testing/CI maturity: real e2e tests, docker-compose MySQL,
+  coverage floor, Dependabot, CodeQL, Dependency Review) - merged, PR #7
+- **Phase 8** (NestJS 11→12 upgrade) - investigated, found to be a full
+  ESM migration with no guide yet, formally deferred (not executed)
+- **Phase 9** (docs sync + `LICENSE` file) - merged, PR #18
+- **Phase 10** (round-2 critical fixes: category-ownership IDOR on
+  transactions/limits, wallet `balance` no longer writable via update,
+  `ClassSerializerInterceptor` on wallets, `ValidationPipe` `transform:
+  true`) - merged, PR #18
+- **Phase 11** (auth hardening round 2: JWT revocation via user-existence
+  check, global throttling via `APP_GUARD`, login timing side-channel
+  fixed, constant-time confirmation-code comparison) - merged, PR #19
+- **Phase 12** (architecture cleanup round 2: module DI via export/import
+  instead of duplicated providers, remaining controller logic moved to
+  services, wallet response casing fixed to snake_case, update DTOs
+  standardized on `PartialType`) - merged, PR #20
 
 All the critical bugs the 2026-08-31 audit found (JWT expiring in ~246 years
 instead of 90 days, mass assignment via a missing `ValidationPipe`
@@ -187,6 +209,35 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   requires coordinated versions across packages. See
   `.private/modernization-plan.md` ("Отложено / переоценить позже") for the
   full writeup; re-evaluate once an official migration guide exists.
+- **API-breaking changes from round 2 (phases 10-12) - relevant to any
+  client, including the mobile app:** `PUT /api/v1/wallets/:id` no longer
+  accepts a `balance` field (400 if present - balance only changes via a
+  recorded transaction now); `POST/PUT` on transactions/limits now reject a
+  `category_id` that does not belong to the requesting user (403, was
+  previously a silent cross-user reference); `GET /api/v1/wallets` no
+  longer includes `user_id`/`currency_id`/`is_deleted`/`deleted_at` on the
+  wallet object, and its per-wallet summary fields were renamed
+  `totalSpend`/`totalIncome` → `total_spend`/`total_income`; update
+  endpoints for wallets/categories/limits now behave as true partial
+  updates (send only the fields you want to change). A full client-facing
+  writeup lives in `.private/mobile-api-changes.md` (gitignored, not
+  committed) - written specifically to hand to the mobile app project.
+- **JWT tokens are now revoked when the user is deleted** (phase 11):
+  `JwtStrategy.validate()` does an extra existence check per request. A
+  previously-valid token starts returning 401 immediately after the user
+  row is deleted, instead of staying valid for the rest of its 90-day
+  lifetime.
+- **Rate limiting is now global** (phase 11): every route is throttled at
+  100 requests/60s by default via a global `APP_GUARD`, with
+  `register`/`login`/`verify-email` keeping a stricter 5/60s override. A
+  client hammering any endpoint (not just auth) can now get a 429.
+- **Module DI convention**: modules must `export` the services other
+  modules need and `import` the owning module - never re-declare another
+  module's service as your own provider (this was a real bug fixed in
+  phase 12, found in Wallets/Transactions/Limits/Users). Wallets and
+  Transactions modules import each other and therefore both wrap that
+  import in `forwardRef()` - this is intentional NestJS practice for a
+  genuine circular module dependency, not a hack to undo.
 
 ## Известные, намеренно не исправленные проблемы (задокументированы, не трогать втихую)
 
@@ -223,18 +274,32 @@ MySQL поднимается локально через docker (контейн�
 (`DB_HOST/PORT/USERNAME/PASSWORD/DATABASE`, `JWT_SECRET`). Реальный `.env`
 никогда не попадал в git-историю (проверено явно 2026-08-31).
 
-API: `http://localhost:3000`, без глобального префикса. Логин —
-`POST /users/login`. CORS выключен полностью (`app.enableCors()` нигде не
-вызывается) — при появлении фронта на другом origin понадобится явная
-whitelist-конфигурация.
+API: `http://localhost:3000`, глобальный префикс `/api` + URI-версионирование
+(с этапа 5) — реальные пути вида `/api/v1/...`. Логин —
+`POST /api/v1/users/login`. Swagger UI на `/docs`. CORS выключен полностью
+(`app.enableCors()` нигде не вызывается) — при появлении фронта/мобильного
+приложения на другом origin понадобится явная whitelist-конфигурация.
 
 ## Что осталось / следующие шаги
 
-Phases 0-7 are done and merged. **Phase 8 (NestJS 11→12) is investigated
-and deferred**, not done - it turned out to be a full ESM migration with no
-migration guide yet (see "Важные технические решения" above). Full staged
-plan and status lives in `.private/modernization-plan.md` - read it before
-proposing next steps, do not invent a plan from scratch. Open items there
-include closing/handling the 8 open Dependabot PRs for the deferred NestJS
-12 bump and the `@types/node` 26 bump (contradicts the documented decision
-to hold `@types/node` at `^24`).
+Phases 0-7 and 9-12 are done and merged. **Phase 8 (NestJS 11→12) is
+investigated and deferred**, not done - it turned out to be a full ESM
+migration with no migration guide yet (see "Важные технические решения"
+above). Full staged plan and status lives in `.private/modernization-plan.md`
+- read it before proposing next steps, do not invent a plan from scratch.
+
+Remaining round-2 phases (see the plan file, "Раунд 2" section):
+- **Phase 13 - Currency/Category cascade-delete policy**: explicitly flagged
+  as needing your decision before any implementation, not something to do
+  autonomously.
+- **Phase 14** - observability (structured logging, request/correlation
+  IDs).
+- **Phase 15** - e2e coverage for transactions/limits/categories (currently
+  only auth/health/currencies are covered), plus a few trivial patch
+  dependency bumps.
+- **Phase 16** - branch protection on `main` (confirmed off via the GitHub
+  API), README badges.
+
+9 Dependabot PRs (8 for the deferred NestJS 12 bump, 1 for `@types/node`
+24→26) are being left open deliberately as a visible backlog marker - do
+not merge or close them without being asked.
