@@ -25,7 +25,11 @@ produced phases 9-16 in `.private/modernization-plan.md` under "Раунд 2".
 Phases 9-14 from that round are done - phase 13 (Currency/Category cascade
 policy) required your sign-off before implementation and got it on
 2026-09-02, phase 14 (structured logging) done the same day, see
-"Важные технические решения" below.
+"Важные технические решения" below. **Phase 15 is in progress and
+blocked** on a newly discovered issue with the phase-13 cascade policy -
+see the "Phase 15" entry under "Что осталось" and
+`.private/modernization-plan.md` for the full writeup and options; do not
+resume or resolve it without the user's decision.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
 baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
@@ -214,6 +218,28 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   to pretty would mean a deployment that forgets to set `NODE_ENV` crashes
   on its first log line instead of just emitting JSON. See
   `.private/stage-14-explained.md` for the full walkthrough.
+- **`test/tsconfig.json` now declares its own `exclude`** (found + fixed
+  2026-09-02, while investigating why VS Code couldn't type-check
+  `test/app.e2e-spec.ts` at all - "Cannot find name 'describe'" etc.):
+  it previously had no `exclude` of its own, so it inherited
+  `exclude: ["node_modules", "dist", "test"]` from the root
+  `tsconfig.json` via `extends` - and TypeScript resolves inherited
+  relative `exclude` paths against the file that *wrote* them (the root
+  `tsconfig.json`, at the repo root), not the extending file. That made
+  the inherited `"test"` entry resolve to `<root>/test/**`, which silently
+  excluded `test/app.e2e-spec.ts` from `test/tsconfig.json`'s own project
+  - confirmed with `tsc -p test/tsconfig.json --listFilesOnly`, the file
+  wasn't in the list at all. Since the root config also excludes `test/`
+  directly, no tsconfig actually claimed the file, so VS Code fell back to
+  an orphaned single-file mode with no `types: ["node", "jest"]` - hence
+  the missing jest globals. A prior `npx tsc --noEmit -p test/tsconfig.json`
+  check (2026-09-01) had reported "no errors" for this exact reason:
+  the file was never being checked, not because it was clean. Fixed by
+  giving `test/tsconfig.json` its own `"exclude": ["../node_modules",
+  "../dist"]` (overrides rather than merges with the inherited one).
+  Zero risk - nothing else references `test/tsconfig.json` (not npm
+  scripts, not CI; `test:e2e` runs through `@swc/jest` via
+  `test/jest-e2e.json`, unrelated to this file).
 - **Soft-delete only exists on `Wallet`** (`is_deleted`/`deleted_at`) -
   intentionally not added to `Category`/`Limit`/`Transaction` in phase 6,
   since none of those has a delete endpoint at all yet. Add it if/when a
@@ -336,9 +362,26 @@ Remaining round-2 phases (see the plan file, "Раунд 2" section):
   with the user 2026-09-02.** See "Важные технические решения" above.
 - **Phase 14 (structured logging, request/correlation IDs) - done,
   2026-09-02.** See "Важные технические решения" above.
-- **Phase 15** - e2e coverage for transactions/limits/categories (currently
-  only auth/health/currencies are covered), plus a few trivial patch
-  dependency bumps.
+- **Phase 15 - IN PROGRESS, BLOCKED (2026-09-02).** e2e scenarios for
+  transactions/limits/categories/wallet-balance are written
+  (`test/app.e2e-spec.ts`) but the suite's cleanup fails: deleting the
+  e2e test user hits an FK error, because phase 13's `RESTRICT` on
+  `transactions.category_id`/`limits.category_id` conflicts with the
+  pre-existing `categories.user_id` → `users.id` CASCADE - MySQL doesn't
+  guarantee the sibling CASCADE (deleting the transaction/limit itself)
+  resolves before the RESTRICT on the category blocks the cascade. Not
+  reachable through the current API (no user-delete endpoint exists), but
+  it's the same class of problem phase 13 was solving, now hitting a
+  *legitimate* cascade instead of a destructive one. **Needs your
+  decision the same way phase 13 did** - see
+  `.private/modernization-plan.md` ("Этап 15", the "Критическая находка"
+  section) for the mechanism and three options before resuming. The
+  coverage-config redesign, `test:debug` cleanup, and patch dependency
+  bumps parts of phase 15 haven't been started yet either.
+  Separately (unrelated, already fixed): while investigating this, found
+  and fixed a real bug in `test/tsconfig.json` that made VS Code's IDE
+  fail to type-check `test/app.e2e-spec.ts` at all - see "Важные
+  технические решения" below.
 - **Phase 16** - branch protection on `main` (confirmed off via the GitHub
   API), README badges.
 
