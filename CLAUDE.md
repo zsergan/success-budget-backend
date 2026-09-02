@@ -22,9 +22,10 @@ investigated and deferred - see the "Важные технические реш�
 below. A second 4-reviewer audit ran on 2026-09-01 (security, architecture,
 testing/CI/observability, dependencies) against the post-phase-8 state and
 produced phases 9-16 in `.private/modernization-plan.md` under "Раунд 2".
-Phases 9-13 from that round are done - phase 13 (Currency/Category cascade
+Phases 9-14 from that round are done - phase 13 (Currency/Category cascade
 policy) required your sign-off before implementation and got it on
-2026-09-02, see "Важные технические решения" below.
+2026-09-02, phase 14 (structured logging) done the same day, see
+"Важные технические решения" below.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
 baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
@@ -85,6 +86,9 @@ assuming otherwise.
 - Node.js 24 (Active LTS, зафиксировано в `engines` + `.nvmrc`; Node 26 уже
   вышел, но ещё не LTS — не переходить раньше времени)
 - NestJS 11, TypeScript 6.0.3 (см. ниже почему не 7.x), TypeORM 1.1.0, MySQL (`mysql2`)
+- Логирование — `nestjs-pino`/`pino-http` (структурированные JSON-логи,
+  request id на каждый запрос); `pino-pretty` только как devDependency,
+  для человекочитаемого вывода при `NODE_ENV=development`
 - Jest 30 + `@swc/jest` (не ts-jest!)
 - ESLint 10 flat config (`eslint.config.mjs`, не `.eslintrc.js`)
 - npm (не yarn/pnpm)
@@ -191,6 +195,25 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   proposed, it now just gets a clean 500/FK-constraint error instead of
   silently destroying other users' data or transaction history - map that
   to a proper 409 at the service layer when/if the endpoint is built.
+- **Structured (JSON) logging via `nestjs-pino`** (phase 14, 2026-09-02):
+  the default Nest logger is replaced app-wide (`main.ts`:
+  `app.useLogger(app.get(Logger))` + `bufferLogs: true`), and every HTTP
+  request gets a request id (`pino-http`'s `genReqId` - honors an incoming
+  `X-Request-Id` header, otherwise generates one) that's echoed back in
+  the `X-Request-Id` response header and in `HttpExceptionFilter`'s error
+  body (`requestId`). Log level per request reflects the actual status
+  (`customLogLevel`: `>=500` → error, `>=400` → warn, else info) via
+  `src/config/logger.config.ts`; `LoggerErrorInterceptor` (registered in
+  `main.ts`) makes the logged `err` the real thrown exception instead of a
+  generic wrapper. `Authorization`/`Cookie` headers are redacted
+  (`req.body` is never logged by pino-http by default, so password/
+  confirmation-code fields were never at risk). **Log format defaults to
+  JSON, pretty-print only when `NODE_ENV` is exactly `"development"`** -
+  deliberately the opposite of the more common "pretty unless told
+  otherwise" default, because `pino-pretty` is a devDependency: defaulting
+  to pretty would mean a deployment that forgets to set `NODE_ENV` crashes
+  on its first log line instead of just emitting JSON. See
+  `.private/stage-14-explained.md` for the full walkthrough.
 - **Soft-delete only exists on `Wallet`** (`is_deleted`/`deleted_at`) -
   intentionally not added to `Category`/`Limit`/`Transaction` in phase 6,
   since none of those has a delete endpoint at all yet. Add it if/when a
@@ -290,7 +313,8 @@ MySQL поднимается локально через docker (контейн�
 секрет. Скрипт идемпотентен (пропускает существующие email).
 
 `.env.example` — есть все переменные, которые реально читает приложение
-(`DB_HOST/PORT/USERNAME/PASSWORD/DATABASE`, `JWT_SECRET`). Реальный `.env`
+(`DB_HOST/PORT/USERNAME/PASSWORD/DATABASE`, `JWT_SECRET`, плюс с этапа 14
+опциональные `LOG_LEVEL`/`NODE_ENV` для логирования). Реальный `.env`
 никогда не попадал в git-историю (проверено явно 2026-08-31).
 
 API: `http://localhost:3000`, глобальный префикс `/api` + URI-версионирование
@@ -310,8 +334,8 @@ above). Full staged plan and status lives in `.private/modernization-plan.md`
 Remaining round-2 phases (see the plan file, "Раунд 2" section):
 - **Phase 13 (Currency/Category cascade-delete policy) - done, decided
   with the user 2026-09-02.** See "Важные технические решения" above.
-- **Phase 14** - observability (structured logging, request/correlation
-  IDs).
+- **Phase 14 (structured logging, request/correlation IDs) - done,
+  2026-09-02.** See "Важные технические решения" above.
 - **Phase 15** - e2e coverage for transactions/limits/categories (currently
   only auth/health/currencies are covered), plus a few trivial patch
   dependency bumps.
