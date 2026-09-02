@@ -384,8 +384,22 @@ Remaining round-2 phases (see the plan file, "Раунд 2" section):
   18+ minutes (not fail fast)** on the first push - the tests themselves
   passed in ~2s, but the cleanup's uncaught FK error skipped
   `await app.close()`, leaving the TypeORM connection open and Jest's
-  event loop never going idle. Fixed; full mechanism in
-  `.private/modernization-plan.md`.
+  event loop never going idle. Fixed.
+  **Then CI failed again with a misleading "Unable to connect to the
+  database" error - the real cause was a race between Jest's default
+  5000ms hook timeout and `@nestjs/typeorm`'s default retry policy
+  (9 attempts × 3000ms).** On a fresh CI database, if the first migration
+  attempt stumbles (a Docker MySQL healthcheck reporting "port open"
+  slightly before the server can handle heavy DDL is enough), the retry
+  loop easily exceeds 5s; Jest then tears down the test file's module
+  registry while NestJS's retry chain is still running in the background,
+  so the next retry's lazy `require()` inside `mysql2` (called on every
+  query via `.promise()`, not once at module load) hits a torn-down
+  environment and throws the nonsensical `PromisePoolConnection is not a
+  constructor`. Fixed by setting `testTimeout: 30000` in
+  `test/jest-e2e.json` - config-only, zero risk to app behavior. Full
+  mechanism (including the exact `mysql2`/`@nestjs/typeorm` source lines)
+  in `.private/modernization-plan.md`.
   Also found (not just in Limits): `CategoriesService.create()`/
   `.update()` have the same `@Exclude()`-breaking spread-before-`.save()`
   pattern as `LimitsService.calculateSpending()` - confirmed live via curl
