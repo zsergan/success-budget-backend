@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 
-import { ConfirmationType } from '../shared/enums';
+import { ConfirmationType } from '@shared/enums';
 import { User } from './user.entity';
 
 @Entity('confirmation_codes')

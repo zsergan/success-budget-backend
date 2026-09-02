@@ -13,11 +13,11 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { CategoriesService } from './categories.service';
-import type { AuthedRequest } from '../../shared/types';
+import type { AuthedRequest } from '@shared/types';
 import { UpdateCategoryDto } from './dto/update-category.dto';
-import { ErrorMessages } from '../../shared/error-messages';
+import { ErrorMessages } from '@shared/error-messages';
 import { CreateCategoryDto } from './dto/create-category.dto';
-import { assertOwnership } from '../../shared/utils';
+import { assertOwnership } from '@shared/utils';
 
 @ApiTags('categories')
 @ApiBearerAuth()

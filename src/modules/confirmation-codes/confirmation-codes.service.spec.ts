@@ -3,8 +3,8 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { ConfirmationCodesService } from './confirmation-codes.service';
-import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
-import { ConfirmationType } from '../../shared/enums';
+import { ConfirmationCode } from '@entities/confirmation-codes.entity';
+import { ConfirmationType } from '@shared/enums';
 
 describe('ConfirmationCodesService', () => {
   let service: ConfirmationCodesService;

@@ -3,7 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { CurrenciesService } from './currencies.service';
-import { Currency } from '../../entities/currency.entity';
+import { Currency } from '@entities/currency.entity';
 
 describe('CurrenciesService', () => {
   let service: CurrenciesService;

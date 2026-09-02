@@ -1,7 +1,7 @@
 import { BadRequestException, INestApplication, ValidationError, ValidationPipe, VersioningType } from '@nestjs/common';
 import helmet from 'helmet';
 
-import { HttpExceptionFilter } from './shared/http-exception.filter';
+import { HttpExceptionFilter } from '@shared/http-exception.filter';
 
 export function configureApp(app: INestApplication): void {
   app.use(helmet());

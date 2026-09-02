@@ -3,9 +3,9 @@ import { HttpException } from '@nestjs/common';
 
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
-import { TransactionsService } from '../transactions/transactions.service';
-import { CategoriesService } from '../categories/categories.service';
-import { ErrorMessages } from '../../shared/error-messages';
+import { TransactionsService } from '@modules/transactions/transactions.service';
+import { CategoriesService } from '@modules/categories/categories.service';
+import { ErrorMessages } from '@shared/error-messages';
 
 describe('LimitsController', () => {
   let controller: LimitsController;

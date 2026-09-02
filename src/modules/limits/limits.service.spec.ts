@@ -4,9 +4,9 @@ import { HttpException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 
 import { LimitsService } from './limits.service';
-import { Limit } from '../../entities/limit.entity';
-import { LimitType, TransactionType } from '../../shared/enums';
-import { ErrorMessages } from '../../shared/error-messages';
+import { Limit } from '@entities/limit.entity';
+import { LimitType, TransactionType } from '@shared/enums';
+import { ErrorMessages } from '@shared/error-messages';
 
 describe('LimitsService', () => {
   let service: LimitsService;

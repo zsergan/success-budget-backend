@@ -1,5 +1,5 @@
 import { TransactionType } from './enums';
-import { CreateCategoryDto } from '../modules/categories/dto/create-category.dto';
+import { CreateCategoryDto } from '@modules/categories/dto/create-category.dto';
 
 export const MAX_CONFIRMATION_CODE_ATTEMPTS = 5;
 

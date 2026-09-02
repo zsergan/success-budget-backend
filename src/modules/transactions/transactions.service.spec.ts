@@ -3,9 +3,9 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
-import { Transaction } from '../../entities/transaction.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { TransactionType } from '../../shared/enums';
+import { Transaction } from '@entities/transaction.entity';
+import { Wallet } from '@entities/wallet.entity';
+import { TransactionType } from '@shared/enums';
 
 describe('TransactionsService', () => {
   let service: TransactionsService;

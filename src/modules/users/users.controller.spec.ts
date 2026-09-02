@@ -4,9 +4,9 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
-import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
-import { ErrorMessages } from '../../shared/error-messages';
-import { ConfirmationType } from '../../shared/enums';
+import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
+import { ErrorMessages } from '@shared/error-messages';
+import { ConfirmationType } from '@shared/enums';
 
 describe('UsersController', () => {
   let controller: UsersController;

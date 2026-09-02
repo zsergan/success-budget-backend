@@ -2,10 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 
-import { Transaction } from '../../entities/transaction.entity';
-import { Wallet } from '../../entities/wallet.entity';
+import { Transaction } from '@entities/transaction.entity';
+import { Wallet } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
-import { TransactionType } from '../../shared/enums';
+import { TransactionType } from '@shared/enums';
 
 @Injectable()
 export class TransactionsService {

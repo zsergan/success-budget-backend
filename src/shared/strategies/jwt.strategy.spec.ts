@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { UnauthorizedException } from '@nestjs/common';
 
 import { JwtStrategy } from './jwt.strategy';
-import { UsersService } from '../../modules/users/users.service';
+import { UsersService } from '@modules/users/users.service';
 
 describe('JwtStrategy', () => {
   const configService = { getOrThrow: jest.fn().mockReturnValue('test-secret') } as unknown as ConfigService;

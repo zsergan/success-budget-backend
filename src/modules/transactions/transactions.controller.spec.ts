@@ -3,10 +3,10 @@ import { HttpException } from '@nestjs/common';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
-import { WalletsService } from '../wallets/wallets.service';
-import { CategoriesService } from '../categories/categories.service';
-import { ErrorMessages } from '../../shared/error-messages';
-import { TransactionType } from '../../shared/enums';
+import { WalletsService } from '@modules/wallets/wallets.service';
+import { CategoriesService } from '@modules/categories/categories.service';
+import { ErrorMessages } from '@shared/error-messages';
+import { TransactionType } from '@shared/enums';
 
 describe('TransactionsController', () => {
   let controller: TransactionsController;

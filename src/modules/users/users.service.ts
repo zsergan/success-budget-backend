@@ -5,18 +5,18 @@ import { DataSource, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
 
-import { User } from '../../entities/user.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { Category } from '../../entities/category.entity';
-import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
+import { User } from '@entities/user.entity';
+import { Wallet } from '@entities/wallet.entity';
+import { Category } from '@entities/category.entity';
+import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import type { CreateUserDto } from './dto/create-user.dto';
 import type { LoginUserDto } from './dto/login-user.dto';
 import type { VerifyUserDto } from './dto/verify-user.dto';
-import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
-import { ErrorMessages } from '../../shared/error-messages';
-import { ConfirmationType, WalletDesign } from '../../shared/enums';
-import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '../../shared/constants';
-import { constantTimeEquals } from '../../shared/utils';
+import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
+import { ErrorMessages } from '@shared/error-messages';
+import { ConfirmationType, WalletDesign } from '@shared/enums';
+import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
+import { constantTimeEquals } from '@shared/utils';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
 

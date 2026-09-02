@@ -2,12 +2,12 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { Limit } from '../../entities/limit.entity';
-import { Transaction } from '../../entities/transaction.entity';
+import { Limit } from '@entities/limit.entity';
+import { Transaction } from '@entities/transaction.entity';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
-import { LimitType, TransactionType } from '../../shared/enums';
-import { ErrorMessages } from '../../shared/error-messages';
+import { LimitType, TransactionType } from '@shared/enums';
+import { ErrorMessages } from '@shared/error-messages';
 
 @Injectable()
 export class LimitsService {

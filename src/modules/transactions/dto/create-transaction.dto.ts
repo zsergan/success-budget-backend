@@ -1,6 +1,6 @@
 import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum, IsDateString, MaxLength } from 'class-validator';
 
-import { TransactionType } from '../../../shared/enums';
+import { TransactionType } from '@shared/enums';
 
 export class CreateTransactionDto {
   @IsNotEmpty()

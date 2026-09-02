@@ -11,7 +11,7 @@ import { Exclude } from 'class-transformer';
 
 import { User } from './user.entity';
 import { Currency } from './currency.entity';
-import { WalletDesign } from '../shared/enums';
+import { WalletDesign } from '@shared/enums';
 
 @Entity('wallets')
 export class Wallet {

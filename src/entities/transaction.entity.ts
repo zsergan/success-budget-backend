@@ -4,7 +4,7 @@ import { Exclude } from 'class-transformer';
 import { Wallet } from './wallet.entity';
 import { Category } from './category.entity';
 import { Currency } from './currency.entity';
-import { TransactionType } from '../shared/enums';
+import { TransactionType } from '@shared/enums';
 
 @Entity('transactions')
 export class Transaction {

@@ -3,8 +3,8 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { WalletsService } from './wallets.service';
-import { Wallet } from '../../entities/wallet.entity';
-import { TransactionType } from '../../shared/enums';
+import { Wallet } from '@entities/wallet.entity';
+import { TransactionType } from '@shared/enums';
 
 describe('WalletsService', () => {
   let service: WalletsService;

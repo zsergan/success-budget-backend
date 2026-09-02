@@ -6,13 +6,13 @@ import { DataSource, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 
 import { UsersService } from './users.service';
-import { User } from '../../entities/user.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { Category } from '../../entities/category.entity';
-import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
-import { ConfirmationCodesService } from '../confirmation-codes/confirmation-codes.service';
-import { ErrorMessages } from '../../shared/error-messages';
-import { ConfirmationType } from '../../shared/enums';
+import { User } from '@entities/user.entity';
+import { Wallet } from '@entities/wallet.entity';
+import { Category } from '@entities/category.entity';
+import { ConfirmationCode } from '@entities/confirmation-codes.entity';
+import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
+import { ErrorMessages } from '@shared/error-messages';
+import { ConfirmationType } from '@shared/enums';
 
 const JWT_SECRET_FOR_TESTS = 'test-secret';
 
