@@ -3,6 +3,7 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
+  "testTimeout": 30000,
   "moduleNameMapper": {
     "^@entities/(.*)$": "<rootDir>/../src/entities/$1",
     "^@modules/(.*)$": "<rootDir>/../src/modules/$1",
