@@ -3,9 +3,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
-import { WalletsModule } from '../wallets/wallets.module';
-import { CategoriesModule } from '../categories/categories.module';
-import { Transaction } from '../../entities/transaction.entity';
+import { WalletsModule } from '@modules/wallets/wallets.module';
+import { CategoriesModule } from '@modules/categories/categories.module';
+import { Transaction } from '@entities/transaction.entity';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Transaction]), forwardRef(() => WalletsModule), CategoriesModule],

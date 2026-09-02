@@ -5,18 +5,18 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
-import { getOrmConfig } from './config/ormconfig';
-import { envValidationSchema } from './config/env.validation';
-import { UsersModule } from './modules/users/users.module';
-import { CategoriesModule } from './modules/categories/categories.module';
-import { WalletsModule } from './modules/wallets/wallets.module';
-import { TransactionsModule } from './modules/transactions/transactions.module';
-import { CurrenciesModule } from './modules/currencies/currencies.module';
-import { ConfirmationCodesModule } from './modules/confirmation-codes/confirmation-codes.module';
-import { LimitsModule } from './modules/limits/limits.module';
-import { HealthModule } from './modules/health/health.module';
-import { JwtStrategy } from './shared/strategies/jwt.strategy';
-import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
+import { getOrmConfig } from '@config/ormconfig';
+import { envValidationSchema } from '@config/env.validation';
+import { UsersModule } from '@modules/users/users.module';
+import { CategoriesModule } from '@modules/categories/categories.module';
+import { WalletsModule } from '@modules/wallets/wallets.module';
+import { TransactionsModule } from '@modules/transactions/transactions.module';
+import { CurrenciesModule } from '@modules/currencies/currencies.module';
+import { ConfirmationCodesModule } from '@modules/confirmation-codes/confirmation-codes.module';
+import { LimitsModule } from '@modules/limits/limits.module';
+import { HealthModule } from '@modules/health/health.module';
+import { JwtStrategy } from '@shared/strategies/jwt.strategy';
+import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
 
 @Module({
   imports: [

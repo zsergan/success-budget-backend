@@ -5,7 +5,7 @@ import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.config';
-import { ConfirmationCode } from '../src/entities/confirmation-codes.entity';
+import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 
 describe('App (e2e)', () => {
   let app: INestApplication;

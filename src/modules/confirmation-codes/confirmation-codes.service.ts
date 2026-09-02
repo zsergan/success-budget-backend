@@ -2,10 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { ConfirmationCode } from '../../entities/confirmation-codes.entity';
+import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { CreateConfirmationCodeDto } from './dto/create-confirmation-code.dto';
-import { ConfirmationType } from '../../shared/enums';
-import { generateRandomNumberString } from '../../shared/utils';
+import { ConfirmationType } from '@shared/enums';
+import { generateRandomNumberString } from '@shared/utils';
 
 @Injectable()
 export class ConfirmationCodesService {

@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { TransactionType } from '../shared/enums';
+import { TransactionType } from '@shared/enums';
 import { User } from './user.entity';
 
 @Entity('categories')

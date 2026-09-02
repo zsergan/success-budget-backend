@@ -17,10 +17,10 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { WalletsService, WalletSummary } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
-import type { AuthedRequest } from '../../shared/types';
-import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
-import { TransactionsService } from '../transactions/transactions.service';
-import { ErrorMessages } from '../../shared/error-messages';
+import type { AuthedRequest } from '@shared/types';
+import { getEndOfMonth, getStartOfMonth, assertOwnership } from '@shared/utils';
+import { TransactionsService } from '@modules/transactions/transactions.service';
+import { ErrorMessages } from '@shared/error-messages';
 
 @ApiTags('wallets')
 @ApiBearerAuth()

@@ -1,12 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from '../app.module';
-import { UsersService } from '../modules/users/users.service';
-import { WalletsService } from '../modules/wallets/wallets.service';
-import { CategoriesService } from '../modules/categories/categories.service';
-import { CurrenciesService } from '../modules/currencies/currencies.service';
-import { WalletDesign } from '../shared/enums';
-import { DEFAULT_CATEGORIES } from '../shared/constants';
+import { UsersService } from '@modules/users/users.service';
+import { WalletsService } from '@modules/wallets/wallets.service';
+import { CategoriesService } from '@modules/categories/categories.service';
+import { CurrenciesService } from '@modules/currencies/currencies.service';
+import { WalletDesign } from '@shared/enums';
+import { DEFAULT_CATEGORIES } from '@shared/constants';
 
 // Dev-only seed data. Not real accounts, not real roles - this app has no
 // role/permission model (see src/entities/user.entity.ts), so "admin" here

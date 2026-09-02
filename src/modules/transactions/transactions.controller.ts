@@ -12,12 +12,12 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
-import { WalletsService } from '../wallets/wallets.service';
-import { CategoriesService } from '../categories/categories.service';
+import { WalletsService } from '@modules/wallets/wallets.service';
+import { CategoriesService } from '@modules/categories/categories.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
-import type { AuthedRequest } from '../../shared/types';
-import { getEndOfMonth, getStartOfMonth, assertOwnership } from '../../shared/utils';
-import { ErrorMessages } from '../../shared/error-messages';
+import type { AuthedRequest } from '@shared/types';
+import { getEndOfMonth, getStartOfMonth, assertOwnership } from '@shared/utils';
+import { ErrorMessages } from '@shared/error-messages';
 
 @ApiTags('transactions')
 @ApiBearerAuth()

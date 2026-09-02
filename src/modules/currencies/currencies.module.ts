@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
-import { Currency } from '../../entities/currency.entity';
+import { Currency } from '@entities/currency.entity';
 import { CurrenciesController } from './currencies.controller';
 import { CurrenciesService } from './currencies.service';
 

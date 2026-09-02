@@ -2,11 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { Wallet } from '../../entities/wallet.entity';
-import { Transaction } from '../../entities/transaction.entity';
+import { Wallet } from '@entities/wallet.entity';
+import { Transaction } from '@entities/transaction.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
-import { TransactionType } from '../../shared/enums';
+import { TransactionType } from '@shared/enums';
 
 export interface WalletSummary {
   wallet: Wallet;

@@ -3,8 +3,8 @@ import { HttpException } from '@nestjs/common';
 
 import { CategoriesController } from './categories.controller';
 import { CategoriesService } from './categories.service';
-import { ErrorMessages } from '../../shared/error-messages';
-import { TransactionType } from '../../shared/enums';
+import { ErrorMessages } from '@shared/error-messages';
+import { TransactionType } from '@shared/enums';
 
 describe('CategoriesController', () => {
   let controller: CategoriesController;

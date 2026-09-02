@@ -11,7 +11,7 @@ import { Exclude } from 'class-transformer';
 
 import { User } from './user.entity';
 import { Category } from './category.entity';
-import { LimitType } from '../shared/enums';
+import { LimitType } from '@shared/enums';
 
 @Entity('limits')
 export class Limit {

@@ -1,6 +1,6 @@
 import { IsEnum, IsNotEmpty, IsNumber, IsString } from 'class-validator';
 
-import { ConfirmationType } from '../../../shared/enums';
+import { ConfirmationType } from '@shared/enums';
 
 export class CreateConfirmationCodeDto {
   @IsNotEmpty()

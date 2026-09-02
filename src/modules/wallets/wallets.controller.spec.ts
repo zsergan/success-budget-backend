@@ -3,8 +3,8 @@ import { HttpException } from '@nestjs/common';
 
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
-import { TransactionsService } from '../transactions/transactions.service';
-import { ErrorMessages } from '../../shared/error-messages';
+import { TransactionsService } from '@modules/transactions/transactions.service';
+import { ErrorMessages } from '@shared/error-messages';
 
 describe('WalletsController', () => {
   let controller: WalletsController;

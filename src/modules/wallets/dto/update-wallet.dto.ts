@@ -1,5 +1,5 @@
 import { IsOptional, IsString, IsEnum, MaxLength } from 'class-validator';
-import { WalletDesign } from '../../../shared/enums';
+import { WalletDesign } from '@shared/enums';
 
 export class UpdateWalletDto {
   @IsOptional()

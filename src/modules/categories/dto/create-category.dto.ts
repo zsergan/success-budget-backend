@@ -1,5 +1,5 @@
 import { IsEnum, IsNotEmpty, IsString, MaxLength } from 'class-validator';
-import { TransactionType } from '../../../shared/enums';
+import { TransactionType } from '@shared/enums';
 
 export class CreateCategoryDto {
   @IsNotEmpty()
