@@ -29,20 +29,35 @@ describe('App (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (userId) {
-      // Limits must go first: limits.category_id is RESTRICT (phase 13), and
-      // MySQL's cascade engine doesn't resolve categories.user_id CASCADE
-      // and limits.category_id RESTRICT in the order that would make a
-      // plain `DELETE FROM users` work when a category-scoped limit exists -
-      // it hits the RESTRICT before the sibling CASCADE removes the limit
-      // that's blocking it. No user-delete endpoint exists in the app today
-      // (this is a raw-SQL-only situation), but this test creates a
-      // category-scoped limit, so it has to clean that up explicitly first.
-      await dataSource.query('DELETE FROM limits WHERE user_id = ?', [userId]);
-      // onDelete: CASCADE takes the wallet, categories, and confirmation code with it.
-      await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
+    // try/finally is load-bearing here, not just tidy: if the cleanup
+    // query below throws (see the comment on it) and app.close() never
+    // runs, the TypeORM connection pool stays open and Jest hangs
+    // indefinitely instead of exiting - confirmed in CI, where this
+    // previously ran for 18+ minutes with the test run itself already
+    // finished ("Jest did not exit one second after the test run has
+    // completed") until the job was cancelled by hand.
+    try {
+      if (userId) {
+        // Transactions and limits must go first: transactions.category_id
+        // and limits.category_id are RESTRICT (phase 13), and MySQL's
+        // cascade engine doesn't resolve categories.user_id CASCADE and
+        // that RESTRICT in the order that would make a plain `DELETE FROM
+        // users` work when a category-scoped transaction/limit exists - it
+        // hits the RESTRICT before the sibling CASCADE removes the row
+        // that's blocking it. No user-delete endpoint exists in the app
+        // today (this is a raw-SQL-only situation), but this test creates
+        // both, so it has to clean them up explicitly first.
+        await dataSource.query(
+          'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.user_id = ?',
+          [userId],
+        );
+        await dataSource.query('DELETE FROM limits WHERE user_id = ?', [userId]);
+        // onDelete: CASCADE takes the wallet, categories, and confirmation code with it.
+        await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
+      }
+    } finally {
+      await app.close();
     }
-    await app.close();
   });
 
   it('GET /api/v1/currencies is public and returns the seeded list', async () => {
