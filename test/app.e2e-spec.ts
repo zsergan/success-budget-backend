@@ -13,6 +13,8 @@ describe('App (e2e)', () => {
   const testEmail = `e2e-${Date.now()}@example.com`;
   const testPassword = 'DevTest#2026';
   let userId: number;
+  let token: string;
+  let walletId: number;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -27,11 +29,35 @@ describe('App (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (userId) {
-      // onDelete: CASCADE takes the wallet, categories, and confirmation code with it.
-      await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
+    // try/finally is load-bearing here, not just tidy: if the cleanup
+    // query below throws (see the comment on it) and app.close() never
+    // runs, the TypeORM connection pool stays open and Jest hangs
+    // indefinitely instead of exiting - confirmed in CI, where this
+    // previously ran for 18+ minutes with the test run itself already
+    // finished ("Jest did not exit one second after the test run has
+    // completed") until the job was cancelled by hand.
+    try {
+      if (userId) {
+        // Transactions and limits must go first: transactions.category_id
+        // and limits.category_id are RESTRICT (phase 13), and MySQL's
+        // cascade engine doesn't resolve categories.user_id CASCADE and
+        // that RESTRICT in the order that would make a plain `DELETE FROM
+        // users` work when a category-scoped transaction/limit exists - it
+        // hits the RESTRICT before the sibling CASCADE removes the row
+        // that's blocking it. No user-delete endpoint exists in the app
+        // today (this is a raw-SQL-only situation), but this test creates
+        // both, so it has to clean them up explicitly first.
+        await dataSource.query(
+          'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.user_id = ?',
+          [userId],
+        );
+        await dataSource.query('DELETE FROM limits WHERE user_id = ?', [userId]);
+        // onDelete: CASCADE takes the wallet, categories, and confirmation code with it.
+        await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
+      }
+    } finally {
+      await app.close();
     }
-    await app.close();
   });
 
   it('GET /api/v1/currencies is public and returns the seeded list', async () => {
@@ -96,7 +122,7 @@ describe('App (e2e)', () => {
       .send({ email: testEmail, password: testPassword })
       .expect(201);
 
-    const token = loginResponse.text;
+    token = loginResponse.text;
     expect(typeof token).toBe('string');
 
     const profileResponse = await request(app.getHttpServer())
@@ -113,5 +139,98 @@ describe('App (e2e)', () => {
 
     expect(walletsResponse.body).toHaveLength(1);
     expect(walletsResponse.body[0].wallet.wallet_name).toBe('Cash');
+    walletId = walletsResponse.body[0].wallet.id;
+  });
+
+  it('creates a category and moves it to the front of its list', async () => {
+    const createResponse = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Hobbies', transaction_type: 'expense', icon: 'brush', color: '#abcdef' })
+      .expect(201);
+
+    const categoryId = createResponse.body.id;
+
+    await request(app.getHttpServer())
+      .put(`/api/v1/categories/move-forward/${categoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const categoriesResponse = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(categoriesResponse.body.expenses[0].id).toBe(categoryId);
+  });
+
+  it('creates transactions and atomically updates the wallet balance', async () => {
+    const categoriesResponse = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const salaryCategoryId = categoriesResponse.body.incomes.find((category) => category.name === 'Salary').id;
+    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Groceries').id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/transactions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: walletId,
+        category_id: salaryCategoryId,
+        transaction_type: 'income',
+        amount: '500.00',
+        timestamp: new Date().toISOString(),
+        description: 'e2e salary',
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/transactions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: walletId,
+        category_id: groceriesCategoryId,
+        transaction_type: 'expense',
+        amount: '120.50',
+        timestamp: new Date().toISOString(),
+        description: 'e2e groceries',
+      })
+      .expect(201);
+
+    const walletsResponse = await request(app.getHttpServer())
+      .get('/api/v1/wallets')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const wallet = walletsResponse.body.find((entry) => entry.wallet.id === walletId);
+    expect(Number(wallet.wallet.balance)).toBe(379.5);
+    expect(Number(wallet.total_income)).toBe(500);
+    expect(Number(wallet.total_spend)).toBe(120.5);
+  });
+
+  it('creates a limit and reports spending against it', async () => {
+    const categoriesResponse = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Groceries').id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_id: groceriesCategoryId, amount: '200.00' })
+      .expect(201);
+
+    const limitsResponse = await request(app.getHttpServer())
+      .get('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const groceriesLimit = limitsResponse.body.limits.find((limit) => limit.category.id === groceriesCategoryId);
+    expect(Number(groceriesLimit.spent)).toBe(120.5);
+    expect(groceriesLimit.in_percent).toBe(60);
   });
 });
