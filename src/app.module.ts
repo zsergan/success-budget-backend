@@ -4,9 +4,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { LoggerModule } from 'nestjs-pino';
 
 import { getOrmConfig } from '@config/ormconfig';
 import { envValidationSchema } from '@config/env.validation';
+import { getLoggerConfig } from '@config/logger.config';
 import { UsersModule } from '@modules/users/users.module';
 import { CategoriesModule } from '@modules/categories/categories.module';
 import { WalletsModule } from '@modules/wallets/wallets.module';
@@ -21,6 +23,10 @@ import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validationSchema: envValidationSchema }),
+    LoggerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: getLoggerConfig,
+    }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: getOrmConfig,
