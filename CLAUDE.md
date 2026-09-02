@@ -25,11 +25,12 @@ produced phases 9-16 in `.private/modernization-plan.md` under "Раунд 2".
 Phases 9-14 from that round are done - phase 13 (Currency/Category cascade
 policy) required your sign-off before implementation and got it on
 2026-09-02, phase 14 (structured logging) done the same day, see
-"Важные технические решения" below. **Phase 15 is in progress and
-blocked** on a newly discovered issue with the phase-13 cascade policy -
-see the "Phase 15" entry under "Что осталось" and
-`.private/modernization-plan.md` for the full writeup and options; do not
-resume or resolve it without the user's decision.
+"Важные технические решения" below. **Phase 15 is partially done** - its
+e2e suite passes (worked around), but a design question it surfaced about
+the phase-13 cascade policy is still open - see the "Phase 15" entry
+under "Что осталось" and `.private/modernization-plan.md` for the full
+writeup and options; do not resolve the cascade-policy question without
+the user's decision.
 
 **Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
 baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
@@ -362,26 +363,39 @@ Remaining round-2 phases (see the plan file, "Раунд 2" section):
   with the user 2026-09-02.** See "Важные технические решения" above.
 - **Phase 14 (structured logging, request/correlation IDs) - done,
   2026-09-02.** See "Важные технические решения" above.
-- **Phase 15 - IN PROGRESS, BLOCKED (2026-09-02).** e2e scenarios for
+- **Phase 15 - PARTIALLY DONE (2026-09-02).** e2e scenarios for
   transactions/limits/categories/wallet-balance are written
-  (`test/app.e2e-spec.ts`) but the suite's cleanup fails: deleting the
-  e2e test user hits an FK error, because phase 13's `RESTRICT` on
+  (`test/app.e2e-spec.ts`) and **the suite passes end-to-end** - its
+  `afterAll` cleanup now explicitly deletes transactions/limits before
+  the user and is wrapped in `try/finally`. This is a workaround, not a
+  fix to the underlying design question: phase 13's `RESTRICT` on
   `transactions.category_id`/`limits.category_id` conflicts with the
-  pre-existing `categories.user_id` → `users.id` CASCADE - MySQL doesn't
-  guarantee the sibling CASCADE (deleting the transaction/limit itself)
-  resolves before the RESTRICT on the category blocks the cascade. Not
-  reachable through the current API (no user-delete endpoint exists), but
-  it's the same class of problem phase 13 was solving, now hitting a
-  *legitimate* cascade instead of a destructive one. **Needs your
-  decision the same way phase 13 did** - see
-  `.private/modernization-plan.md` ("Этап 15", the "Критическая находка"
-  section) for the mechanism and three options before resuming. The
-  coverage-config redesign, `test:debug` cleanup, and patch dependency
-  bumps parts of phase 15 haven't been started yet either.
-  Separately (unrelated, already fixed): while investigating this, found
-  and fixed a real bug in `test/tsconfig.json` that made VS Code's IDE
-  fail to type-check `test/app.e2e-spec.ts` at all - see "Важные
-  технические решения" below.
+  pre-existing `categories.user_id` → `users.id` CASCADE - deleting a
+  user with a category-scoped transaction/limit still hits an FK error
+  if attempted directly (no user-delete endpoint exists today, so this
+  isn't reachable via the API - only via this test's raw SQL). **Still
+  needs your decision the same way phase 13 did** before it can be
+  considered resolved rather than worked around - see
+  `.private/modernization-plan.md` ("Этап 15", "Критическая находка") for
+  the mechanism and three options. The coverage-config redesign,
+  `test:debug` cleanup, and patch dependency bumps parts of phase 15
+  haven't been started yet.
+  **A missing `try/finally` in that same `afterAll` caused CI to hang for
+  18+ minutes (not fail fast)** on the first push - the tests themselves
+  passed in ~2s, but the cleanup's uncaught FK error skipped
+  `await app.close()`, leaving the TypeORM connection open and Jest's
+  event loop never going idle. Fixed; full mechanism in
+  `.private/modernization-plan.md`.
+  Also found (not just in Limits): `CategoriesService.create()`/
+  `.update()` have the same `@Exclude()`-breaking spread-before-`.save()`
+  pattern as `LimitsService.calculateSpending()` - confirmed live via curl
+  that `POST /categories` leaks `user_id`. Not fixed (narrow, safe fix for
+  later) - see `.private/modernization-plan.md` for the full list of
+  affected/unaffected services.
+  Separately (unrelated, already fixed): while investigating the original
+  cascade issue, found and fixed a real bug in `test/tsconfig.json` that
+  made VS Code's IDE fail to type-check `test/app.e2e-spec.ts` at all -
+  see "Важные технические решения" below.
 - **Phase 16** - branch protection on `main` (confirmed off via the GitHub
   API), README badges.
 
