@@ -1,11 +1,20 @@
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
 import { configureApp } from './app.config';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // bufferLogs holds Nest's own bootstrap-time log lines until useLogger()
+  // below wires up pino, so they go through it too instead of the default
+  // console logger.
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.useLogger(app.get(Logger));
+  // Surfaces the real stack trace/error class on the pino `err` property for
+  // caught exceptions - without it pino-http logs a generic HttpException
+  // wrapper instead of the actual error that was thrown.
+  app.useGlobalInterceptors(new LoggerErrorInterceptor());
   app.enableShutdownHooks();
   configureApp(app);
 
