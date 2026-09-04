@@ -21,6 +21,7 @@ describe('TransactionsService', () => {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
       getOne: jest.fn(),
@@ -192,6 +193,7 @@ describe('TransactionsService', () => {
 
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.user_id = :userId', { userId: 9 });
       expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
       expect(queryBuilder.limit).toHaveBeenCalledWith(1);
     });
   });

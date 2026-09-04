@@ -122,14 +122,21 @@ export class TransactionsService {
   }
 
   async getLatest(userId: number): Promise<Transaction | null> {
-    return this.transactionRepository
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
-      .innerJoinAndSelect('transaction.currency', 'currency')
-      .where('wallet.user_id = :userId', { userId })
-      .orderBy('transaction.timestamp', 'DESC')
-      .limit(1)
-      .getOne();
+    return (
+      this.transactionRepository
+        .createQueryBuilder('transaction')
+        .innerJoinAndSelect('transaction.wallet', 'wallet')
+        .innerJoinAndSelect('transaction.category', 'category')
+        .innerJoinAndSelect('transaction.currency', 'currency')
+        .where('wallet.user_id = :userId', { userId })
+        .orderBy('transaction.timestamp', 'DESC')
+        // Deterministic tie-break for the (now rare, since timestamp is
+        // millisecond-precision) case of two transactions landing on the
+        // exact same value - a single "latest" result can't be left to
+        // depend on MySQL's unspecified tie order.
+        .addOrderBy('transaction.id', 'DESC')
+        .limit(1)
+        .getOne()
+    );
   }
 }
