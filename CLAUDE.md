@@ -345,3 +345,71 @@ Remaining round-2 phases (see the plan file, "Раунд 2" section):
 9 Dependabot PRs (8 for the deferred NestJS 12 bump, 1 for `@types/node`
 24→26) are being left open deliberately as a visible backlog marker - do
 not merge or close them without being asked.
+
+## Transactions Stage 3 — mobile design gap-fill (2026-09-03)
+
+Branch `feat/transactions-mobile-api-gapfill`, cut from `main` (not from
+the still-unmerged `feat/e2e-coverage-and-housekeeping`/phase-15 branch -
+this work is unrelated to that one and shouldn't depend on it merging
+first). Read the "Transactions Stage 3" mobile design (Claude Design
+project `2a33691a-d45d-43a2-8c2d-405c7d3c2d0d`, file
+`Transactions Stage 3.dc.html` + its `support.js` import) and closed the
+gaps between it and the API so the mobile app can actually implement it.
+Full client-facing writeup in `.private/mobile-api-changes.md` section 12
+("Round 3 changes"). Summary:
+
+- **Fixed two internal-FK leaks found while reading the code for this**:
+  `POST /transactions` was missing `ClassSerializerInterceptor` entirely
+  (leaked `wallet_id`/`category_id`/`currency_id` on every create
+  response), and `GET /transactions`'s controller had a
+  `{ ...transaction, wallet: ... }` spread before serialization - the same
+  `@Exclude()`-defeating spread-before-serialize pattern already
+  documented for `CategoriesService`/`LimitsService` in
+  `.private/modernization-plan.md` ("Этап 15"), just not previously
+  spotted in the transactions controller itself. Fixed by mutating the
+  loaded entity instances in place instead of spreading.
+- **`POST /transactions` response shape changed** (breaking) to
+  `{ transaction, wallet, previous_balance }` - the design's post-save
+  confirmation screen shows the wallet's new balance and its prior value
+  ("was $3,666.40"), which needs the freshly-updated wallet without a
+  second `GET /wallets` round trip.
+- **`description` is now optional** on `CreateTransactionDto` - the entity
+  column was already nullable, but the DTO required it; the design's Note
+  field is explicitly optional.
+- **`GET /transactions` accepts `from`/`to` query params** (same
+  convention as `GET /wallets`, defaults to the current month unchanged)
+  instead of being hardcoded to the current month - needed for the
+  design's Week/Month/Year presets and custom range-picker, which compute
+  the boundary dates client-side.
+- **`DELETE /transactions/:id` is new** - the design's "Undo" action on
+  the post-save confirmation screen. Reverses the wallet balance change
+  and deletes the row in one DB transaction; 403s (not 404s, matching the
+  IDOR-safe pattern used everywhere else in this API) if the transaction's
+  wallet isn't the caller's.
+- **`GET /transactions/latest` is new** - the design's filtered-empty
+  state ("Nothing in this period... Your last one was on 29 Aug" / "Jump
+  to 29 Aug") needs to know the most recent transaction across all
+  wallets regardless of the applied filter; there was no way to get that
+  without fetching unbounded history.
+
+**Deliberately not added**: no `PUT`/`PATCH` to edit an existing
+transaction. The Stage 3 design doesn't draw an edit screen yet (list rows
+are `cursor:pointer` but go nowhere in this design stage) - add it when
+that screen exists instead of guessing its shape now.
+
+**e2e cleanup note for whoever merges this alongside phase 15**: this
+branch's `test/app.e2e-spec.ts` needed its own minimal version of the
+`afterAll` fix phase 15 already made independently (delete transactions
+before deleting the user, since `transactions.category_id` is `RESTRICT`
+- see phase 13/15 notes above) - both branches touch the same lines for
+the same reason, so expect a merge conflict there, not a silent
+duplicate-fix bug. Resolve by keeping phase 15's fuller version (it also
+covers limits) and folding this branch's transaction-endpoint assertions
+into it.
+
+Covered by unit tests (`transactions.service.spec.ts`,
+`transactions.controller.spec.ts`) and a new e2e scenario in
+`test/app.e2e-spec.ts` (date-range filtering, `latest`, undo, and that the
+create/list responses don't leak `wallet_id`/`category_id`/`currency_id`).
+Full local `npm run test`, `npm run test:e2e`, `npm run lint`, and
+`npm run build` all pass as of this writing.
