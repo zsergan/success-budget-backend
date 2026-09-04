@@ -18,7 +18,16 @@ describe('TransactionsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TransactionsController],
       providers: [
-        { provide: TransactionsService, useValue: { create: jest.fn(), getForAllWallets: jest.fn() } },
+        {
+          provide: TransactionsService,
+          useValue: {
+            create: jest.fn(),
+            getForAllWallets: jest.fn(),
+            getOneWithWallet: jest.fn(),
+            remove: jest.fn(),
+            getLatest: jest.fn(),
+          },
+        },
         { provide: WalletsService, useValue: { getOne: jest.fn() } },
         { provide: CategoriesService, useValue: { getOne: jest.fn() } },
       ],
@@ -84,12 +93,13 @@ describe('TransactionsController', () => {
         transaction_type: TransactionType.INCOME,
         amount: 50,
       } as any;
-      transactionsService.create.mockResolvedValue({ id: 99 } as any);
+      const created = { transaction: { id: 99 }, wallet: { id: 1, balance: 150 }, previous_balance: 100 };
+      transactionsService.create.mockResolvedValue(created as any);
 
       const result = await controller.create(req, dto);
 
       expect(transactionsService.create).toHaveBeenCalledWith(1, 3, dto);
-      expect(result).toEqual({ id: 99 });
+      expect(result).toEqual(created);
     });
   });
 
@@ -104,6 +114,54 @@ describe('TransactionsController', () => {
 
       expect(result[0].wallet).toEqual({ id: 1, is_deleted: 0 });
       expect(result[1].wallet).toBeNull();
+    });
+  });
+
+  describe('getLatest', () => {
+    it('returns null when the user has no transactions', async () => {
+      transactionsService.getLatest.mockResolvedValue(null);
+
+      const result = await controller.getLatest(req);
+
+      expect(result).toBeNull();
+    });
+
+    it('nulls out the wallet when it was soft-deleted', async () => {
+      transactionsService.getLatest.mockResolvedValue({ id: 1, wallet: { id: 1, is_deleted: 1 } } as any);
+
+      const result = await controller.getLatest(req);
+
+      expect(result.wallet).toBeNull();
+    });
+  });
+
+  describe('remove', () => {
+    it('rejects when the transaction does not exist', async () => {
+      transactionsService.getOneWithWallet.mockResolvedValue(null);
+
+      await expect(controller.remove(req, 'tx-1')).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
+      );
+      expect(transactionsService.remove).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the transaction belongs to someone else', async () => {
+      transactionsService.getOneWithWallet.mockResolvedValue({ id: 'tx-1', wallet: { id: 1, user_id: 2 } } as any);
+
+      await expect(controller.remove(req, 'tx-1')).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
+      );
+      expect(transactionsService.remove).not.toHaveBeenCalled();
+    });
+
+    it('removes the transaction when it belongs to the requesting user', async () => {
+      const transaction = { id: 'tx-1', wallet: { id: 1, user_id: 1 } };
+      transactionsService.getOneWithWallet.mockResolvedValue(transaction as any);
+
+      const result = await controller.remove(req, 'tx-1');
+
+      expect(transactionsService.remove).toHaveBeenCalledWith(transaction);
+      expect(result).toBe(true);
     });
   });
 });

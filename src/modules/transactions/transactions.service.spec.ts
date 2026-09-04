@@ -21,7 +21,9 @@ describe('TransactionsService', () => {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
+      getOne: jest.fn(),
     };
 
     walletRepositoryInTx = { findOne: jest.fn(), update: jest.fn() };
@@ -54,7 +56,8 @@ describe('TransactionsService', () => {
 
   describe('create', () => {
     it('locks the wallet row, applies the balance change, and creates the transaction in one DB transaction', async () => {
-      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 100 });
+      const wallet = { id: 1, balance: 100 };
+      walletRepositoryInTx.findOne.mockResolvedValue(wallet);
       const dto = { wallet_id: 1, amount: 10, transaction_type: TransactionType.INCOME } as any;
       const created = { ...dto, currency_id: 3 } as Transaction;
       transactionRepositoryInTx.create.mockReturnValue(created);
@@ -69,7 +72,8 @@ describe('TransactionsService', () => {
       });
       expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 110 });
       expect(transactionRepositoryInTx.create).toHaveBeenCalledWith({ ...dto, currency_id: 3 });
-      expect(result).toBe(created);
+      expect(result).toEqual({ transaction: created, wallet: { id: 1, balance: 110 }, previous_balance: 100 });
+      expect(result.wallet).toBe(wallet);
     });
 
     it('subtracts the amount for an expense transaction', async () => {
@@ -78,9 +82,45 @@ describe('TransactionsService', () => {
       transactionRepositoryInTx.create.mockReturnValue(dto);
       transactionRepositoryInTx.save.mockResolvedValue(dto);
 
-      await service.create(1, 3, dto);
+      const result = await service.create(1, 3, dto);
 
       expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 70 });
+      expect(result.previous_balance).toBe(100);
+      expect(result.wallet.balance).toBe(70);
+    });
+  });
+
+  describe('remove', () => {
+    it('reverses an income transaction and deletes it in one DB transaction', async () => {
+      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 150 });
+      (transactionRepositoryInTx as any).delete = jest.fn();
+      const transaction = {
+        id: 'tx-1',
+        wallet_id: 1,
+        amount: 50,
+        transaction_type: TransactionType.INCOME,
+      } as any;
+
+      await service.remove(transaction);
+
+      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 100 });
+      expect((transactionRepositoryInTx as any).delete).toHaveBeenCalledWith('tx-1');
+    });
+
+    it('reverses an expense transaction and deletes it in one DB transaction', async () => {
+      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 100 });
+      (transactionRepositoryInTx as any).delete = jest.fn();
+      const transaction = {
+        id: 'tx-2',
+        wallet_id: 1,
+        amount: 20,
+        transaction_type: TransactionType.EXPENSE,
+      } as any;
+
+      await service.remove(transaction);
+
+      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 120 });
+      expect((transactionRepositoryInTx as any).delete).toHaveBeenCalledWith('tx-2');
     });
   });
 
@@ -130,6 +170,29 @@ describe('TransactionsService', () => {
       await service.getForAllWallets(9, from, to);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.user_id = :userId', { userId: 9 });
+    });
+  });
+
+  describe('getOneWithWallet', () => {
+    it('loads a transaction with its wallet relation', async () => {
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      await service.getOneWithWallet('tx-1');
+
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
+    });
+  });
+
+  describe('getLatest', () => {
+    it('orders by timestamp descending and limits to one row', async () => {
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      await service.getLatest(9);
+
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.user_id = :userId', { userId: 9 });
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
+      expect(queryBuilder.limit).toHaveBeenCalledWith(1);
     });
   });
 });
