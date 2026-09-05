@@ -2,6 +2,7 @@ import {
   Body,
   ClassSerializerInterceptor,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -17,6 +18,7 @@ import type { AuthedRequest } from '@shared/types';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { ErrorMessages } from '@shared/error-messages';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
 import { assertOwnership } from '@shared/utils';
 
 @ApiTags('categories')
@@ -28,10 +30,13 @@ export class CategoriesController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(@Request() req: AuthedRequest) {
-    const categories = await this.categoriesService.getAll(req.user.id);
-    const [incomes, expenses] = this.categoriesService.separateCategories(categories);
+    return this.categoriesService.getAll(req.user.id);
+  }
 
-    return { incomes, expenses };
+  @UseInterceptors(ClassSerializerInterceptor)
+  @Put('reorder')
+  async reorder(@Request() req: AuthedRequest, @Body() body: ReorderCategoriesDto) {
+    await this.categoriesService.reorder(req.user.id, body.category_ids);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -54,11 +59,11 @@ export class CategoriesController {
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
-  @Put('move-forward/:categoryId')
-  async moveForward(@Request() req: AuthedRequest, @Param('categoryId', ParseIntPipe) categoryId: number) {
+  @Delete(':categoryId')
+  async remove(@Request() req: AuthedRequest, @Param('categoryId', ParseIntPipe) categoryId: number) {
     const category = await this.categoriesService.getOne(categoryId);
     assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
 
-    await this.categoriesService.moveToFront(req.user.id, category);
+    return this.categoriesService.deleteOrArchive(categoryId);
   }
 }

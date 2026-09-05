@@ -4,7 +4,6 @@ import { HttpException } from '@nestjs/common';
 import { CategoriesController } from './categories.controller';
 import { CategoriesService } from './categories.service';
 import { ErrorMessages } from '@shared/error-messages';
-import { TransactionType } from '@shared/enums';
 
 describe('CategoriesController', () => {
   let controller: CategoriesController;
@@ -21,9 +20,8 @@ describe('CategoriesController', () => {
             getOne: jest.fn(),
             update: jest.fn(),
             create: jest.fn(),
-            save: jest.fn(),
-            separateCategories: jest.fn(),
-            moveToFront: jest.fn(),
+            deleteOrArchive: jest.fn(),
+            reorder: jest.fn(),
           },
         },
       ],
@@ -36,14 +34,22 @@ describe('CategoriesController', () => {
   const req = { user: { id: 1 } } as any;
 
   describe('getAll', () => {
-    it('fetches categories and delegates the income/expense split to the service', async () => {
-      categoriesService.getAll.mockResolvedValue([{ id: 1 }] as any);
-      categoriesService.separateCategories.mockReturnValue([[{ id: 1 }], []] as any);
+    it('delegates straight to the service', async () => {
+      const view = { incomes: [], expenses: [], archived: [] };
+      categoriesService.getAll.mockResolvedValue(view as any);
 
       const result = await controller.getAll(req);
 
-      expect(categoriesService.separateCategories).toHaveBeenCalledWith([{ id: 1 }]);
-      expect(result).toEqual({ incomes: [{ id: 1 }], expenses: [] });
+      expect(categoriesService.getAll).toHaveBeenCalledWith(1);
+      expect(result).toBe(view);
+    });
+  });
+
+  describe('reorder', () => {
+    it('delegates the ordered id list to the service', async () => {
+      await controller.reorder(req, { category_ids: [3, 1, 2] });
+
+      expect(categoriesService.reorder).toHaveBeenCalledWith(1, [3, 1, 2]);
     });
   });
 
@@ -77,23 +83,24 @@ describe('CategoriesController', () => {
     });
   });
 
-  describe('moveForward', () => {
-    it('rejects moving a category owned by someone else', async () => {
+  describe('remove', () => {
+    it('rejects deleting a category owned by someone else', async () => {
       categoriesService.getOne.mockResolvedValue({ id: 1, user_id: 2 } as any);
 
-      await expect(controller.moveForward(req, 1)).rejects.toMatchObject(
+      await expect(controller.remove(req, 1)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
-      expect(categoriesService.moveToFront).not.toHaveBeenCalled();
+      expect(categoriesService.deleteOrArchive).not.toHaveBeenCalled();
     });
 
-    it('delegates the reordering to the service for an owned category', async () => {
-      const category = { id: 2, user_id: 1, transaction_type: TransactionType.EXPENSE };
-      categoriesService.getOne.mockResolvedValue(category as any);
+    it('deletes or archives a category owned by the current user', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 1, user_id: 1 } as any);
+      categoriesService.deleteOrArchive.mockResolvedValue({ archived: true });
 
-      await controller.moveForward(req, 2);
+      const result = await controller.remove(req, 1);
 
-      expect(categoriesService.moveToFront).toHaveBeenCalledWith(1, category);
+      expect(categoriesService.deleteOrArchive).toHaveBeenCalledWith(1);
+      expect(result).toEqual({ archived: true });
     });
   });
 });
