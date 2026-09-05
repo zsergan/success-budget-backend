@@ -3,12 +3,14 @@ export enum TransactionType {
   EXPENSE = 'expense',
 }
 
-export enum WalletDesign {
-  GREEN = 'green',
-  YELLOW = 'yellow',
-  BLUE = 'blue',
-  RED = 'red',
-  PINK = 'pink',
+// shared by Wallet.design and Category.color - one closed palette of 6 tones
+export enum AppColor {
+  SLATE = 'slate',
+  AMBER = 'amber',
+  EVERGREEN = 'evergreen',
+  INDIGO = 'indigo',
+  CLAY = 'clay',
+  PLUM = 'plum',
 }
 
 export enum ConfirmationType {

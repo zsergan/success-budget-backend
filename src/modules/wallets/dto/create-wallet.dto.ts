@@ -1,5 +1,5 @@
 import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum, MaxLength } from 'class-validator';
-import { WalletDesign } from '@shared/enums';
+import { AppColor } from '@shared/enums';
 
 export class CreateWalletDto {
   @IsNotEmpty()
@@ -16,6 +16,6 @@ export class CreateWalletDto {
   currency_id: number;
 
   @IsNotEmpty()
-  @IsEnum(WalletDesign)
-  design: WalletDesign;
+  @IsEnum(AppColor)
+  design: AppColor;
 }

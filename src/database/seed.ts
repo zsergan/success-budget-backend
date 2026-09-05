@@ -5,7 +5,7 @@ import { UsersService } from '@modules/users/users.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { CurrenciesService } from '@modules/currencies/currencies.service';
-import { WalletDesign } from '@shared/enums';
+import { AppColor } from '@shared/enums';
 import { DEFAULT_CATEGORIES } from '@shared/constants';
 
 // Dev-only seed data. Not real accounts, not real roles - this app has no
@@ -62,7 +62,7 @@ async function bootstrap() {
       await walletsService.create(user.id, {
         wallet_name: 'Cash',
         balance: 0,
-        design: WalletDesign.GREEN,
+        design: AppColor.SLATE,
         currency_id: baseCurrency.id,
       });
       await categoriesService.initiateCategories(user.id, DEFAULT_CATEGORIES);

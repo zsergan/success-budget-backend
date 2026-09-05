@@ -14,7 +14,7 @@ import type { LoginUserDto } from './dto/login-user.dto';
 import type { VerifyUserDto } from './dto/verify-user.dto';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
 import { ErrorMessages } from '@shared/error-messages';
-import { ConfirmationType, WalletDesign } from '@shared/enums';
+import { ConfirmationType, AppColor } from '@shared/enums';
 import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
 import { constantTimeEquals } from '@shared/utils';
 
@@ -78,7 +78,7 @@ export class UsersService {
         user_id: user.id,
         wallet_name: 'Cash',
         balance: 0,
-        design: WalletDesign.GREEN,
+        design: AppColor.SLATE,
         currency_id: user.base_currency_id,
       });
       await manager.getRepository(Wallet).save(wallet);
