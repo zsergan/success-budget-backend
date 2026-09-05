@@ -146,7 +146,7 @@ describe('App (e2e)', () => {
       .expect(200);
 
     const salaryCategoryId = categoriesResponse.body.incomes.find((category) => category.name === 'Salary').id;
-    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Groceries').id;
+    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Grocery').id;
 
     const incomeResponse = await request(app.getHttpServer())
       .post('/api/v1/transactions')
@@ -236,7 +236,7 @@ describe('App (e2e)', () => {
 
     const healthCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Health').id;
     const restaurantsCategoryId = categoriesResponse.body.expenses.find(
-      (category) => category.name === 'Restaurants',
+      (category) => category.name === 'Restaurant',
     ).id;
     const entertainmentCategoryId = categoriesResponse.body.expenses.find(
       (category) => category.name === 'Entertainment',
@@ -333,5 +333,191 @@ describe('App (e2e)', () => {
       .expect(200);
 
     expect(afterDeleteResponse.body.categories.find((limit) => limit.id === healthLimitId)).toBeUndefined();
+  });
+
+  it('deletes an unused category, archives one with history, and never accepts transaction_type on update', async () => {
+    const createUnused = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Unused', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+      .expect(201);
+    const unusedCategoryId = createUnused.body.id;
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/categories/${unusedCategoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toEqual({ archived: false }));
+
+    const afterHardDelete = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(afterHardDelete.body.expenses.find((category) => category.id === unusedCategoryId)).toBeUndefined();
+    expect(afterHardDelete.body.archived.find((category) => category.id === unusedCategoryId)).toBeUndefined();
+
+    const createUsed = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Used', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+      .expect(201);
+    const usedCategoryId = createUsed.body.id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/transactions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: walletId,
+        category_id: usedCategoryId,
+        transaction_type: 'expense',
+        amount: '10.00',
+        timestamp: new Date().toISOString(),
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .put(`/api/v1/categories/${usedCategoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ transaction_type: 'income' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/categories/${usedCategoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toEqual({ archived: true }));
+
+    const afterArchive = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(afterArchive.body.expenses.find((category) => category.id === usedCategoryId)).toBeUndefined();
+    const archivedView = afterArchive.body.archived.find((category) => category.id === usedCategoryId);
+    expect(archivedView).toMatchObject({ transaction_count: 1, is_active: 0 });
+    expect(archivedView.archived_at).toEqual(expect.any(String));
+    expect(archivedView.user_id).toBeUndefined();
+    expect(archivedView.sort).toBeUndefined();
+
+    await request(app.getHttpServer())
+      .put(`/api/v1/categories/${usedCategoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ is_active: 1 })
+      .expect(200);
+
+    const afterRestore = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const restoredView = afterRestore.body.expenses.find((category) => category.id === usedCategoryId);
+    expect(restoredView).toMatchObject({ is_active: 1 });
+    expect(restoredView.archived_at).toBeNull();
+    expect(afterRestore.body.archived.find((category) => category.id === usedCategoryId)).toBeUndefined();
+  });
+
+  it('archiving a category unlinks it from its limit, and deletes an emptied single-category limit', async () => {
+    const createLimited = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Limited', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+      .expect(201);
+    const limitedCategoryId = createLimited.body.id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/transactions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: walletId,
+        category_id: limitedCategoryId,
+        transaction_type: 'expense',
+        amount: '5.00',
+        timestamp: new Date().toISOString(),
+      })
+      .expect(201);
+
+    const createLimit = await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [limitedCategoryId], amount: '20.00' })
+      .expect(201);
+    const limitId = createLimit.body.id;
+
+    const beforeDelete = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(beforeDelete.body.expenses.find((category) => category.id === limitedCategoryId).limit).toMatchObject({
+      id: limitId,
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/categories/${limitedCategoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toEqual({ archived: true }));
+
+    const afterArchive = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const archivedView = afterArchive.body.archived.find((category) => category.id === limitedCategoryId);
+    expect(archivedView.limit).toBeNull();
+
+    const limitsAfterArchive = await request(app.getHttpServer())
+      .get('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(limitsAfterArchive.body.categories.find((limit) => limit.id === limitId)).toBeUndefined();
+
+    // restoring must not resurrect the (now-deleted) limit link
+    await request(app.getHttpServer())
+      .put(`/api/v1/categories/${limitedCategoryId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ is_active: 1 })
+      .expect(200);
+
+    const afterRestore = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(afterRestore.body.expenses.find((category) => category.id === limitedCategoryId).limit).toBeNull();
+  });
+
+  it('reorders a segment and persists the new order', async () => {
+    const createFirst = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Reorder A', transaction_type: 'income', icon: 'Other', color: 'slate' })
+      .expect(201);
+    const createSecond = await request(app.getHttpServer())
+      .post('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Reorder B', transaction_type: 'income', icon: 'Other', color: 'slate' })
+      .expect(201);
+    const firstId = createFirst.body.id;
+    const secondId = createSecond.body.id;
+
+    await request(app.getHttpServer())
+      .put('/api/v1/categories/reorder')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [secondId, firstId] })
+      .expect(200);
+
+    const afterReorder = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const ids = afterReorder.body.incomes.map((category) => category.id);
+    expect(ids.indexOf(secondId)).toBeLessThan(ids.indexOf(firstId));
+
+    // an id that isn't the caller's own must reject the whole batch
+    await request(app.getHttpServer())
+      .put('/api/v1/categories/reorder')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [firstId, 999999999] })
+      .expect(403);
   });
 });

@@ -1,10 +1,23 @@
-import { PartialType } from '@nestjs/swagger';
-import { IsInt, IsOptional } from 'class-validator';
+import { IsEnum, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 
-import { CreateCategoryDto } from './create-category.dto';
+import { AppColor, CategoryIcon } from '@shared/enums';
 
-export class UpdateCategoryDto extends PartialType(CreateCategoryDto) {
+// transaction_type is intentionally not a field here - immutable after creation.
+export class UpdateCategoryDto {
   @IsOptional()
-  @IsInt()
-  is_active: number;
+  @IsString()
+  @MaxLength(20)
+  name?: string;
+
+  @IsOptional()
+  @IsEnum(CategoryIcon)
+  icon?: CategoryIcon;
+
+  @IsOptional()
+  @IsEnum(AppColor)
+  color?: AppColor;
+
+  @IsOptional()
+  @IsIn([0, 1])
+  is_active?: number;
 }

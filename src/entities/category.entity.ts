@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { TransactionType } from '@shared/enums';
+import { AppColor, TransactionType } from '@shared/enums';
 import { User } from './user.entity';
 
 @Entity('categories')
@@ -33,11 +33,15 @@ export class Category {
   @Column({ type: 'varchar', length: 255 })
   icon: string;
 
-  @Column({ type: 'varchar', length: 7 })
-  color: string;
+  @Column({ type: 'enum', enum: AppColor })
+  color: AppColor;
 
   @Column({ type: 'tinyint' })
   is_active: number;
+
+  @Exclude()
+  @Column({ type: 'timestamp', nullable: true })
+  archived_at: Date | null;
 
   @Exclude()
   @Column({ type: 'int' })

@@ -11,7 +11,7 @@ import { Exclude } from 'class-transformer';
 
 import { User } from './user.entity';
 import { Currency } from './currency.entity';
-import { WalletDesign } from '@shared/enums';
+import { AppColor } from '@shared/enums';
 
 @Entity('wallets')
 export class Wallet {
@@ -28,8 +28,8 @@ export class Wallet {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   balance: number;
 
-  @Column({ type: 'enum', enum: WalletDesign })
-  design: WalletDesign;
+  @Column({ type: 'enum', enum: AppColor })
+  design: AppColor;
 
   @Exclude()
   @Column({ type: 'int' })
