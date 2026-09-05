@@ -1,5 +1,5 @@
 import { IsEnum, IsNotEmpty, IsString, MaxLength } from 'class-validator';
-import { TransactionType } from '@shared/enums';
+import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
 
 export class CreateCategoryDto {
   @IsNotEmpty()
@@ -12,12 +12,10 @@ export class CreateCategoryDto {
   transaction_type: TransactionType;
 
   @IsNotEmpty()
-  @IsString()
-  @MaxLength(255)
-  icon: string;
+  @IsEnum(CategoryIcon)
+  icon: CategoryIcon;
 
   @IsNotEmpty()
-  @IsString()
-  @MaxLength(7)
-  color: string;
+  @IsEnum(AppColor)
+  color: AppColor;
 }
