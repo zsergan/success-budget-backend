@@ -34,12 +34,18 @@ describe('App (e2e)', () => {
     // Jest hangs instead of exiting.
     try {
       if (userId) {
-        // transactions.category_id is RESTRICT (categories/currencies keep
-        // their history even if the owning user's data is torn down), so a
-        // plain `DELETE FROM users` fails with an FK error once this file
-        // creates a transaction scoped to a category - delete those first.
-        // onDelete: CASCADE then takes the wallet, categories, and
-        // confirmation code with the user.
+        // limits.category_id (now limit_categories.category_id) and
+        // transactions.category_id are both RESTRICT (categories/currencies
+        // keep their history even if the owning user's data is torn down),
+        // so a plain `DELETE FROM users` fails with an FK error once this
+        // file creates a limit or a transaction scoped to a category -
+        // delete those first. onDelete: CASCADE then takes the wallet,
+        // categories, and confirmation code with the user.
+        await dataSource.query(
+          'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.user_id = ?',
+          [userId],
+        );
+        await dataSource.query('DELETE FROM limits WHERE user_id = ?', [userId]);
         await dataSource.query(
           'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.user_id = ?',
           [userId],
@@ -220,5 +226,112 @@ describe('App (e2e)', () => {
 
     const wallet = walletsResponse.body.find((entry) => entry.wallet.id === walletId);
     expect(Number(wallet.wallet.balance)).toBe(500);
+  });
+
+  it('supports a monthly total limit, a group limit, and a single-category limit together', async () => {
+    const categoriesResponse = await request(app.getHttpServer())
+      .get('/api/v1/categories')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const healthCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Health').id;
+    const restaurantsCategoryId = categoriesResponse.body.expenses.find(
+      (category) => category.name === 'Restaurants',
+    ).id;
+    const entertainmentCategoryId = categoriesResponse.body.expenses.find(
+      (category) => category.name === 'Entertainment',
+    ).id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/transactions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: walletId,
+        category_id: healthCategoryId,
+        transaction_type: 'expense',
+        amount: '40.00',
+        timestamp: new Date().toISOString(),
+      })
+      .expect(201);
+
+    const totalLimitResponse = await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ amount: '1000.00' })
+      .expect(201);
+    const totalLimitId = totalLimitResponse.body.id;
+
+    const healthLimitResponse = await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [healthCategoryId], amount: '100.00' })
+      .expect(201);
+    const healthLimitId = healthLimitResponse.body.id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [restaurantsCategoryId, entertainmentCategoryId], amount: '50.00' })
+      .expect(400);
+
+    const funLimitResponse = await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [restaurantsCategoryId, entertainmentCategoryId], name: 'Fun', amount: '50.00' })
+      .expect(201);
+    const funLimitId = funLimitResponse.body.id;
+
+    // Health is already claimed by healthLimitId - reusing it must be rejected
+    await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [healthCategoryId], amount: '30.00' })
+      .expect(400);
+
+    // a second monthly total limit must also be rejected
+    await request(app.getHttpServer())
+      .post('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ amount: '500.00' })
+      .expect(400);
+
+    const limitsResponse = await request(app.getHttpServer())
+      .get('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(limitsResponse.body.total).toMatchObject({ id: totalLimitId, spent: 40, in_percent: 4 });
+
+    const healthLimit = limitsResponse.body.categories.find((limit) => limit.id === healthLimitId);
+    expect(healthLimit).toMatchObject({ spent: 40, in_percent: 40 });
+    expect(healthLimit.categories.map((category) => category.id)).toEqual([healthCategoryId]);
+
+    const funLimit = limitsResponse.body.categories.find((limit) => limit.id === funLimitId);
+    expect(funLimit).toMatchObject({ name: 'Fun', spent: 0, in_percent: 0 });
+    expect(funLimit.categories.map((category) => category.id).sort()).toEqual(
+      [restaurantsCategoryId, entertainmentCategoryId].sort(),
+    );
+
+    for (const limit of [...limitsResponse.body.categories, limitsResponse.body.total]) {
+      expect(limit.user_id).toBeUndefined();
+    }
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/limits/${healthLimitId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    // already deleted - re-deleting is treated the same as "not yours"
+    await request(app.getHttpServer())
+      .delete(`/api/v1/limits/${healthLimitId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(403);
+
+    const afterDeleteResponse = await request(app.getHttpServer())
+      .get('/api/v1/limits')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(afterDeleteResponse.body.categories.find((limit) => limit.id === healthLimitId)).toBeUndefined();
   });
 });

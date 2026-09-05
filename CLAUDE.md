@@ -413,3 +413,78 @@ Covered by unit tests (`transactions.service.spec.ts`,
 create/list responses don't leak `wallet_id`/`category_id`/`currency_id`).
 Full local `npm run test`, `npm run test:e2e`, `npm run lint`, and
 `npm run build` all pass as of this writing.
+
+## Limits Stage 4 — mobile design gap-fill (2026-09-04)
+
+Branch `feat/limits-stage4-groups-and-total`, cut from `main`. Read the
+"Limits Stage 4" mobile design (same Claude Design project as Transactions
+Stage 3 above, file `Limits Stage 4.dc.html` + its `support.js` import)
+and the original, pre-redesign Limits screen (`reference/Limits.tsx` in
+that project's handoff package - a flat overview card + one card per
+category, no groups, no independent total, AMD currency). The new design
+needs two things the old `Limit` entity couldn't express, so this closes
+that gap. Full client-facing writeup in `.private/mobile-api-changes.md`
+section 13 ("Round 4 changes").
+
+**Data model decision (don't relitigate without a reason):** `Limit`'s
+single nullable `category_id` FK is replaced with a `limit_categories`
+many-to-many join table (`Limit.categories: Category[]`, migration
+`1788565305877-AddLimitCategoriesAndName`, backfilled from existing rows).
+Category count *is* the scope, not a separate stored field: 0 categories
+= a "monthly total" limit, 1 = single-category, 2+ = a named "group"
+limit (`limits.name`, only meaningful for groups). `limit_type`
+(`category`/`others`) is kept as the total-vs-not discriminator rather
+than deriving it from `categories.length === 0` everywhere. The
+`limit_categories.category_id` FK is `RESTRICT` (matches the Currency/
+Category cascade policy from the earlier round-2 phase 13 decision); the
+`limit_id` FK is `CASCADE` (junction rows are owned by the limit).
+
+**Semantic decision (don't relitigate without a reason):** the monthly
+total limit now sums **all** expense transactions for the period,
+independently of the category limits below it. The old "others" limit
+summed only expenses *not* claimed by a category-specific limit (a
+catch-all bucket, mutually exclusive with category limits by
+construction) - that's structurally incompatible with the new design,
+where the total and the sum of category limits are allowed to disagree
+("Both keep counting, they just won't agree" is the design's own copy,
+not an error state). `LimitsService.calculateSpending()` was rewritten
+around this and now returns `{ total, categories, over_allocation }`
+instead of the old flat `{ limits, overall }` - `over_allocation` is only
+present when the category limits' amounts sum above the total's amount,
+computed server-side so the mobile app doesn't have to.
+
+Also fixed as part of the same rewrite (already flagged, unfixed, in
+`.private/modernization-plan.md` "Этап 15"): `calculateSpending()` used to
+return `{...limit, spent, in_percent}`, a spread of a real entity that
+defeats `@Exclude()` and leaked `user_id`/`category_id` in `GET /limits`.
+Every limit object in every response is now a clean, explicitly-built
+view instead.
+
+`DELETE /limits/:id` is new (the design's delete-confirmation dialog) -
+there was no delete endpoint of any kind before this. Cross-limit category
+exclusivity (a category can't be in two limits at once) is enforced on
+both create and update, extended from the old single-category duplicate
+check to cover group membership too; a group with 2+ categories rejects a
+missing `name` with `400 "A group limit needs a name"` (new error
+message, `ErrorMessages.LIMIT_NAME_REQUIRED`).
+
+**Deliberately not added**: no server-side threshold/color computation
+(ok/near-80%/over-100%, per-day pace, days-left) - pure display math the
+mobile client already derives itself elsewhere. No "preview impact of a
+pending transaction on a limit" endpoint - the design's add-transaction
+warning hint is fully computable client-side from the existing
+`GET /limits` numbers plus the amount being typed.
+
+Covered by unit tests (`limits.service.spec.ts`, `limits.controller.spec.ts`,
+rewritten for the array-based DTOs and the new total/group semantics) and
+a new e2e scenario in `test/app.e2e-spec.ts` (total + group + single-
+category limit together, cross-limit exclusivity rejection, unnamed-group
+rejection, delete, and that no response leaks `user_id`) - this restores
+limits e2e coverage that had been silently dropped by an unrelated later
+commit (`38a0e19`) despite the modernization plan still claiming it was in
+place. Verified live against the local docker MySQL: the migration
+correctly backfilled the two pre-existing seeded category limits into
+`limit_categories`, and a full create/read/update/delete pass against the
+running dev server behaved as designed (see PR for the exact `curl`
+transcript). Full local `npm run test`, `npm run test:e2e`, `npm run lint`,
+and `npm run build` all pass as of this writing.
