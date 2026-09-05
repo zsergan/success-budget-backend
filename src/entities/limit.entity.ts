@@ -3,7 +3,9 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  ManyToMany,
   JoinColumn,
+  JoinTable,
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
@@ -22,9 +24,11 @@ export class Limit {
   @Column({ type: 'int' })
   user_id: number;
 
-  @Exclude()
-  @Column({ type: 'int', nullable: true })
-  category_id: number;
+  // only meaningful for a group limit (2+ categories) - a single-category
+  // limit uses the category's own name, a total limit uses a fixed label,
+  // both client-side
+  @Column({ type: 'varchar', length: 60, nullable: true })
+  name: string | null;
 
   @Column({ type: 'enum', enum: LimitType })
   limit_type: LimitType;
@@ -37,9 +41,14 @@ export class Limit {
   @JoinColumn({ name: 'user_id' })
   user: User;
 
-  @ManyToOne(() => Category, { onDelete: 'RESTRICT' })
-  @JoinColumn({ name: 'category_id' })
-  category: Category;
+  // 0 categories = monthly total limit, 1 = single-category, 2+ = group
+  @ManyToMany(() => Category, { onDelete: 'RESTRICT' })
+  @JoinTable({
+    name: 'limit_categories',
+    joinColumn: { name: 'limit_id' },
+    inverseJoinColumn: { name: 'category_id' },
+  })
+  categories: Category[];
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;

@@ -2,6 +2,7 @@ import {
   Body,
   ClassSerializerInterceptor,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -47,10 +48,7 @@ export class LimitsController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
   async create(@Request() req: AuthedRequest, @Body() createLimitDto: CreateLimitDto) {
-    if (createLimitDto.category_id) {
-      const category = await this.categoriesService.getOne(createLimitDto.category_id);
-      assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
-    }
+    await this.assertCategoriesOwnership(req.user.id, createLimitDto.category_ids);
 
     return this.limitsService.create(req.user.id, createLimitDto);
   }
@@ -65,11 +63,27 @@ export class LimitsController {
     const limit = await this.limitsService.getOne(limitId);
     assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_LIMIT);
 
-    if (updateLimitDto.category_id) {
-      const category = await this.categoriesService.getOne(updateLimitDto.category_id);
-      assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
-    }
+    await this.assertCategoriesOwnership(req.user.id, updateLimitDto.category_ids);
 
-    return this.limitsService.update(limitId, req.user.id, limit.category_id, updateLimitDto);
+    await this.limitsService.update(limitId, req.user.id, limit, updateLimitDto);
+
+    return this.limitsService.getOne(limitId);
+  }
+
+  @Delete(':limitId')
+  async remove(@Request() req: AuthedRequest, @Param('limitId', ParseIntPipe) limitId: number): Promise<boolean> {
+    const limit = await this.limitsService.getOne(limitId);
+    assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_LIMIT);
+
+    await this.limitsService.remove(limitId);
+
+    return true;
+  }
+
+  private async assertCategoriesOwnership(userId: number, categoryIds?: number[]): Promise<void> {
+    for (const categoryId of categoryIds ?? []) {
+      const category = await this.categoriesService.getOne(categoryId);
+      assertOwnership(category, userId, ErrorMessages.FORBIDDEN_CATEGORY);
+    }
   }
 }
