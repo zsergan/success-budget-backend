@@ -101,6 +101,17 @@ assuming otherwise.
   `dependency-review.yml` (`actions/dependency-review-action@v5`) на PR.
   `.gitlab-ci.yml` удалён (GitLab больше не используется).
 
+## Стиль кода
+
+**Комментарии — только там, где без них реально не обойтись.** Не описывать
+словами то, что и так понятно из кода/имён; не пересказывать "что было
+сделано" или "что исправлено" (эта история — в PR/коммите, не в файле).
+Комментарий оправдан только для скрытого инварианта или неочевидного
+ограничения, которое иначе не восстановить, глядя на один файл (например:
+почему используется мутация вместо spread, почему нужны два прохода миграции).
+Если сомневаешься — не добавляй. По умолчанию писать без комментариев вообще,
+добавлять только когда это действительно необходимо.
+
 ## Что сделано — по группам
 
 Первая волна (25 коммитов, зависимости/тесты/CI/dev-окружение) — см. историю
@@ -488,3 +499,131 @@ correctly backfilled the two pre-existing seeded category limits into
 running dev server behaved as designed (see PR for the exact `curl`
 transcript). Full local `npm run test`, `npm run test:e2e`, `npm run lint`,
 and `npm run build` all pass as of this writing.
+
+## Categories Stage 5 + shared color enum + WalletDesign bug fix (2026-09-05)
+
+Branch `feat/categories-archive-and-shared-colors`, cut from `main`. Two
+things drove this, done together because they turned out to share one enum:
+
+1. `.private/backend-legacy-design-data-needed.md` (left by whoever worked
+   on the mobile Limits Stage 4 migration) documented a **live bug**: the
+   mobile wallet redesign (stage 6) moved `WalletDesign` from
+   `green|yellow|blue|red|pink` to `slate|amber|evergreen|indigo|clay|plum`,
+   and the backend never followed - every `POST/PUT /wallets` with a current
+   mobile `design` value was rejected by DTO validation, and the DB column
+   was a native `ENUM` of the old five values underneath that.
+2. The "Categories Stage 5" mobile design (same Claude Design project as
+   Transactions Stage 3/Limits Stage 4, file `Categories Stage 5.dc.html`)
+   redesigns the categories screen from a chip grid to a data-rich list, and
+   its own color picker uses **the same six tokens** as `WalletDesign` (the
+   design's own copy: "the same six tones as the wallet presets in Stage
+   2"). So both were fixed under one shared enum instead of two branches.
+
+**Data model decisions (don't relitigate without a reason):**
+`WalletDesign` is gone, replaced by a shared `AppColor` enum in
+`src/shared/enums.ts` used by both `Wallet.design` and the new
+`Category.color` (previously a free `varchar(7)` hex string). Migration
+`1788600000000-AddSharedColorEnumAndCategoryArchive` widens
+`wallets.design`'s ENUM through a temporary superset (old + new values) so
+existing rows stay valid mid-migration, then narrows to the final 6 and
+backfills every row to `slate` - there's no principled 1:1 mapping from 5
+old wallet colors (or from arbitrary hex strings) onto 6 new tokens, so
+every existing row gets the same single fallback, same reasoning already
+used on the mobile side when it dropped its own old enum. `Category.icon`
+also moved from a free `varchar(255)` onto a new closed `CategoryIcon` enum
+(35 values, matching the design's own icon picker) - this one is **app-layer
+validation only**, no DB migration, since `categories.icon` was never a DB
+`ENUM` to begin with; existing rows with legacy MaterialIcons-style names
+(`shopping-basket`, etc.) are left alone, not enforced on read, same "not
+urgent" call already made in the legacy-data doc for that column.
+
+**`Category` gained an archive lifecycle.** `is_active` already existed on
+the entity/column but was completely unused anywhere in the service or
+controller until now - this is exactly the field the phase-13 note above
+anticipated ("`Category` already has `is_active` for taking a category out
+of active use"). One new nullable column, `categories.archived_at`, mirrors
+`Wallet`'s existing `is_deleted`/`deleted_at` pattern (needed because the
+design's archived rows show "Archived 12 Aug" and reusing `updated_at`
+would get corrupted by any other edit).
+
+**`DELETE /categories/:id` is new** - the design's delete/archive
+confirmation dialog. Decided by transaction history, not by the client:
+zero transactions ever filed under the category → hard delete (the DB FK
+`transactions.category_id` is already `RESTRICT`, so this is safe-by-
+construction even if the count were somehow wrong); one or more → archive
+instead (`is_active = 0`, `archived_at` stamped) and unlink from whatever
+limit currently contains it. **New rule, not in the original Limits Stage 4
+design**: unlinking a category that was the *only* category in a
+`CATEGORY`-type limit now deletes that limit too, rather than leaving a
+zombie limit with 0 categories that no `LimitsService` code path can
+produce on its own (a `CATEGORY`-type limit with 0 categories isn't one of
+the three valid states - 0 categories is reserved for the monthly total).
+Restore is just `PUT /categories/:id { is_active: 1 }` on the existing
+route (no new endpoint) - it clears `archived_at` but deliberately does
+**not** re-add the category to whatever limit it came from, matching the
+design's own footnote copy.
+
+**`transaction_type` is now immutable after creation.** `UpdateCategoryDto`
+is hand-written (matching the existing `UpdateWalletDto` precedent, which
+excludes `balance` the same way) and simply doesn't declare the field - with
+`forbidNonWhitelisted: true` already global, sending it now gets a clean 400
+instead of silently changing it (there was no guard at all before this).
+
+**`GET /categories` response shape changed** (breaking) from `{incomes,
+expenses}` to `{incomes, expenses, archived}`, and every row is now a
+plain built view (`transaction_count`, `limit: {id, name} | null`,
+`archived_at`, etc. - see `CategoriesService.buildCategoryView`) instead of
+a raw entity, computed via two grouped queries (transaction counts,
+limit-membership) rather than N+1 lookups. `CategoriesService` reads the
+`Transaction` and `Limit` repositories directly (registered in
+`CategoriesModule`'s own `TypeOrmModule.forFeature`) rather than importing
+`TransactionsModule`/`LimitsModule` back - both of those already import
+`CategoriesModule`, so importing them back would need `forwardRef()` on
+both sides for no benefit; this follows the precedent already set by
+`TransactionsService.create()/.remove()` querying `Wallet` directly instead
+of going through `WalletsService`.
+
+**`PUT /categories/reorder` is new, and replaces `move-forward` (removed)**
+- the design's drag-to-reorder needs a real "set the full order for one
+segment" operation, not "bump one item to the front"; keeping both would
+mutate the same `sort` column via two conflicting partial rules. Validates
+that every id belongs to the caller, shares one `transaction_type`, and
+isn't archived, then reassigns `sort` using the same 100/200 prefix
+convention the old `move-forward` used.
+
+**Found and fixed while touching this code, not part of the original
+plan**: `CategoriesService.create()`/`.update()` were doing
+`repository.save({...spread})` on a plain object instead of a real entity
+instance, the same `@Exclude()`-defeating spread pattern already fixed in
+Transactions/Limits/Categories' `GET` responses per the modernization plan
+- this one leaked `user_id`/`sort` on `POST`/`PUT /categories` specifically.
+Fixed the same way `TransactionsService.create()` already does it:
+`repository.create()` (or mutating the loaded entity in place) before
+`.save()`.
+
+`DEFAULT_CATEGORIES` (`src/shared/constants.ts`, consumed by both
+`seed.ts` and live signups in `users.service.ts`) got new names/icons/colors
+to match the new enums (`Groceries`→`Grocery`, `Restaurants`→`Restaurant`,
+`Clothing`→`Clothes`, `Transportation`→`Transport`, `Gift`→`Gifts`, `Rent`
+folded into `Housing` - no separate icon for it in the new set).
+
+**Deliberately not added**: no legacy icon-name backfill migration for
+existing rows (per the legacy-data doc, "not urgent"). No server-side
+limit-impact-preview endpoint for the archive dialog - the client already
+has everything it needs from `GET /categories`'s new `limit: {id, name}`
+field plus the existing `GET /limits` response, same "client computes it"
+call already made for Limits Stage 4. No search endpoint/param -
+`GET /categories` already returns the full list in one shot.
+
+Covered by unit tests (`categories.service.spec.ts`,
+`categories.controller.spec.ts`, rewritten for the new DTOs, the three-way
+`getAll` split, delete-vs-archive branching, the empty-limit cleanup, and
+reorder) and three new e2e scenarios in `test/app.e2e-spec.ts` (hard-delete
+vs. archive decided by history, `transaction_type` rejected on update,
+archiving unlinks from and can delete a limit, restore doesn't re-link,
+reorder persists and rejects mixed-owner/mixed-type input). Verified live
+against the local docker MySQL: the migration correctly backfilled existing
+wallets/categories to `slate`, and a full create/reject-invalid-icon/reject-
+type-change/archive/restore pass against the running dev server behaved as
+designed. Full local `npm run test`, `npm run test:e2e`, `npm run lint`, and
+`npm run build` all pass as of this writing.
