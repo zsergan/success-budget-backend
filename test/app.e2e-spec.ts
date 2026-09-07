@@ -134,9 +134,33 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(walletsResponse.body).toHaveLength(1);
-    expect(walletsResponse.body[0].wallet.wallet_name).toBe('Cash');
-    walletId = walletsResponse.body[0].wallet.id;
+    expect(walletsResponse.body.wallets).toHaveLength(1);
+    expect(walletsResponse.body.wallets[0].wallet.wallet_name).toBe('Cash');
+    const baseCurrency = currencies.body.find((currency) => currency.id === baseCurrencyId);
+    expect(walletsResponse.body.total_balance).toBe(0);
+    expect(walletsResponse.body.total_balance_currency).toBe(baseCurrency.code);
+    expect(walletsResponse.body.delta_percent).toBe(0);
+    walletId = walletsResponse.body.wallets[0].wallet.id;
+  });
+
+  it('excludes a wallet in a different currency from total_balance but keeps it in the wallets list', async () => {
+    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
+    const otherCurrencyId = currencies.body.find((currency) => currency.code !== 'USD').id;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/wallets')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ wallet_name: 'Foreign', balance: '1000.00', currency_id: otherCurrencyId, design: 'amber' })
+      .expect(201);
+
+    const walletsResponse = await request(app.getHttpServer())
+      .get('/api/v1/wallets')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(walletsResponse.body.wallets).toHaveLength(2);
+    expect(walletsResponse.body.wallets.some((entry) => entry.wallet.wallet_name === 'Foreign')).toBe(true);
+    expect(walletsResponse.body.total_balance).toBe(0);
   });
 
   it('creates transactions, filters by date range, reports the latest one, and undoes one', async () => {
@@ -224,8 +248,13 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const wallet = walletsResponse.body.find((entry) => entry.wallet.id === walletId);
+    const wallet = walletsResponse.body.wallets.find((entry) => entry.wallet.id === walletId);
     expect(Number(wallet.wallet.balance)).toBe(500);
+    // the "Foreign" wallet's balance never changed - only the base-currency (Cash) wallet's
+    // 500 income counts toward total_balance, and net(500) === total_balance(500) here, so
+    // balance_at_period_start is 0 and delta_percent falls back to the divide-by-zero guard.
+    expect(walletsResponse.body.total_balance).toBe(500);
+    expect(walletsResponse.body.delta_percent).toBe(0);
   });
 
   it('supports a monthly total limit, a group limit, and a single-category limit together', async () => {

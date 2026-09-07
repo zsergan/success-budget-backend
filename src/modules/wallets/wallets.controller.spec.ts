@@ -24,6 +24,7 @@ describe('WalletsController', () => {
             getAll: jest.fn(),
             delete: jest.fn(),
             summarize: jest.fn(),
+            buildOverview: jest.fn(),
           },
         },
         { provide: TransactionsService, useValue: { getAllForWallets: jest.fn() } },
@@ -88,20 +89,26 @@ describe('WalletsController', () => {
   });
 
   describe('getAll', () => {
-    it('fetches every wallet transaction in a single query and delegates the summary to the service', async () => {
+    it('fetches every wallet transaction in a single query and delegates the overview to the service', async () => {
       const wallets = [{ id: 1 }, { id: 2 }] as any;
       const transactions = [{ wallet_id: 1, amount: '100' }] as any;
+      const overview = {
+        total_balance: 100,
+        total_balance_currency: 'USD',
+        delta_percent: 4.2,
+        wallets: [{ wallet: { id: 1 }, total_spend: 30, total_income: 100 }],
+      };
       walletsService.getAll.mockResolvedValue(wallets);
       transactionsService.getAllForWallets.mockResolvedValue(transactions);
-      walletsService.summarize.mockReturnValue([{ wallet: { id: 1 }, total_spend: 30, total_income: 100 }] as any);
+      walletsService.buildOverview.mockResolvedValue(overview as any);
 
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       const result = await controller.getAll(req, from, to);
 
       expect(transactionsService.getAllForWallets).toHaveBeenCalledWith([1, 2], from, to);
-      expect(walletsService.summarize).toHaveBeenCalledWith(wallets, transactions);
-      expect(result).toEqual([{ wallet: { id: 1 }, total_spend: 30, total_income: 100 }]);
+      expect(walletsService.buildOverview).toHaveBeenCalledWith(1, wallets, transactions);
+      expect(result).toEqual(overview);
     });
   });
 });

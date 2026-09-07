@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 
 import { Wallet } from '@entities/wallet.entity';
 import { Transaction } from '@entities/transaction.entity';
+import { User } from '@entities/user.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
@@ -14,11 +15,20 @@ export interface WalletSummary {
   total_income: number;
 }
 
+export interface WalletsOverview {
+  total_balance: number;
+  total_balance_currency: string;
+  delta_percent: number;
+  wallets: WalletSummary[];
+}
+
 @Injectable()
 export class WalletsService {
   constructor(
     @InjectRepository(Wallet)
     private readonly walletRepository: Repository<Wallet>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
 
   async getOne(walletId: number): Promise<Wallet> {
@@ -69,5 +79,34 @@ export class WalletsService {
 
       return { wallet, ...totals };
     });
+  }
+
+  async buildOverview(userId: number, wallets: Wallet[], transactions: Transaction[]): Promise<WalletsOverview> {
+    const user = await this.userRepository.findOne({ where: { id: userId }, relations: { baseCurrency: true } });
+    const baseCurrencyWalletIds = new Set(
+      wallets.filter((wallet) => wallet.currency_id === user.base_currency_id).map((wallet) => wallet.id),
+    );
+
+    const total_balance = wallets
+      .filter((wallet) => baseCurrencyWalletIds.has(wallet.id))
+      .reduce((sum, wallet) => sum + Number(wallet.balance), 0);
+
+    const net = transactions
+      .filter((transaction) => baseCurrencyWalletIds.has(transaction.wallet_id))
+      .reduce((sum, transaction) => {
+        const amount = Number(transaction.amount);
+
+        return sum + (transaction.transaction_type === TransactionType.INCOME ? amount : -amount);
+      }, 0);
+
+    const balanceAtPeriodStart = total_balance - net;
+    const delta_percent = balanceAtPeriodStart !== 0 ? Math.round((net / balanceAtPeriodStart) * 1000) / 10 : 0;
+
+    return {
+      total_balance,
+      total_balance_currency: user.baseCurrency.code,
+      delta_percent,
+      wallets: this.summarize(wallets, transactions),
+    };
   }
 }
