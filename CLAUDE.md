@@ -627,3 +627,81 @@ wallets/categories to `slate`, and a full create/reject-invalid-icon/reject-
 type-change/archive/restore pass against the running dev server behaved as
 designed. Full local `npm run test`, `npm run test:e2e`, `npm run lint`, and
 `npm run build` all pass as of this writing.
+
+## Home Stage 2 — wallets overview gap-fill (2026-09-07)
+
+Branch `feat/home-stage2-wallets-overview`, cut from `main`. Read the
+"Home Stage 2" mobile design (same Claude Design project as
+Transactions Stage 3/Limits Stage 4/Categories Stage 5, file
+`Home Stage 2.dc.html` + its `support.js` import) and the original
+pre-redesign Home screen (`uploads/success-budget-handoff/reference/Home.tsx`
+in that project's handoff package - a raw Figma export explicitly marked
+as the screen's ORIGINAL layout, kept there for comparison). The design's
+own stated changes are three front-end-only IA moves: a single aggregated
+"Total balance" hero replacing "first random wallet's balance", a floating
+(+) button replacing the two Income/Expense buttons, and transactions
+grouped by Today/Yesterday/date instead of a flat list. Almost all of it
+was already servable: `GET /wallets` already returned per-wallet
+`total_spend`/`total_income`/`design`/`currency`, `GET /transactions`
+already spanned all of a user's wallets (not one), and the design's
+35-icon set matches `CategoryIcon` in `src/shared/enums.ts` exactly. The
+one real gap was the hero's total-balance number and its period delta
+badge ("▲4.2%") - nothing resembling an aggregate or a period-over-period
+comparison existed anywhere in `wallets/` or `transactions/`.
+
+**Data/decision notes (don't relitigate without a reason):** wallets can
+each carry a different `currency_id` with zero FX/conversion logic
+anywhere in this app. Decided with the user: `total_balance` only sums
+wallets whose `currency_id` matches the user's `base_currency_id` -
+wallets in another currency are silently excluded from the total (but
+still appear in the per-wallet `wallets` array, unaffected). The delta
+period is the **current calendar month**, chosen specifically because it
+reuses the `from`/`to` (`getStartOfMonth`/`getEndOfMonth`) transactions
+`GET /wallets` already fetches for the per-wallet income/expense summary
+- zero extra DB queries beyond one `User` lookup (with its `baseCurrency`
+relation) for the currency label. `net = income - expense` for
+base-currency wallets in the period; `balance_at_period_start =
+total_balance - net`; `delta_percent = balance_at_period_start !== 0 ?
+round((net / balance_at_period_start) * 100, 1 decimal) : 0`. A
+zero/negative period-start balance is an accepted, documented limitation
+(same pragmatic style as `LimitsService.calculateSpending()`'s
+`in_percent`), not specially handled beyond the divide-by-zero guard.
+
+**`GET /wallets`'s response shape changed** (breaking, same precedent as
+the Limits Stage 4 `{ total, categories, over_allocation }` reshape) from
+a bare `WalletSummary[]` to `{ total_balance, total_balance_currency,
+delta_percent, wallets: WalletSummary[] }` - `wallets`' per-item shape is
+unchanged. No DB migration was needed - this is a pure read-side
+aggregation over existing columns
+(`WalletsService.buildOverview()`/`wallets.module.ts` now also registers
+`User` in its own `TypeOrmModule.forFeature`, following the precedent
+`CategoriesModule` already set of reading another module's entity
+directly rather than importing the whole owning module for one column).
+
+**Deliberately not added**: no currency conversion (there is no exchange-
+rate infrastructure in this app at all - out of scope for a Home-screen
+gap-fill); no rolling-7-day delta option (current-month was chosen for
+its zero-extra-query property, see above); no separate aggregate endpoint
+- the reshape follows the same "one round trip, aggregate + breakdown
+together" pattern already used by Limits.
+
+**Note on `.private/`:** `.private/mobile-api-changes.md` and
+`.private/modernization-plan.md`, both described at length elsewhere in
+this file, do not currently exist on disk - `.private/` is an empty
+directory. They were always gitignored, so this isn't a git-history
+question; their content appears to have been lost locally at some point.
+This stage's change is documented here in full instead of being appended
+to a (currently nonexistent) client-facing doc; do not assume a full
+mobile-api-changes.md with earlier rounds' content still exists somewhere
+- verify before relying on it being current.
+
+Covered by unit tests (`wallets.service.spec.ts` - base-currency
+filtering, delta calculation, the zero-wallets case, and the
+`balance_at_period_start === 0` guard; `wallets.controller.spec.ts` -
+updated for the new response shape) and an extended/new e2e scenario in
+`test/app.e2e-spec.ts` (total/currency/delta right after signup with one
+empty wallet, a second wallet in a non-base currency excluded from the
+total but present in the list, and the total/delta reflecting a real
+income transaction later in the flow). Full local `npm run test`,
+`npm run test:cov`, `npm run test:e2e`, `npm run lint`, and `npm run build`
+all pass as of this writing.

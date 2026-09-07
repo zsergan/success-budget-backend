@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
-import { WalletsService, WalletSummary } from './wallets.service';
+import { WalletsService, WalletsOverview } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '@shared/types';
@@ -56,7 +56,7 @@ export class WalletsController {
     @Request() req: AuthedRequest,
     @Query('from') from: Date = getStartOfMonth(new Date()),
     @Query('to') to: Date = getEndOfMonth(new Date()),
-  ): Promise<WalletSummary[]> {
+  ): Promise<WalletsOverview> {
     const wallets = await this.walletsService.getAll(req.user.id);
     const transactions = await this.transactionsService.getAllForWallets(
       wallets.map((wallet) => wallet.id),
@@ -64,7 +64,7 @@ export class WalletsController {
       to,
     );
 
-    return this.walletsService.summarize(wallets, transactions);
+    return this.walletsService.buildOverview(req.user.id, wallets, transactions);
   }
 
   @Delete(':walletId')
