@@ -3,7 +3,6 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
-  OneToMany,
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
@@ -11,7 +10,6 @@ import {
 import { Exclude } from 'class-transformer';
 
 import { Currency } from './currency.entity';
-import { SpaceMember } from './space-member.entity';
 import { SpaceType } from '@shared/enums';
 
 @Entity('spaces')
@@ -32,9 +30,6 @@ export class Space {
   @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'currency_id' })
   currency: Currency;
-
-  @OneToMany(() => SpaceMember, (member) => member.space)
-  members: SpaceMember[];
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;
