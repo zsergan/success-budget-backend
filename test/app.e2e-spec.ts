@@ -6,15 +6,21 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.config';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
+import { SpaceInvite } from '@entities/space-invite.entity';
 
 describe('App (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   const testEmail = `e2e-${Date.now()}@example.com`;
+  const secondTestEmail = `e2e-second-${Date.now()}@example.com`;
   const testPassword = 'DevTest#2026';
   let userId: number;
   let token: string;
   let walletId: number;
+  let secondUserId: number;
+  let secondUserToken: string;
+  let groupSpaceId: number;
+  const createdSpaceIds: number[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -33,6 +39,16 @@ describe('App (e2e)', () => {
     // app.close() never runs, the TypeORM connection pool stays open and
     // Jest hangs instead of exiting.
     try {
+      // Spaces (personal + the group space, whichever user currently owns
+      // it after the ownership-transfer scenario) have no FK back to users,
+      // so they'd be left as orphan rows if only `DELETE FROM users` ran -
+      // clean them up explicitly, before the users that reference them.
+      if (createdSpaceIds.length) {
+        await dataSource.query('DELETE FROM space_invites WHERE space_id IN (?)', [createdSpaceIds]);
+        await dataSource.query('DELETE FROM space_members WHERE space_id IN (?)', [createdSpaceIds]);
+        await dataSource.query('DELETE FROM spaces WHERE id IN (?)', [createdSpaceIds]);
+      }
+
       if (userId) {
         // limits.category_id (now limit_categories.category_id) and
         // transactions.category_id are both RESTRICT (categories/currencies
@@ -51,6 +67,10 @@ describe('App (e2e)', () => {
           [userId],
         );
         await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
+      }
+
+      if (secondUserId) {
+        await dataSource.query('DELETE FROM users WHERE id = ?', [secondUserId]);
       }
     } finally {
       await app.close();
@@ -128,6 +148,22 @@ describe('App (e2e)', () => {
       .expect(200);
 
     expect(profileResponse.body.email).toBe(testEmail);
+    expect(profileResponse.body.base_currency).toBeUndefined();
+
+    const spacesResponse = await request(app.getHttpServer())
+      .get('/api/v1/spaces')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(spacesResponse.body).toHaveLength(1);
+    expect(spacesResponse.body[0]).toMatchObject({
+      name: 'Personal',
+      type: 'personal',
+      role: 'owner',
+      member_count: 1,
+    });
+    expect(spacesResponse.body[0].currency.id).toBe(baseCurrencyId);
+    createdSpaceIds.push(spacesResponse.body[0].id);
 
     const walletsResponse = await request(app.getHttpServer())
       .get('/api/v1/wallets')
@@ -548,5 +584,174 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [firstId, 999999999] })
       .expect(403);
+  });
+
+  it('creates a group space, invites and revokes a pending member', async () => {
+    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
+    const baseCurrencyId = currencies.body[0].id;
+
+    const createResponse = await request(app.getHttpServer())
+      .post('/api/v1/spaces')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Family', type: 'group', currency_id: baseCurrencyId })
+      .expect(201);
+
+    groupSpaceId = createResponse.body.id;
+    expect(createResponse.body.currency_id).toBeUndefined();
+    createdSpaceIds.push(groupSpaceId);
+
+    const membersAfterCreate = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(membersAfterCreate.body).toEqual([
+      expect.objectContaining({ type: 'member', email: testEmail, role: 'owner', can_remove: false }),
+    ]);
+
+    const inviteResponse = await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${groupSpaceId}/invites`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'throwaway@example.com' })
+      .expect(201);
+
+    expect(inviteResponse.body.code).toMatch(/^\d{6}$/);
+
+    const membersAfterInvite = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(membersAfterInvite.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'invite', email: 'throwaway@example.com', can_remove: true }),
+      ]),
+    );
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/spaces/${groupSpaceId}/invites/${inviteResponse.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const membersAfterRevoke = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(membersAfterRevoke.body.find((entry) => entry.type === 'invite')).toBeUndefined();
+  });
+
+  it('creates a second personal space and rejects inviting into it', async () => {
+    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
+    const baseCurrencyId = currencies.body[0].id;
+
+    const createResponse = await request(app.getHttpServer())
+      .post('/api/v1/spaces')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Savings', type: 'personal', currency_id: baseCurrencyId })
+      .expect(201);
+    createdSpaceIds.push(createResponse.body.id);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/spaces')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'E2E Invalid', type: 'personal', currency_id: baseCurrencyId, invites: ['nope@example.com'] })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${createResponse.body.id}/invites`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'nope@example.com' })
+      .expect(400);
+  });
+
+  it('registers a second user, who cannot delete their only space', async () => {
+    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
+    const baseCurrencyId = currencies.body[0].id;
+
+    const registerResponse = await request(app.getHttpServer())
+      .post('/api/v1/users/register')
+      .send({ name: 'E2E Second', email: secondTestEmail, password: testPassword, base_currency_id: baseCurrencyId })
+      .expect(201);
+    secondUserId = registerResponse.body.id;
+
+    const confirmationCodeRepository = dataSource.getRepository(ConfirmationCode);
+    const confirmationCode = await confirmationCodeRepository.findOneOrFail({ where: { user_id: secondUserId } });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/users/verify-email')
+      .send({ email: secondTestEmail, code: confirmationCode.confirmation_code })
+      .expect(201);
+
+    const loginResponse = await request(app.getHttpServer())
+      .post('/api/v1/users/login')
+      .send({ email: secondTestEmail, password: testPassword })
+      .expect(201);
+    secondUserToken = loginResponse.text;
+
+    const spacesResponse = await request(app.getHttpServer())
+      .get('/api/v1/spaces')
+      .set('Authorization', `Bearer ${secondUserToken}`)
+      .expect(200);
+    expect(spacesResponse.body).toHaveLength(1);
+    const secondUserPersonalSpaceId = spacesResponse.body[0].id;
+    createdSpaceIds.push(secondUserPersonalSpaceId);
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/spaces/${secondUserPersonalSpaceId}`)
+      .set('Authorization', `Bearer ${secondUserToken}`)
+      .expect(400);
+  });
+
+  it('the second user accepts an invite and becomes a member of the group space', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${groupSpaceId}/invites`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: secondTestEmail })
+      .expect(201);
+
+    const spaceInviteRepository = dataSource.getRepository(SpaceInvite);
+    const invite = await spaceInviteRepository.findOneOrFail({
+      where: { space_id: groupSpaceId, email: secondTestEmail },
+    });
+
+    // wrong account: the caller's own email must match the invite's email
+    await request(app.getHttpServer())
+      .post('/api/v1/spaces/invites/accept')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: invite.code })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/spaces/invites/accept')
+      .set('Authorization', `Bearer ${secondUserToken}`)
+      .send({ code: invite.code })
+      .expect(201);
+
+    const membersResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(membersResponse.body).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'member', email: secondTestEmail, role: 'member' })]),
+    );
+  });
+
+  it('the owner leaves the group space and ownership transfers to the next member', async () => {
+    await request(app.getHttpServer())
+      .delete(`/api/v1/spaces/${groupSpaceId}/members/${userId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const spacesAfterLeaving = await request(app.getHttpServer())
+      .get('/api/v1/spaces')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(spacesAfterLeaving.body.find((space) => space.id === groupSpaceId)).toBeUndefined();
+
+    const membersResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${secondUserToken}`)
+      .expect(200);
+    expect(membersResponse.body).toEqual([
+      expect.objectContaining({ type: 'member', email: secondTestEmail, role: 'owner', can_remove: false }),
+    ]);
   });
 });
