@@ -1,6 +1,6 @@
 import { MigrationInterface, QueryRunner, Table, TableForeignKey } from 'typeorm';
 
-export class CrateLimitsTable1717654343207 implements MigrationInterface {
+export class CreateLimitsTable1717654343207 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // create limits table
     await queryRunner.createTable(
