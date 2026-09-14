@@ -112,6 +112,32 @@ assuming otherwise.
 Если сомневаешься — не добавляй. По умолчанию писать без комментариев вообще,
 добавлять только когда это действительно необходимо.
 
+## Соглашение об именовании: ветки и фазы (с 2026-09-14)
+
+Старая сквозная нумерация "Phase N" (см. "Статус" выше) дошла до 16 и дальше
+продолжаться не должна — через пару крупных инициатив она превратится в
+"Phase 100", ничего не говорящее о содержании. Уже был работающий прецедент —
+дизайн-driven работа со своим счётчиком на экран (Transactions Stage 3,
+Limits Stage 4, Categories Stage 5, Home Stage 2). Новая конвенция обобщает
+этот прецедент на любую крупную инициативу:
+
+- **Каждая крупная инициатива получает свой короткий префикс и свой счётчик
+  стадий, начинающийся с 1** (не продолжает общий счётчик Phase).
+- **Ветки:** существующая схема `feat/`/`fix/`/`refactor/` + суть в топике не
+  меняется, название инициативы и номер стадии просто становятся частью
+  топика: `feat/spaces-stage1-foundation`, `feat/spaces-stage2-...` и т.д.
+- **Журнал в этом файле:** новая инициатива описывается заголовками вида
+  `## <Инициатива> Stage N — <суть>` (как уже сделано для Transactions/
+  Limits/Categories/Home), а не как продолжение "Phase 17, 18...".
+- Мелкие точечные фиксы, не относящиеся ни к одной инициативе, вообще не
+  получают номер стадии — просто `fix/<короткое-название>`.
+- Phase 0-16 (см. "Статус" выше) — уже история, не переименовываются
+  задним числом.
+
+Первое применение этой конвенции — инициатива "Spaces", план в
+`.private/spaces-implementation-plan.md` (не начата, см. "Что осталось"
+ниже).
+
 ## Что сделано — по группам
 
 Первая волна (25 коммитов, зависимости/тесты/CI/dev-окружение) — см. историю
@@ -230,10 +256,14 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   since none of those has a delete endpoint at all yet. Add it if/when a
   delete feature is actually built for them, not preemptively.
 - **Migration filename typo `CrateLimitsTable`** (missing the "e" in
-  "Create") intentionally left as-is. TypeORM stores the migration class
-  name in the `migrations` table, so renaming it now would also need a
-  manual `UPDATE` against that table on every environment that already ran
-  it - not worth the risk for a cosmetic fix.
+  "Create") - previous decision to leave it as-is is **reversed** (2026-09-14,
+  as part of planning the Spaces initiative): with no real deployed
+  environment besides the local dev DB, the "manual `UPDATE` on every
+  environment that already ran it" risk no longer applies. Fix is planned as
+  a small standalone `fix/rename-limits-migration-typo` PR (not yet done -
+  see `.private/spaces-implementation-plan.md`, "Housekeeping" section for
+  the exact steps: a migration that updates the `migrations` table row first,
+  then the file/class rename, so TypeORM doesn't try to re-run it).
 - **NestJS 12 upgrade (plan phase 8) is deferred, not done.** Investigated
   2026-09-01: NestJS 12 is a full ESM-only migration, not a normal breaking
   major. Verified directly (`npm view @nestjs/core@12.0.1 type` / `exports`):
@@ -356,6 +386,30 @@ Remaining round-2 phases (see the plan file, "Раунд 2" section):
 9 Dependabot PRs (8 for the deferred NestJS 12 bump, 1 for `@types/node`
 24→26) are being left open deliberately as a visible backlog marker - do
 not merge or close them without being asked.
+
+**New initiative planned, not started: Spaces (shared budgets), single
+space-level currency, derived wallet balance.** Full plan (4 stages +
+one standalone housekeeping fix) in `.private/spaces-implementation-plan.md`
+- read it before starting any of this work, don't re-derive it from
+`.private/modernization-plan.md` (that file is the superseded draft + the
+Q&A that produced the final plan, kept only as background). Uses the new
+naming convention above (`Spaces Stage 1-4`, branches
+`feat/spaces-stageN-...`). Highlights: personal `Space` now created at
+`register` (not `verify-email`), `users.base_currency_id` is dropped
+entirely rather than migrated later; Wallet/Category/Limit/Transaction all
+move from `user_id` to `space_id` ownership in one combined stage (found to
+be non-separable - see the plan for why); wallet starting balance becomes a
+regular `income` transaction against a system `Initial balance` category
+instead of a stored column; `wallets.balance`/`currency_id` and
+`transactions.currency_id` are dropped in favor of derived balance and a
+single space-level currency. Mobile design for this was read and
+cross-checked against the plan on 2026-09-14 (`Home Stage 2.dc.html` +
+`Auth & Settings Stage 6.dc.html` in the same Claude Design project as the
+other Stage files) - see the plan file's "Сверка с мобильным дизайном"
+section for the corrections that produced (single-owner model with automatic
+succession on leave instead of manual role changes, `is_personal` replaced
+by a `type: 'personal' | 'group'` space type, inline invites on space
+creation).
 
 ## Transactions Stage 3 — mobile design gap-fill (2026-09-03)
 
