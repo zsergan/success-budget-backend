@@ -10,4 +10,9 @@ export const ErrorMessages = {
   EMAIL_ALREADY_EXISTS: 'Email already exists',
   NOT_FOUND: 'Not found',
   TOO_MANY_ATTEMPTS: 'Too many attempts, request a new confirmation code',
+  FORBIDDEN_SPACE: 'Space does not exist or you do not have access to this space',
+  SPACE_PERSONAL_NO_INVITES: 'A personal space cannot have invited members',
+  SPACE_INVITE_LIMIT_REACHED: 'This space has reached its limit of pending invites',
+  SPACE_MEMBER_LIMIT_REACHED: 'This space has reached its member limit',
+  SPACE_LAST_REMAINING: 'You cannot leave or delete your only remaining space',
 };

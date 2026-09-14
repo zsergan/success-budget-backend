@@ -60,3 +60,13 @@ export enum LimitType {
   CATEGORY = 'category',
   OTHERS = 'others',
 }
+
+export enum SpaceType {
+  PERSONAL = 'personal',
+  GROUP = 'group',
+}
+
+export enum SpaceRole {
+  OWNER = 'owner',
+  MEMBER = 'member',
+}
