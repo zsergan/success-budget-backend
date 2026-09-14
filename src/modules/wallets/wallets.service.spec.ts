@@ -4,13 +4,13 @@ import { Repository } from 'typeorm';
 
 import { WalletsService } from './wallets.service';
 import { Wallet } from '@entities/wallet.entity';
-import { User } from '@entities/user.entity';
+import { SpacesService } from '@modules/spaces/spaces.service';
 import { TransactionType } from '@shared/enums';
 
 describe('WalletsService', () => {
   let service: WalletsService;
   let repository: jest.Mocked<Repository<Wallet>>;
-  let userRepository: jest.Mocked<Repository<User>>;
+  let spacesService: jest.Mocked<SpacesService>;
 
   beforeEach(async () => {
     const queryBuilder = {
@@ -32,18 +32,13 @@ describe('WalletsService', () => {
             createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
           },
         },
-        {
-          provide: getRepositoryToken(User),
-          useValue: {
-            findOne: jest.fn(),
-          },
-        },
+        { provide: SpacesService, useValue: { findOldestPersonalSpace: jest.fn() } },
       ],
     }).compile();
 
     service = module.get(WalletsService);
     repository = module.get(getRepositoryToken(Wallet));
-    userRepository = module.get(getRepositoryToken(User));
+    spacesService = module.get(SpacesService);
   });
 
   describe('getOne', () => {
@@ -117,10 +112,10 @@ describe('WalletsService', () => {
   });
 
   describe('buildOverview', () => {
-    const user = { id: 9, base_currency_id: 1, baseCurrency: { id: 1, code: 'USD' } } as User;
+    const baseSpace = { id: 1, currency_id: 1, currency: { id: 1, code: 'USD' } } as any;
 
     it('sums only wallets in the base currency and computes the period delta', async () => {
-      userRepository.findOne.mockResolvedValue(user);
+      spacesService.findOldestPersonalSpace.mockResolvedValue(baseSpace);
       const wallets = [
         { id: 1, currency_id: 1, balance: 1000 },
         { id: 2, currency_id: 1, balance: 500 },
@@ -134,7 +129,7 @@ describe('WalletsService', () => {
 
       const result = await service.buildOverview(9, wallets, transactions);
 
-      expect(userRepository.findOne).toHaveBeenCalledWith({ where: { id: 9 }, relations: { baseCurrency: true } });
+      expect(spacesService.findOldestPersonalSpace).toHaveBeenCalledWith(9);
       // total_balance excludes the wallet in currency 2, net = 200 - 50 = 150, base = 1500 - 150 = 1350
       expect(result.total_balance).toBe(1500);
       expect(result.total_balance_currency).toBe('USD');
@@ -143,7 +138,7 @@ describe('WalletsService', () => {
     });
 
     it('returns a 0% delta when there are no base-currency wallets', async () => {
-      userRepository.findOne.mockResolvedValue(user);
+      spacesService.findOldestPersonalSpace.mockResolvedValue(baseSpace);
       const wallets = [{ id: 1, currency_id: 2, balance: 100 }] as Wallet[];
 
       const result = await service.buildOverview(9, wallets, []);
@@ -153,7 +148,7 @@ describe('WalletsService', () => {
     });
 
     it('returns a 0% delta when the balance at the start of the period was zero', async () => {
-      userRepository.findOne.mockResolvedValue(user);
+      spacesService.findOldestPersonalSpace.mockResolvedValue(baseSpace);
       const wallets = [{ id: 1, currency_id: 1, balance: 200 }] as Wallet[];
       const transactions = [{ wallet_id: 1, transaction_type: TransactionType.INCOME, amount: '200' }] as any;
 

@@ -10,9 +10,11 @@ import { User } from '@entities/user.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
+import { Space } from '@entities/space.entity';
+import { SpaceMember } from '@entities/space-member.entity';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
 import { ErrorMessages } from '@shared/error-messages';
-import { ConfirmationType } from '@shared/enums';
+import { ConfirmationType, SpaceRole, SpaceType } from '@shared/enums';
 
 const JWT_SECRET_FOR_TESTS = 'test-secret';
 
@@ -27,30 +29,35 @@ const bcrypt = require('bcrypt') as { compare: jest.Mock; hash: jest.Mock; hashS
 describe('UsersService', () => {
   let service: UsersService;
   let repository: jest.Mocked<Repository<User>>;
-  let userRepositoryInTx: { update: jest.Mock };
+  let userRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
   let confirmationCodeRepositoryInTx: { update: jest.Mock };
   let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
+  let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock; findOneOrFail: jest.Mock };
+  let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; findOneOrFail: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
 
   beforeEach(async () => {
-    const queryBuilder = {
-      innerJoinAndSelect: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      getOne: jest.fn(),
-    };
-
-    userRepositoryInTx = { update: jest.fn() };
+    userRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), update: jest.fn() };
     confirmationCodeRepositoryInTx = { update: jest.fn() };
     walletRepositoryInTx = { create: jest.fn(), save: jest.fn() };
     categoryRepositoryInTx = { save: jest.fn() };
+    spaceRepositoryInTx = {
+      create: jest.fn((entity) => entity),
+      save: jest.fn(),
+      update: jest.fn(),
+      findOneOrFail: jest.fn(),
+    };
+    spaceMemberRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), findOneOrFail: jest.fn() };
     const manager = {
       getRepository: jest.fn((entity) => {
         if (entity === User) return userRepositoryInTx;
         if (entity === ConfirmationCode) return confirmationCodeRepositoryInTx;
         if (entity === Wallet) return walletRepositoryInTx;
         if (entity === Category) return categoryRepositoryInTx;
+        if (entity === Space) return spaceRepositoryInTx;
+        if (entity === SpaceMember) return spaceMemberRepositoryInTx;
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     };
@@ -61,13 +68,7 @@ describe('UsersService', () => {
         UsersService,
         {
           provide: getRepositoryToken(User),
-          useValue: {
-            create: jest.fn(),
-            save: jest.fn(),
-            update: jest.fn(),
-            findOne: jest.fn(),
-            createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
-          },
+          useValue: { findOne: jest.fn(), update: jest.fn() },
         },
         { provide: DataSource, useValue: dataSource },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue(JWT_SECRET_FOR_TESTS) } },
@@ -88,47 +89,48 @@ describe('UsersService', () => {
   });
 
   describe('register', () => {
-    it('creates and persists a new user', async () => {
+    it('creates the user, a personal space, and an owner membership in one transaction', async () => {
       const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
-      const created = { ...dto } as User;
-      const saved = { ...dto, id: 1 } as User;
-
-      repository.create.mockReturnValue(created);
-      repository.save.mockResolvedValue(saved);
+      userRepositoryInTx.save.mockResolvedValue({ id: 1, email: 'a@b.com', name: 'A' });
+      spaceRepositoryInTx.save.mockResolvedValue({ id: 10 });
 
       const result = await service.register(dto);
 
-      expect(repository.create).toHaveBeenCalledWith(dto);
-      expect(repository.save).toHaveBeenCalledWith(created);
-      expect(result).toEqual(saved);
+      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(userRepositoryInTx.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'A', email: 'a@b.com', password: 'pw' }),
+      );
+      expect(spaceRepositoryInTx.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 }),
+      );
+      expect(spaceMemberRepositoryInTx.save).toHaveBeenCalledWith(
+        expect.objectContaining({ space_id: 10, user_id: 1, role: SpaceRole.OWNER }),
+      );
+      expect(result).toMatchObject({ id: 1, email: 'a@b.com' });
     });
   });
 
   describe('updateUnverified', () => {
-    it('re-hashes the new password and updates name/currency, then returns the refreshed user', async () => {
+    it('re-hashes the password, updates the personal space currency, and returns the refreshed user', async () => {
       const dto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 2 } as any;
-      const refreshed = { id: 4, name: 'New Name' } as User;
       bcrypt.hash.mockResolvedValue('hashed-newpw');
-      const queryBuilder = repository.createQueryBuilder();
-      (queryBuilder.getOne as jest.Mock).mockResolvedValue(refreshed);
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      repository.findOne.mockResolvedValue({ id: 4, name: 'New Name' } as User);
 
       const result = await service.updateUnverified(4, dto);
 
       expect(bcrypt.hash).toHaveBeenCalledWith('newpw', 10);
-      expect(repository.update).toHaveBeenCalledWith(4, {
-        name: 'New Name',
-        password: 'hashed-newpw',
-        base_currency_id: 2,
-      });
-      expect(result).toBe(refreshed);
+      expect(userRepositoryInTx.update).toHaveBeenCalledWith(4, { name: 'New Name', password: 'hashed-newpw' });
+      expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 4 } });
+      expect(spaceRepositoryInTx.update).toHaveBeenCalledWith(20, { currency_id: 2 });
+      expect(result).toMatchObject({ id: 4, name: 'New Name' });
     });
   });
 
   describe('verify', () => {
     it('marks the user verified and returns a fresh access token', async () => {
       const user = { id: 7, email: 'a@b.com' } as User;
-      const queryBuilder = repository.createQueryBuilder();
-      (queryBuilder.getOne as jest.Mock).mockResolvedValue(user);
+      repository.findOne.mockResolvedValue(user);
 
       const token = await service.verify(7);
 
@@ -150,34 +152,34 @@ describe('UsersService', () => {
     it('creates a new user when none exists yet', async () => {
       repository.findOne.mockResolvedValue(null);
       const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
-      const created = { ...dto } as User;
-      repository.create.mockReturnValue(created);
-      repository.save.mockResolvedValue({ ...created, id: 2 } as User);
+      userRepositoryInTx.save.mockResolvedValue({ id: 2, email: 'a@b.com', name: 'A' });
+      spaceRepositoryInTx.save.mockResolvedValue({ id: 10 });
 
       const result = await service.registerOrRefresh(dto);
 
-      expect(repository.save).toHaveBeenCalledWith(created);
+      expect(userRepositoryInTx.save).toHaveBeenCalled();
       expect(result).toMatchObject({ id: 2 });
     });
 
     it('refreshes an existing unverified user instead of creating a duplicate', async () => {
       const existing = { id: 3, email: 'a@b.com', email_verified: 0 } as User;
-      repository.findOne.mockResolvedValue(existing);
+      repository.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce({ id: 3, name: 'New' } as User);
       bcrypt.hash.mockResolvedValue('hashed');
-      const queryBuilder = repository.createQueryBuilder();
-      (queryBuilder.getOne as jest.Mock).mockResolvedValue({ id: 3, name: 'New' } as User);
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
 
       const dto = { email: 'a@b.com', name: 'New', password: 'newpw', base_currency_id: 1 } as any;
       const result = await service.registerOrRefresh(dto);
 
-      expect(repository.update).toHaveBeenCalledWith(3, expect.objectContaining({ name: 'New' }));
+      expect(userRepositoryInTx.update).toHaveBeenCalledWith(3, expect.objectContaining({ name: 'New' }));
       expect(result).toMatchObject({ id: 3, name: 'New' });
     });
   });
 
   describe('completeEmailVerification', () => {
     it('marks the user verified, expires the code, provisions defaults, and returns a token in one transaction', async () => {
-      const user = { id: 1, base_currency_id: 5 } as User;
+      const user = { id: 1 } as User;
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.create.mockReturnValue({ id: 10 });
 
       const token = await service.completeEmailVerification(user, 7);
@@ -185,6 +187,8 @@ describe('UsersService', () => {
       expect(dataSource.transaction).toHaveBeenCalled();
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
       expect(confirmationCodeRepositoryInTx.update).toHaveBeenCalledWith(7, { expired_at: expect.any(Date) });
+      expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 1 } });
+      expect(spaceRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { id: 20 } });
       expect(walletRepositoryInTx.create).toHaveBeenCalledWith(
         expect.objectContaining({ user_id: 1, wallet_name: 'Cash', currency_id: 5 }),
       );
@@ -196,8 +200,21 @@ describe('UsersService', () => {
       expect(decoded.id).toBe(1);
     });
 
+    it('skips the confirmation-code update when no id is given (the seed flow)', async () => {
+      const user = { id: 1 } as User;
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
+      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+
+      await service.completeEmailVerification(user);
+
+      expect(confirmationCodeRepositoryInTx.update).not.toHaveBeenCalled();
+    });
+
     it('propagates a failure from inside the transaction instead of returning a token', async () => {
-      const user = { id: 1, base_currency_id: 5 } as User;
+      const user = { id: 1 } as User;
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
 
       await expect(service.completeEmailVerification(user, 7)).rejects.toThrow('db unavailable');
@@ -244,9 +261,11 @@ describe('UsersService', () => {
     });
 
     it('completes email verification on a matching code', async () => {
-      const user = { id: 1, base_currency_id: 5 } as User;
+      const user = { id: 1 } as User;
       repository.findOne.mockResolvedValue(user);
       confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '1234' } as any);
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.create.mockReturnValue({ id: 10 });
 
       const token = await service.verifyEmail({ email: 'x@x.com', code: '1234' } as any);
@@ -314,6 +333,18 @@ describe('UsersService', () => {
       const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number; exp: number; iat: number };
       const ninetyDaysInSeconds = 60 * 60 * 24 * 90;
       expect(decoded.exp - decoded.iat).toBe(ninetyDaysInSeconds);
+    });
+  });
+
+  describe('findById', () => {
+    it('looks up the user by id', async () => {
+      const user = { id: 1, email: 'a@b.com' } as User;
+      repository.findOne.mockResolvedValue(user);
+
+      const result = await service.findById(1);
+
+      expect(repository.findOne).toHaveBeenCalledWith({ where: { id: 1 } });
+      expect(result).toEqual(user);
     });
   });
 

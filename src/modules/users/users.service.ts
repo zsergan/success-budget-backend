@@ -9,12 +9,14 @@ import { User } from '@entities/user.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
+import { Space } from '@entities/space.entity';
+import { SpaceMember } from '@entities/space-member.entity';
 import type { CreateUserDto } from './dto/create-user.dto';
 import type { LoginUserDto } from './dto/login-user.dto';
 import type { VerifyUserDto } from './dto/verify-user.dto';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
 import { ErrorMessages } from '@shared/error-messages';
-import { ConfirmationType, AppColor } from '@shared/enums';
+import { ConfirmationType, AppColor, SpaceRole, SpaceType } from '@shared/enums';
 import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
 import { constantTimeEquals } from '@shared/utils';
 
@@ -36,8 +38,33 @@ export class UsersService {
   }
 
   async register(createUserDto: CreateUserDto): Promise<User> {
-    const user = this.userRepository.create(createUserDto);
-    return await this.userRepository.save(user);
+    return this.dataSource.transaction(async (manager) => {
+      const user = await manager.getRepository(User).save(
+        manager.getRepository(User).create({
+          name: createUserDto.name,
+          email: createUserDto.email,
+          password: createUserDto.password,
+        }),
+      );
+
+      const space = await manager.getRepository(Space).save(
+        manager.getRepository(Space).create({
+          name: 'Personal',
+          type: SpaceType.PERSONAL,
+          currency_id: createUserDto.base_currency_id,
+        }),
+      );
+
+      await manager.getRepository(SpaceMember).save(
+        manager.getRepository(SpaceMember).create({
+          space_id: space.id,
+          user_id: user.id,
+          role: SpaceRole.OWNER,
+        }),
+      );
+
+      return user;
+    });
   }
 
   async registerOrRefresh(createUserDto: CreateUserDto): Promise<User> {
@@ -53,10 +80,11 @@ export class UsersService {
   async updateUnverified(id: number, createUserDto: CreateUserDto): Promise<User> {
     const password = await bcrypt.hash(createUserDto.password, 10);
 
-    await this.userRepository.update(id, {
-      name: createUserDto.name,
-      password,
-      base_currency_id: createUserDto.base_currency_id,
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(User).update(id, { name: createUserDto.name, password });
+
+      const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: id } });
+      await manager.getRepository(Space).update(spaceMember.space_id, { currency_id: createUserDto.base_currency_id });
     });
 
     return this.findById(id);
@@ -69,17 +97,27 @@ export class UsersService {
     return this.generateAccessToken(user);
   }
 
-  async completeEmailVerification(user: User, confirmationCodeId: number): Promise<string> {
+  async completeEmailVerification(user: User, confirmationCodeId?: number): Promise<string> {
     await this.dataSource.transaction(async (manager) => {
       await manager.getRepository(User).update(user.id, { email_verified: 1 });
-      await manager.getRepository(ConfirmationCode).update(confirmationCodeId, { expired_at: new Date() });
+
+      if (confirmationCodeId !== undefined) {
+        await manager.getRepository(ConfirmationCode).update(confirmationCodeId, { expired_at: new Date() });
+      }
+
+      // exactly one personal space is guaranteed here: it's created
+      // transactionally in register(), and an unverified user has no JWT
+      // (login() blocks unverified accounts), so there's no way to reach
+      // POST /spaces and create another one before this point
+      const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: user.id } });
+      const space = await manager.getRepository(Space).findOneOrFail({ where: { id: spaceMember.space_id } });
 
       const wallet = manager.getRepository(Wallet).create({
         user_id: user.id,
         wallet_name: 'Cash',
         balance: 0,
         design: AppColor.SLATE,
-        currency_id: user.base_currency_id,
+        currency_id: space.currency_id,
       });
       await manager.getRepository(Wallet).save(wallet);
 
@@ -134,11 +172,7 @@ export class UsersService {
   }
 
   async findById(id: number): Promise<User> {
-    return this.userRepository
-      .createQueryBuilder('user')
-      .innerJoinAndSelect('user.baseCurrency', 'currency')
-      .where({ id })
-      .getOne();
+    return this.userRepository.findOne({ where: { id } });
   }
 
   async findByEmail(email: string): Promise<User> {
