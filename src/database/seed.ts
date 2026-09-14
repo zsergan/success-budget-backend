@@ -2,11 +2,7 @@ import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from '../app.module';
 import { UsersService } from '@modules/users/users.service';
-import { WalletsService } from '@modules/wallets/wallets.service';
-import { CategoriesService } from '@modules/categories/categories.service';
 import { CurrenciesService } from '@modules/currencies/currencies.service';
-import { AppColor } from '@shared/enums';
-import { DEFAULT_CATEGORIES } from '@shared/constants';
 
 // Dev-only seed data. Not real accounts, not real roles - this app has no
 // role/permission model (see src/entities/user.entity.ts), so "admin" here
@@ -31,8 +27,6 @@ async function bootstrap() {
   const app = await NestFactory.createApplicationContext(AppModule);
 
   const usersService = app.get(UsersService);
-  const walletsService = app.get(WalletsService);
-  const categoriesService = app.get(CategoriesService);
   const currenciesService = app.get(CurrenciesService);
 
   const currencies = await currenciesService.getAll();
@@ -58,14 +52,11 @@ async function bootstrap() {
     });
 
     if (seedUser.verified) {
-      await usersService.verify(user.id);
-      await walletsService.create(user.id, {
-        wallet_name: 'Cash',
-        balance: 0,
-        design: AppColor.SLATE,
-        currency_id: baseCurrency.id,
-      });
-      await categoriesService.initiateCategories(user.id, DEFAULT_CATEGORIES);
+      // goes through the same code path as a real verify-email call
+      // (Cash wallet + default categories, scoped to the personal space
+      // created in register()) instead of duplicating it here - no real
+      // confirmation code exists for seed users, so the id is omitted
+      await usersService.completeEmailVerification(user);
     }
 
     console.log(`created: ${seedUser.email}`);
