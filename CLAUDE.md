@@ -255,15 +255,6 @@ git, детали не дублирую здесь. Ключевое: `npm audit
   intentionally not added to `Category`/`Limit`/`Transaction` in phase 6,
   since none of those has a delete endpoint at all yet. Add it if/when a
   delete feature is actually built for them, not preemptively.
-- **Migration filename typo `CrateLimitsTable`** (missing the "e" in
-  "Create") - previous decision to leave it as-is is **reversed** (2026-09-14,
-  as part of planning the Spaces initiative): with no real deployed
-  environment besides the local dev DB, the "manual `UPDATE` on every
-  environment that already ran it" risk no longer applies. Fix is planned as
-  a small standalone `fix/rename-limits-migration-typo` PR (not yet done -
-  see `.private/spaces-implementation-plan.md`, "Housekeeping" section for
-  the exact steps: a migration that updates the `migrations` table row first,
-  then the file/class rename, so TypeORM doesn't try to re-run it).
 - **NestJS 12 upgrade (plan phase 8) is deferred, not done.** Investigated
   2026-09-01: NestJS 12 is a full ESM-only migration, not a normal breaking
   major. Verified directly (`npm view @nestjs/core@12.0.1 type` / `exports`):
