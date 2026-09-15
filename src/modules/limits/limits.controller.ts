@@ -4,6 +4,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpException,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Post,
@@ -102,6 +104,10 @@ export class LimitsController {
     for (const categoryId of categoryIds ?? []) {
       const category = await this.categoriesService.getOne(categoryId);
       assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+
+      if (category.is_system) {
+        throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+      }
     }
   }
 }

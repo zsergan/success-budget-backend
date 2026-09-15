@@ -4,6 +4,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpException,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Post,
@@ -64,6 +66,10 @@ export class CategoriesController {
     const category = await this.categoriesService.getOne(categoryId);
     assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
 
+    if (category.is_system) {
+      throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+    }
+
     return this.categoriesService.update(categoryId, updateCategory);
   }
 
@@ -90,6 +96,10 @@ export class CategoriesController {
 
     const category = await this.categoriesService.getOne(categoryId);
     assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+
+    if (category.is_system) {
+      throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+    }
 
     return this.categoriesService.deleteOrArchive(categoryId);
   }

@@ -22,6 +22,7 @@ describe('CategoriesService', () => {
   beforeEach(async () => {
     categoryQueryBuilder = {
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
     };
@@ -85,6 +86,7 @@ describe('CategoriesService', () => {
       await service.getAll(2);
 
       expect(categoryQueryBuilder.where).toHaveBeenCalledWith('category.space_id = :spaceId', { spaceId: 2 });
+      expect(categoryQueryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
       expect(categoryQueryBuilder.orderBy).toHaveBeenCalledWith('category.sort', 'ASC');
     });
 
@@ -262,6 +264,17 @@ describe('CategoriesService', () => {
       await expect(service.reorder(1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
+    });
+
+    it('rejects reordering a system category', async () => {
+      categoryRepository.find.mockResolvedValue([
+        { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1, is_system: 1 },
+      ] as Category[]);
+
+      await expect(service.reorder(1, [1])).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
+      );
+      expect(categoryRepository.save).not.toHaveBeenCalled();
     });
 
     it('rejects mixing income and expense categories in one reorder', async () => {

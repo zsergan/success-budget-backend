@@ -47,6 +47,12 @@ export class Category {
   @Column({ type: 'int' })
   sort: number;
 
+  // never exposed to clients even if it somehow ended up in a view -
+  // CategoryView intentionally has no is_system field either
+  @Exclude()
+  @Column({ type: 'tinyint', default: 0 })
+  is_system: number;
+
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
   space: Space;

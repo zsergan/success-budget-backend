@@ -10,7 +10,6 @@ import {
 import { Exclude } from 'class-transformer';
 
 import { Space } from './space.entity';
-import { Currency } from './currency.entity';
 import { AppColor } from '@shared/enums';
 
 @Entity('wallets')
@@ -25,15 +24,12 @@ export class Wallet {
   @Column({ type: 'varchar', length: 255 })
   wallet_name: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  // derived from the wallet's own transactions, not a stored column -
+  // populated by the service before the entity is returned/serialized
   balance: number;
 
   @Column({ type: 'enum', enum: AppColor })
   design: AppColor;
-
-  @Exclude()
-  @Column({ type: 'int' })
-  currency_id: number;
 
   @Exclude()
   @Column({ type: 'tinyint', default: 0 })
@@ -46,10 +42,6 @@ export class Wallet {
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
   space: Space;
-
-  @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
-  @JoinColumn({ name: 'currency_id' })
-  currency: Currency;
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;

@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsDecimal, IsNumber, IsEnum, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsString, IsDecimal, IsEnum, Matches, MaxLength } from 'class-validator';
 import { AppColor } from '@shared/enums';
 
 export class CreateWalletDto {
@@ -9,11 +9,8 @@ export class CreateWalletDto {
 
   @IsNotEmpty()
   @IsDecimal()
-  balance: number;
-
-  @IsNotEmpty()
-  @IsNumber()
-  currency_id: number;
+  @Matches(/^\d+(\.\d+)?$/, { message: 'initial_balance must not be negative' })
+  initial_balance: number;
 
   @IsNotEmpty()
   @IsEnum(AppColor)

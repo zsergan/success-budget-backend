@@ -87,7 +87,7 @@ describe('TransactionsController', () => {
     });
 
     it('rejects when the category belongs to a different space', async () => {
-      walletsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, currency_id: 3 } as any);
+      walletsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId } as any);
       categoriesService.getOne.mockResolvedValue({ id: 5, space_id: 20 } as any);
 
       await expect(
@@ -101,8 +101,25 @@ describe('TransactionsController', () => {
       expect(transactionsService.create).not.toHaveBeenCalled();
     });
 
-    it('delegates to TransactionsService with the wallet id and currency', async () => {
-      walletsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, currency_id: 3 } as any);
+    it('rejects when the category is a system category', async () => {
+      const wallet = { id: 1, space_id: spaceId };
+      walletsService.getOne.mockResolvedValue(wallet as any);
+      categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId, is_system: 1 } as any);
+
+      await expect(
+        controller.create(req, spaceId, {
+          wallet_id: 1,
+          category_id: 5,
+          transaction_type: TransactionType.INCOME,
+          amount: 10,
+        } as any),
+      ).rejects.toMatchObject(new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403));
+      expect(transactionsService.create).not.toHaveBeenCalled();
+    });
+
+    it('delegates to TransactionsService with the loaded wallet entity', async () => {
+      const wallet = { id: 1, space_id: spaceId };
+      walletsService.getOne.mockResolvedValue(wallet as any);
       categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId } as any);
       const dto = {
         wallet_id: 1,
@@ -116,7 +133,7 @@ describe('TransactionsController', () => {
       const result = await controller.create(req, spaceId, dto);
 
       expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(transactionsService.create).toHaveBeenCalledWith(1, 3, dto);
+      expect(transactionsService.create).toHaveBeenCalledWith(wallet, dto);
       expect(result).toEqual(created);
     });
   });

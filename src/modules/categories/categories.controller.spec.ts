@@ -76,6 +76,15 @@ describe('CategoriesController', () => {
 
       expect(categoriesService.update).toHaveBeenCalledWith(1, { name: 'New' });
     });
+
+    it('rejects updating a system category', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, is_system: 1 } as any);
+
+      await expect(controller.update(req, spaceId, 1, {} as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
+      );
+      expect(categoriesService.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('create', () => {
@@ -107,6 +116,15 @@ describe('CategoriesController', () => {
 
       expect(categoriesService.deleteOrArchive).toHaveBeenCalledWith(1);
       expect(result).toEqual({ archived: true });
+    });
+
+    it('rejects deleting a system category', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, is_system: 1 } as any);
+
+      await expect(controller.remove(req, spaceId, 1)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
+      );
+      expect(categoriesService.deleteOrArchive).not.toHaveBeenCalled();
     });
   });
 });

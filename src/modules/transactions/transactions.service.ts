@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { Wallet } from '@entities/wallet.entity';
@@ -18,60 +18,51 @@ export class TransactionsService {
   constructor(
     @InjectRepository(Transaction)
     private readonly transactionRepository: Repository<Transaction>,
-    private readonly dataSource: DataSource,
   ) {}
 
-  async create(
-    walletId: number,
-    currencyId: number,
-    createTransactionDto: CreateTransactionDto,
-  ): Promise<CreateTransactionResult> {
-    return this.dataSource.transaction(async (manager) => {
-      const walletRepository = manager.getRepository(Wallet);
-      const wallet = await walletRepository.findOne({
-        where: { id: walletId },
-        lock: { mode: 'pessimistic_write' },
-      });
+  async create(wallet: Wallet, createTransactionDto: CreateTransactionDto): Promise<CreateTransactionResult> {
+    const balances = await this.getBalances([wallet.id]);
+    const previousBalance = balances.get(wallet.id) ?? 0;
 
-      const previousBalance = Number(wallet.balance);
-      const balanceChange =
-        createTransactionDto.transaction_type === TransactionType.INCOME
-          ? Number(createTransactionDto.amount)
-          : -Number(createTransactionDto.amount);
-      const newBalance = previousBalance + balanceChange;
+    const transaction = this.transactionRepository.create(createTransactionDto);
+    const savedTransaction = await this.transactionRepository.save(transaction);
 
-      await walletRepository.update(walletId, { balance: newBalance });
-      // Mutate the loaded entity instance (not a spread copy) so its
-      // @Exclude() metadata survives ClassSerializerInterceptor - see
-      // .private/modernization-plan.md, "Этап 15" on the spread-before-save leak.
-      wallet.balance = newBalance;
+    const amount = Number(createTransactionDto.amount);
+    const balanceChange = createTransactionDto.transaction_type === TransactionType.INCOME ? amount : -amount;
+    wallet.balance = previousBalance + balanceChange;
 
-      const transactionRepository = manager.getRepository(Transaction);
-      const transaction = transactionRepository.create({ ...createTransactionDto, currency_id: currencyId });
-      const savedTransaction = await transactionRepository.save(transaction);
-
-      return { transaction: savedTransaction, wallet, previous_balance: previousBalance };
-    });
+    return { transaction: savedTransaction, wallet, previous_balance: previousBalance };
   }
 
   async remove(transaction: Transaction): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      const walletRepository = manager.getRepository(Wallet);
-      const wallet = await walletRepository.findOne({
-        where: { id: transaction.wallet_id },
-        lock: { mode: 'pessimistic_write' },
-      });
+    await this.transactionRepository.delete(transaction.id);
+  }
 
-      const balanceChange =
-        transaction.transaction_type === TransactionType.INCOME
-          ? -Number(transaction.amount)
-          : Number(transaction.amount);
+  // shared by GET /spaces/:spaceId/wallets and create()'s previous_balance -
+  // no lock, informational only: the balance is always recomputed from
+  // history and never depends on the order concurrent requests resolve in
+  async getBalances(walletIds: number[]): Promise<Map<number, number>> {
+    const balances = new Map(walletIds.map((id) => [id, 0]));
 
-      await walletRepository.update(wallet.id, { balance: Number(wallet.balance) + balanceChange });
+    if (walletIds.length === 0) {
+      return balances;
+    }
 
-      const transactionRepository = manager.getRepository(Transaction);
-      await transactionRepository.delete(transaction.id);
-    });
+    const rows = await this.transactionRepository
+      .createQueryBuilder('transaction')
+      .select('transaction.wallet_id', 'wallet_id')
+      .addSelect(
+        'SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE -transaction.amount END)',
+        'balance',
+      )
+      .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
+      .setParameter('income', TransactionType.INCOME)
+      .groupBy('transaction.wallet_id')
+      .getRawMany<{ wallet_id: string; balance: string }>();
+
+    rows.forEach((row) => balances.set(Number(row.wallet_id), Number(row.balance)));
+
+    return balances;
   }
 
   async getOneWithWallet(transactionId: string): Promise<Transaction | null> {
@@ -87,7 +78,6 @@ export class TransactionsService {
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
-      .innerJoinAndSelect('transaction.currency', 'currency')
       .where({ wallet_id: walletId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
@@ -113,7 +103,6 @@ export class TransactionsService {
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
-      .innerJoinAndSelect('transaction.currency', 'currency')
       .where('wallet.space_id = :spaceId', { spaceId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
@@ -127,7 +116,6 @@ export class TransactionsService {
         .createQueryBuilder('transaction')
         .innerJoinAndSelect('transaction.wallet', 'wallet')
         .innerJoinAndSelect('transaction.category', 'category')
-        .innerJoinAndSelect('transaction.currency', 'currency')
         .where('wallet.space_id = :spaceId', { spaceId })
         .orderBy('transaction.timestamp', 'DESC')
         // Deterministic tie-break for the (now rare, since timestamp is

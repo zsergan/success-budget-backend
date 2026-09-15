@@ -17,7 +17,7 @@ import type { VerifyUserDto } from './dto/verify-user.dto';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
 import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType, AppColor, SpaceRole, SpaceType } from '@shared/enums';
-import { DEFAULT_CATEGORIES, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
+import { DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
 import { constantTimeEquals } from '@shared/utils';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
@@ -115,13 +115,14 @@ export class UsersService {
       const wallet = manager.getRepository(Wallet).create({
         space_id: space.id,
         wallet_name: 'Cash',
-        balance: 0,
         design: AppColor.SLATE,
-        currency_id: space.currency_id,
       });
       await manager.getRepository(Wallet).save(wallet);
 
-      const categories = DEFAULT_CATEGORIES.map((category) => ({ ...category, space_id: space.id }));
+      const categories = [...DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY].map((category) => ({
+        ...category,
+        space_id: space.id,
+      }));
       await manager.getRepository(Category).save(categories);
     });
 

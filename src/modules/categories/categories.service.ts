@@ -44,6 +44,7 @@ export class CategoriesService {
     const categories = await this.categoryRepository
       .createQueryBuilder('category')
       .where('category.space_id = :spaceId', { spaceId })
+      .andWhere('category.is_system = 0')
       .orderBy('category.sort', 'ASC')
       .getMany();
 
@@ -114,6 +115,10 @@ export class CategoriesService {
 
     for (const category of categories) {
       assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+
+      if (category.is_system) {
+        throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+      }
     }
 
     const types = new Set(categories.map((category) => category.transaction_type));

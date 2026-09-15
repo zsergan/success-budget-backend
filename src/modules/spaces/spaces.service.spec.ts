@@ -7,6 +7,7 @@ import { SpacesService } from './spaces.service';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
+import { Category } from '@entities/category.entity';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
@@ -18,6 +19,7 @@ describe('SpacesService', () => {
   let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let spaceInviteRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
+  let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let memberQueryBuilder: {
     select: jest.Mock;
@@ -39,11 +41,13 @@ describe('SpacesService', () => {
     spaceRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
     spaceMemberRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
     spaceInviteRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
+    categoryRepositoryInTx = { save: jest.fn() };
     const manager = {
       getRepository: jest.fn((entity) => {
         if (entity === Space) return spaceRepositoryInTx;
         if (entity === SpaceMember) return spaceMemberRepositoryInTx;
         if (entity === SpaceInvite) return spaceInviteRepositoryInTx;
+        if (entity === Category) return categoryRepositoryInTx;
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     };
@@ -91,6 +95,10 @@ describe('SpacesService', () => {
       expect(spaceMemberRepositoryInTx.save).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 10, user_id: 1, role: SpaceRole.OWNER }),
       );
+      expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ space_id: 10, name: 'Initial balance', is_system: 1 })]),
+      );
+      expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(16);
       expect(spaceInviteRepositoryInTx.save).not.toHaveBeenCalled();
       expect(result).toEqual({ id: 10, name: 'Personal' });
     });
@@ -111,6 +119,9 @@ describe('SpacesService', () => {
         expect.objectContaining({ space_id: 11, email: 'a@example.com', role: SpaceRole.MEMBER }),
         expect.objectContaining({ space_id: 11, email: 'b@example.com', role: SpaceRole.MEMBER }),
       ]);
+      expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ space_id: 11, name: 'Initial balance', is_system: 1 })]),
+      );
     });
 
     it('rejects invites on a personal space', async () => {
