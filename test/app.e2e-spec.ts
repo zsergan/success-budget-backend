@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.config';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
+import { Category } from '@entities/category.entity';
 
 describe('App (e2e)', () => {
   let app: INestApplication;
@@ -186,24 +187,94 @@ describe('App (e2e)', () => {
     walletId = walletsResponse.body.wallets[0].wallet.id;
   });
 
-  it('excludes a wallet in a different currency from total_balance but keeps it in the wallets list', async () => {
-    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
-    const otherCurrencyId = currencies.body.find((currency) => currency.code !== 'USD').id;
-
+  it('creates a wallet with a starting balance recorded as a real transaction against the system category', async () => {
     await request(app.getHttpServer())
       .post(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ wallet_name: 'Foreign', balance: '1000.00', currency_id: otherCurrencyId, design: 'amber' })
+      .send({ wallet_name: 'Invalid', initial_balance: '-5', design: 'slate' })
+      .expect(400);
+
+    const zeroResponse = await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${personalSpaceId}/wallets`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ wallet_name: 'Empty', initial_balance: '0', design: 'slate' })
       .expect(201);
+    expect(zeroResponse.body.transaction).toBeNull();
+    expect(Number(zeroResponse.body.wallet.balance)).toBe(0);
+
+    const savingsResponse = await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${personalSpaceId}/wallets`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ wallet_name: 'Savings', initial_balance: '200.00', design: 'amber' })
+      .expect(201);
+
+    expect(Number(savingsResponse.body.wallet.balance)).toBe(200);
+    expect(savingsResponse.body.transaction).toMatchObject({ transaction_type: 'income', amount: 200 });
+    const savingsWalletId = savingsResponse.body.wallet.id;
 
     const walletsResponse = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(walletsResponse.body.wallets).toHaveLength(2);
-    expect(walletsResponse.body.wallets.some((entry) => entry.wallet.wallet_name === 'Foreign')).toBe(true);
-    expect(walletsResponse.body.total_balance).toBe(0);
+    expect(walletsResponse.body.wallets).toHaveLength(3);
+    expect(walletsResponse.body.total_balance).toBe(200);
+
+    const transactionsResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const initialBalanceTransaction = transactionsResponse.body.find(
+      (transaction) => transaction.wallet.id === savingsWalletId,
+    );
+    expect(initialBalanceTransaction.category.name).toBe('Initial balance');
+  });
+
+  it('rejects operations against the space system category', async () => {
+    const categoryRepository = dataSource.getRepository(Category);
+    const systemCategory = await categoryRepository.findOneOrFail({
+      where: { space_id: personalSpaceId, is_system: 1 },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: walletId,
+        category_id: systemCategory.id,
+        transaction_type: 'income',
+        amount: '1.00',
+        timestamp: new Date().toISOString(),
+      })
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/${systemCategory.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Hacked' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/spaces/${personalSpaceId}/categories/${systemCategory.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/reorder`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category_ids: [systemCategory.id] })
+      .expect(400);
+
+    const categoriesResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const allVisible = [
+      ...categoriesResponse.body.incomes,
+      ...categoriesResponse.body.expenses,
+      ...categoriesResponse.body.archived,
+    ];
+    expect(allVisible.find((category) => category.id === systemCategory.id)).toBeUndefined();
   });
 
   it('creates transactions, filters by date range, reports the latest one, and undoes one', async () => {
@@ -293,10 +364,13 @@ describe('App (e2e)', () => {
 
     const wallet = walletsResponse.body.wallets.find((entry) => entry.wallet.id === walletId);
     expect(Number(wallet.wallet.balance)).toBe(500);
-    // the "Foreign" wallet's balance never changed - only the base-currency (Cash) wallet's
-    // 500 income counts toward total_balance, and net(500) === total_balance(500) here, so
-    // balance_at_period_start is 0 and delta_percent falls back to the divide-by-zero guard.
-    expect(walletsResponse.body.total_balance).toBe(500);
+    // total_balance sums every wallet in the space now that currency is
+    // unified at the space level: Cash (500) + Savings (200, from the
+    // prior test's starting-balance transaction) = 700. net across the
+    // period equals total_balance here too (the deleted expense no longer
+    // counts), so balance_at_period_start is 0 and delta_percent falls
+    // back to the divide-by-zero guard.
+    expect(walletsResponse.body.total_balance).toBe(700);
     expect(walletsResponse.body.delta_percent).toBe(0);
   });
 
@@ -607,6 +681,15 @@ describe('App (e2e)', () => {
     expect(createResponse.body.currency_id).toBeUndefined();
     createdSpaceIds.push(groupSpaceId);
 
+    // closes a pre-existing gap: POST /spaces never seeded categories for
+    // any space until Stage 3 - a group space now gets the same 15 default
+    // categories plus the hidden system one, immediately, not just personal
+    // spaces created at register time
+    const groupCategories = await dataSource.getRepository(Category).find({ where: { space_id: groupSpaceId } });
+    expect(groupCategories).toHaveLength(16);
+    expect(groupCategories.filter((category) => category.is_system === 1)).toHaveLength(1);
+    expect(groupCategories.some((category) => category.name === 'Initial balance')).toBe(true);
+
     const membersAfterCreate = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${groupSpaceId}/members`)
       .set('Authorization', `Bearer ${token}`)
@@ -742,15 +825,12 @@ describe('App (e2e)', () => {
   });
 
   it('a plain member can create resources in the shared space, but not in a space they do not belong to', async () => {
-    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
-    const baseCurrencyId = currencies.body[0].id;
-
     // secondUserToken belongs to a plain 'member', not the owner - proves
     // membership, not ownership, is what these routes actually require
     await request(app.getHttpServer())
       .post(`/api/v1/spaces/${groupSpaceId}/wallets`)
       .set('Authorization', `Bearer ${secondUserToken}`)
-      .send({ wallet_name: 'Shared', balance: '0.00', currency_id: baseCurrencyId, design: 'amber' })
+      .send({ wallet_name: 'Shared', initial_balance: '0.00', design: 'amber' })
       .expect(201);
 
     // the same member has no membership at all in the first user's personal space

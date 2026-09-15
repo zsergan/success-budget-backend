@@ -114,6 +114,7 @@ describe('WalletsService', () => {
         category_id: 3,
         transaction_type: TransactionType.INCOME,
         amount: 100,
+        timestamp: expect.any(Date),
       });
       expect(result.wallet).toEqual(expect.objectContaining({ id: 7, balance: 100 }));
       expect(result.transaction).toBeDefined();

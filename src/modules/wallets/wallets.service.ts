@@ -77,6 +77,10 @@ export class WalletsService {
           category_id: systemCategory.id,
           transaction_type: TransactionType.INCOME,
           amount: initialBalance,
+          // set explicitly, in JS, rather than left to the column's DB-side
+          // CURRENT_TIMESTAMP(3) default - the dev DB's server time zone is
+          // not UTC, so a DB-computed default would be off by several hours
+          timestamp: new Date(),
         }),
       );
 
