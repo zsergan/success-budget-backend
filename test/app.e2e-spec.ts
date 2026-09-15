@@ -20,6 +20,7 @@ describe('App (e2e)', () => {
   let secondUserId: number;
   let secondUserToken: string;
   let groupSpaceId: number;
+  let personalSpaceId: number;
   const createdSpaceIds: number[] = [];
 
   beforeAll(async () => {
@@ -39,10 +40,30 @@ describe('App (e2e)', () => {
     // app.close() never runs, the TypeORM connection pool stays open and
     // Jest hangs instead of exiting.
     try {
+      // wallets/categories/limits are space_id-scoped now (Stage 2), all
+      // CASCADE from spaces - but limit_categories.category_id is RESTRICT
+      // (phase-13 decision), so the join table and limits must be cleared
+      // *before* the space delete below, or the cascade into categories
+      // hits that RESTRICT mid-transaction. Transactions have no space_id
+      // column of their own (ownership is derived via wallet_id ->
+      // wallet.space_id) - clear them too, before their wallets go.
+      if (createdSpaceIds.length) {
+        await dataSource.query(
+          'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.space_id IN (?)',
+          [createdSpaceIds],
+        );
+        await dataSource.query('DELETE FROM limits WHERE space_id IN (?)', [createdSpaceIds]);
+        await dataSource.query(
+          'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id IN (?)',
+          [createdSpaceIds],
+        );
+      }
+
       // Spaces (personal + the group space, whichever user currently owns
       // it after the ownership-transfer scenario) have no FK back to users,
       // so they'd be left as orphan rows if only `DELETE FROM users` ran -
       // clean them up explicitly, before the users that reference them.
+      // This also cascades the now-empty wallets/categories.
       if (createdSpaceIds.length) {
         await dataSource.query('DELETE FROM space_invites WHERE space_id IN (?)', [createdSpaceIds]);
         await dataSource.query('DELETE FROM space_members WHERE space_id IN (?)', [createdSpaceIds]);
@@ -50,22 +71,6 @@ describe('App (e2e)', () => {
       }
 
       if (userId) {
-        // limits.category_id (now limit_categories.category_id) and
-        // transactions.category_id are both RESTRICT (categories/currencies
-        // keep their history even if the owning user's data is torn down),
-        // so a plain `DELETE FROM users` fails with an FK error once this
-        // file creates a limit or a transaction scoped to a category -
-        // delete those first. onDelete: CASCADE then takes the wallet,
-        // categories, and confirmation code with the user.
-        await dataSource.query(
-          'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.user_id = ?',
-          [userId],
-        );
-        await dataSource.query('DELETE FROM limits WHERE user_id = ?', [userId]);
-        await dataSource.query(
-          'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.user_id = ?',
-          [userId],
-        );
         await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
       }
 
@@ -90,8 +95,9 @@ describe('App (e2e)', () => {
     expect(response.body.status).toBe('ok');
   });
 
-  it('GET /api/v1/wallets without a token is rejected', async () => {
-    await request(app.getHttpServer()).get('/api/v1/wallets').expect(401);
+  it('GET a space wallets list without a token is rejected', async () => {
+    // the JWT guard runs before any spaceId is ever read, so the id here is a placeholder
+    await request(app.getHttpServer()).get('/api/v1/spaces/1/wallets').expect(401);
   });
 
   it('rejects registration payloads with unrecognized fields (mass assignment)', async () => {
@@ -163,10 +169,11 @@ describe('App (e2e)', () => {
       member_count: 1,
     });
     expect(spacesResponse.body[0].currency.id).toBe(baseCurrencyId);
-    createdSpaceIds.push(spacesResponse.body[0].id);
+    personalSpaceId = spacesResponse.body[0].id;
+    createdSpaceIds.push(personalSpaceId);
 
     const walletsResponse = await request(app.getHttpServer())
-      .get('/api/v1/wallets')
+      .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -184,13 +191,13 @@ describe('App (e2e)', () => {
     const otherCurrencyId = currencies.body.find((currency) => currency.code !== 'USD').id;
 
     await request(app.getHttpServer())
-      .post('/api/v1/wallets')
+      .post(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
       .send({ wallet_name: 'Foreign', balance: '1000.00', currency_id: otherCurrencyId, design: 'amber' })
       .expect(201);
 
     const walletsResponse = await request(app.getHttpServer())
-      .get('/api/v1/wallets')
+      .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -201,7 +208,7 @@ describe('App (e2e)', () => {
 
   it('creates transactions, filters by date range, reports the latest one, and undoes one', async () => {
     const categoriesResponse = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -209,7 +216,7 @@ describe('App (e2e)', () => {
     const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Grocery').id;
 
     const incomeResponse = await request(app.getHttpServer())
-      .post('/api/v1/transactions')
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         wallet_id: walletId,
@@ -228,7 +235,7 @@ describe('App (e2e)', () => {
 
     // description is optional - the design's Note field has no required marker.
     const expenseResponse = await request(app.getHttpServer())
-      .post('/api/v1/transactions')
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         wallet_id: walletId,
@@ -244,7 +251,7 @@ describe('App (e2e)', () => {
     const expenseTransactionId = expenseResponse.body.transaction.id;
 
     const withinRange = await request(app.getHttpServer())
-      .get('/api/v1/transactions')
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .query({
         from: new Date(Date.now() - 86400000).toISOString(),
         to: new Date(Date.now() + 86400000).toISOString(),
@@ -260,7 +267,7 @@ describe('App (e2e)', () => {
     }
 
     const outsideRange = await request(app.getHttpServer())
-      .get('/api/v1/transactions')
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .query({ from: '2000-01-01T00:00:00.000Z', to: '2000-01-31T23:59:59.999Z' })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
@@ -268,19 +275,19 @@ describe('App (e2e)', () => {
     expect(outsideRange.body).toHaveLength(0);
 
     const latestResponse = await request(app.getHttpServer())
-      .get('/api/v1/transactions/latest')
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions/latest`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
     expect(latestResponse.body.id).toBe(expenseTransactionId);
 
     await request(app.getHttpServer())
-      .delete(`/api/v1/transactions/${expenseTransactionId}`)
+      .delete(`/api/v1/spaces/${personalSpaceId}/transactions/${expenseTransactionId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
     const walletsResponse = await request(app.getHttpServer())
-      .get('/api/v1/wallets')
+      .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -295,7 +302,7 @@ describe('App (e2e)', () => {
 
   it('supports a monthly total limit, a group limit, and a single-category limit together', async () => {
     const categoriesResponse = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -308,7 +315,7 @@ describe('App (e2e)', () => {
     ).id;
 
     await request(app.getHttpServer())
-      .post('/api/v1/transactions')
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         wallet_id: walletId,
@@ -320,27 +327,27 @@ describe('App (e2e)', () => {
       .expect(201);
 
     const totalLimitResponse = await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ amount: '1000.00' })
       .expect(201);
     const totalLimitId = totalLimitResponse.body.id;
 
     const healthLimitResponse = await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [healthCategoryId], amount: '100.00' })
       .expect(201);
     const healthLimitId = healthLimitResponse.body.id;
 
     await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [restaurantsCategoryId, entertainmentCategoryId], amount: '50.00' })
       .expect(400);
 
     const funLimitResponse = await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [restaurantsCategoryId, entertainmentCategoryId], name: 'Fun', amount: '50.00' })
       .expect(201);
@@ -348,20 +355,20 @@ describe('App (e2e)', () => {
 
     // Health is already claimed by healthLimitId - reusing it must be rejected
     await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [healthCategoryId], amount: '30.00' })
       .expect(400);
 
     // a second monthly total limit must also be rejected
     await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ amount: '500.00' })
       .expect(400);
 
     const limitsResponse = await request(app.getHttpServer())
-      .get('/api/v1/limits')
+      .get(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -382,18 +389,18 @@ describe('App (e2e)', () => {
     }
 
     await request(app.getHttpServer())
-      .delete(`/api/v1/limits/${healthLimitId}`)
+      .delete(`/api/v1/spaces/${personalSpaceId}/limits/${healthLimitId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
     // already deleted - re-deleting is treated the same as "not yours"
     await request(app.getHttpServer())
-      .delete(`/api/v1/limits/${healthLimitId}`)
+      .delete(`/api/v1/spaces/${personalSpaceId}/limits/${healthLimitId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(403);
 
     const afterDeleteResponse = await request(app.getHttpServer())
-      .get('/api/v1/limits')
+      .get(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -402,20 +409,20 @@ describe('App (e2e)', () => {
 
   it('deletes an unused category, archives one with history, and never accepts transaction_type on update', async () => {
     const createUnused = await request(app.getHttpServer())
-      .post('/api/v1/categories')
+      .post(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'E2E Unused', transaction_type: 'expense', icon: 'Other', color: 'slate' })
       .expect(201);
     const unusedCategoryId = createUnused.body.id;
 
     await request(app.getHttpServer())
-      .delete(`/api/v1/categories/${unusedCategoryId}`)
+      .delete(`/api/v1/spaces/${personalSpaceId}/categories/${unusedCategoryId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200)
       .expect(({ body }) => expect(body).toEqual({ archived: false }));
 
     const afterHardDelete = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -423,14 +430,14 @@ describe('App (e2e)', () => {
     expect(afterHardDelete.body.archived.find((category) => category.id === unusedCategoryId)).toBeUndefined();
 
     const createUsed = await request(app.getHttpServer())
-      .post('/api/v1/categories')
+      .post(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'E2E Used', transaction_type: 'expense', icon: 'Other', color: 'slate' })
       .expect(201);
     const usedCategoryId = createUsed.body.id;
 
     await request(app.getHttpServer())
-      .post('/api/v1/transactions')
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         wallet_id: walletId,
@@ -442,19 +449,19 @@ describe('App (e2e)', () => {
       .expect(201);
 
     await request(app.getHttpServer())
-      .put(`/api/v1/categories/${usedCategoryId}`)
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/${usedCategoryId}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ transaction_type: 'income' })
       .expect(400);
 
     await request(app.getHttpServer())
-      .delete(`/api/v1/categories/${usedCategoryId}`)
+      .delete(`/api/v1/spaces/${personalSpaceId}/categories/${usedCategoryId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200)
       .expect(({ body }) => expect(body).toEqual({ archived: true }));
 
     const afterArchive = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -466,13 +473,13 @@ describe('App (e2e)', () => {
     expect(archivedView.sort).toBeUndefined();
 
     await request(app.getHttpServer())
-      .put(`/api/v1/categories/${usedCategoryId}`)
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/${usedCategoryId}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ is_active: 1 })
       .expect(200);
 
     const afterRestore = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -484,14 +491,14 @@ describe('App (e2e)', () => {
 
   it('archiving a category unlinks it from its limit, and deletes an emptied single-category limit', async () => {
     const createLimited = await request(app.getHttpServer())
-      .post('/api/v1/categories')
+      .post(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'E2E Limited', transaction_type: 'expense', icon: 'Other', color: 'slate' })
       .expect(201);
     const limitedCategoryId = createLimited.body.id;
 
     await request(app.getHttpServer())
-      .post('/api/v1/transactions')
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         wallet_id: walletId,
@@ -503,14 +510,14 @@ describe('App (e2e)', () => {
       .expect(201);
 
     const createLimit = await request(app.getHttpServer())
-      .post('/api/v1/limits')
+      .post(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [limitedCategoryId], amount: '20.00' })
       .expect(201);
     const limitId = createLimit.body.id;
 
     const beforeDelete = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect(beforeDelete.body.expenses.find((category) => category.id === limitedCategoryId).limit).toMatchObject({
@@ -518,33 +525,33 @@ describe('App (e2e)', () => {
     });
 
     await request(app.getHttpServer())
-      .delete(`/api/v1/categories/${limitedCategoryId}`)
+      .delete(`/api/v1/spaces/${personalSpaceId}/categories/${limitedCategoryId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200)
       .expect(({ body }) => expect(body).toEqual({ archived: true }));
 
     const afterArchive = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     const archivedView = afterArchive.body.archived.find((category) => category.id === limitedCategoryId);
     expect(archivedView.limit).toBeNull();
 
     const limitsAfterArchive = await request(app.getHttpServer())
-      .get('/api/v1/limits')
+      .get(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect(limitsAfterArchive.body.categories.find((limit) => limit.id === limitId)).toBeUndefined();
 
     // restoring must not resurrect the (now-deleted) limit link
     await request(app.getHttpServer())
-      .put(`/api/v1/categories/${limitedCategoryId}`)
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/${limitedCategoryId}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ is_active: 1 })
       .expect(200);
 
     const afterRestore = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect(afterRestore.body.expenses.find((category) => category.id === limitedCategoryId).limit).toBeNull();
@@ -552,12 +559,12 @@ describe('App (e2e)', () => {
 
   it('reorders a segment and persists the new order', async () => {
     const createFirst = await request(app.getHttpServer())
-      .post('/api/v1/categories')
+      .post(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'E2E Reorder A', transaction_type: 'income', icon: 'Other', color: 'slate' })
       .expect(201);
     const createSecond = await request(app.getHttpServer())
-      .post('/api/v1/categories')
+      .post(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'E2E Reorder B', transaction_type: 'income', icon: 'Other', color: 'slate' })
       .expect(201);
@@ -565,13 +572,13 @@ describe('App (e2e)', () => {
     const secondId = createSecond.body.id;
 
     await request(app.getHttpServer())
-      .put('/api/v1/categories/reorder')
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/reorder`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [secondId, firstId] })
       .expect(200);
 
     const afterReorder = await request(app.getHttpServer())
-      .get('/api/v1/categories')
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -580,7 +587,7 @@ describe('App (e2e)', () => {
 
     // an id that isn't the caller's own must reject the whole batch
     await request(app.getHttpServer())
-      .put('/api/v1/categories/reorder')
+      .put(`/api/v1/spaces/${personalSpaceId}/categories/reorder`)
       .set('Authorization', `Bearer ${token}`)
       .send({ category_ids: [firstId, 999999999] })
       .expect(403);
@@ -732,6 +739,25 @@ describe('App (e2e)', () => {
     expect(membersResponse.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'member', email: secondTestEmail, role: 'member' })]),
     );
+  });
+
+  it('a plain member can create resources in the shared space, but not in a space they do not belong to', async () => {
+    const currencies = await request(app.getHttpServer()).get('/api/v1/currencies');
+    const baseCurrencyId = currencies.body[0].id;
+
+    // secondUserToken belongs to a plain 'member', not the owner - proves
+    // membership, not ownership, is what these routes actually require
+    await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${groupSpaceId}/wallets`)
+      .set('Authorization', `Bearer ${secondUserToken}`)
+      .send({ wallet_name: 'Shared', balance: '0.00', currency_id: baseCurrencyId, design: 'amber' })
+      .expect(201);
+
+    // the same member has no membership at all in the first user's personal space
+    await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
+      .set('Authorization', `Bearer ${secondUserToken}`)
+      .expect(403);
   });
 
   it('the owner leaves the group space and ownership transfers to the next member', async () => {
