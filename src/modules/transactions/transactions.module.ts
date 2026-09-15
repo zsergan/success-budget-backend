@@ -5,10 +5,11 @@ import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { WalletsModule } from '@modules/wallets/wallets.module';
 import { CategoriesModule } from '@modules/categories/categories.module';
+import { SpacesModule } from '@modules/spaces/spaces.module';
 import { Transaction } from '@entities/transaction.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Transaction]), forwardRef(() => WalletsModule), CategoriesModule],
+  imports: [TypeOrmModule.forFeature([Transaction]), forwardRef(() => WalletsModule), CategoriesModule, SpacesModule],
   controllers: [TransactionsController],
   providers: [TransactionsService],
   exports: [TransactionsService],

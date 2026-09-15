@@ -108,27 +108,27 @@ export class TransactionsService {
       .getMany();
   }
 
-  async getForAllWallets(userId: number, from: Date, to: Date): Promise<Transaction[]> {
+  async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<Transaction[]> {
     return this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
       .innerJoinAndSelect('transaction.currency', 'currency')
-      .where('wallet.user_id = :userId', { userId })
+      .where('wallet.space_id = :spaceId', { spaceId })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
       .orderBy('transaction.timestamp', 'DESC')
       .getMany();
   }
 
-  async getLatest(userId: number): Promise<Transaction | null> {
+  async getLatest(spaceId: number): Promise<Transaction | null> {
     return (
       this.transactionRepository
         .createQueryBuilder('transaction')
         .innerJoinAndSelect('transaction.wallet', 'wallet')
         .innerJoinAndSelect('transaction.category', 'category')
         .innerJoinAndSelect('transaction.currency', 'currency')
-        .where('wallet.user_id = :userId', { userId })
+        .where('wallet.space_id = :spaceId', { spaceId })
         .orderBy('transaction.timestamp', 'DESC')
         // Deterministic tie-break for the (now rare, since timestamp is
         // millisecond-precision) case of two transactions landing on the

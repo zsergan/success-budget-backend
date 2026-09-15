@@ -10,7 +10,7 @@ import {
 import { Exclude } from 'class-transformer';
 
 import { AppColor, TransactionType } from '@shared/enums';
-import { User } from './user.entity';
+import { Space } from './space.entity';
 
 @Entity('categories')
 export class Category {
@@ -19,7 +19,7 @@ export class Category {
 
   @Exclude()
   @Column({ type: 'int' })
-  user_id: number;
+  space_id: number;
 
   @Column({ type: 'varchar', length: 20 })
   name: string;
@@ -47,9 +47,9 @@ export class Category {
   @Column({ type: 'int' })
   sort: number;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_id' })
-  user: User;
+  @ManyToOne(() => Space, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'space_id' })
+  space: Space;
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;

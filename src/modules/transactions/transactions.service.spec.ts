@@ -163,14 +163,14 @@ describe('TransactionsService', () => {
   });
 
   describe('getForAllWallets', () => {
-    it('filters transactions across all of a user wallets by date range', async () => {
+    it('filters transactions across all of a space wallets by date range', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       queryBuilder.getMany.mockResolvedValue([]);
 
       await service.getForAllWallets(9, from, to);
 
-      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.user_id = :userId', { userId: 9 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
     });
   });
 
@@ -191,7 +191,7 @@ describe('TransactionsService', () => {
 
       await service.getLatest(9);
 
-      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.user_id = :userId', { userId: 9 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
       expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
       expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
       expect(queryBuilder.limit).toHaveBeenCalledWith(1);

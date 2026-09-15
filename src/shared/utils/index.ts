@@ -1,3 +1,3 @@
 export * from './dates';
 export * from './strings';
-export * from './ownership';
+export * from './space-ownership';

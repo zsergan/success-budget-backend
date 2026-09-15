@@ -11,7 +11,7 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { User } from './user.entity';
+import { Space } from './space.entity';
 import { Category } from './category.entity';
 import { LimitType } from '@shared/enums';
 
@@ -22,7 +22,7 @@ export class Limit {
 
   @Exclude()
   @Column({ type: 'int' })
-  user_id: number;
+  space_id: number;
 
   // only meaningful for a group limit (2+ categories) - a single-category
   // limit uses the category's own name, a total limit uses a fixed label,
@@ -37,9 +37,9 @@ export class Limit {
   amount: number;
 
   @Exclude()
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_id' })
-  user: User;
+  @ManyToOne(() => Space, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'space_id' })
+  space: Space;
 
   // 0 categories = monthly total limit, 1 = single-category, 2+ = group
   @ManyToMany(() => Category, { onDelete: 'RESTRICT' })

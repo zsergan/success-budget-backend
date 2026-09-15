@@ -19,50 +19,77 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { ErrorMessages } from '@shared/error-messages';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
-import { assertOwnership } from '@shared/utils';
+import { assertBelongsToSpace } from '@shared/utils';
+import { SpaceMembersService } from '@modules/spaces/space-members.service';
 
 @ApiTags('categories')
 @ApiBearerAuth()
-@Controller('categories')
+@Controller('spaces/:spaceId/categories')
 export class CategoriesController {
-  constructor(private readonly categoriesService: CategoriesService) {}
+  constructor(
+    private readonly categoriesService: CategoriesService,
+    private readonly spaceMembersService: SpaceMembersService,
+  ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
-  async getAll(@Request() req: AuthedRequest) {
-    return this.categoriesService.getAll(req.user.id);
+  async getAll(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
+    return this.categoriesService.getAll(spaceId);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Put('reorder')
-  async reorder(@Request() req: AuthedRequest, @Body() body: ReorderCategoriesDto) {
-    await this.categoriesService.reorder(req.user.id, body.category_ids);
+  async reorder(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Body() body: ReorderCategoriesDto,
+  ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
+    await this.categoriesService.reorder(spaceId, body.category_ids);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Put(':categoryId')
   async update(
     @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('categoryId', ParseIntPipe) categoryId: number,
     @Body() updateCategory: UpdateCategoryDto,
   ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
     const category = await this.categoriesService.getOne(categoryId);
-    assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
+    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
 
     return this.categoriesService.update(categoryId, updateCategory);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
-  async create(@Request() req: AuthedRequest, @Body() createCategory: CreateCategoryDto) {
-    return this.categoriesService.create(req.user.id, createCategory);
+  async create(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Body() createCategory: CreateCategoryDto,
+  ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
+    return this.categoriesService.create(spaceId, createCategory);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Delete(':categoryId')
-  async remove(@Request() req: AuthedRequest, @Param('categoryId', ParseIntPipe) categoryId: number) {
+  async remove(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('categoryId', ParseIntPipe) categoryId: number,
+  ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
     const category = await this.categoriesService.getOne(categoryId);
-    assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
+    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
 
     return this.categoriesService.deleteOrArchive(categoryId);
   }

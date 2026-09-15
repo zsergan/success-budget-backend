@@ -60,7 +60,7 @@ describe('LimitsService', () => {
       await service.create(1, { amount: 2000 } as any);
 
       expect(repository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ user_id: 1, limit_type: LimitType.OTHERS, name: null }),
+        expect.objectContaining({ space_id: 1, limit_type: LimitType.OTHERS, name: null }),
       );
       expect(relationBuilder.add).not.toHaveBeenCalled();
     });
@@ -73,7 +73,7 @@ describe('LimitsService', () => {
       await service.create(1, { category_ids: [4], amount: 100 } as any);
 
       expect(repository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ user_id: 1, limit_type: LimitType.CATEGORY, name: null }),
+        expect.objectContaining({ space_id: 1, limit_type: LimitType.CATEGORY, name: null }),
       );
       expect(relationBuilder.add).toHaveBeenCalledWith([4]);
     });
@@ -192,12 +192,12 @@ describe('LimitsService', () => {
   });
 
   describe('getAll', () => {
-    it('scopes limits to the user', async () => {
+    it('scopes limits to the space', async () => {
       queryBuilder.getMany.mockResolvedValue([]);
 
       await service.getAll(3);
 
-      expect(queryBuilder.where).toHaveBeenCalledWith('limit.user_id = :userId', { userId: 3 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('limit.space_id = :spaceId', { spaceId: 3 });
       expect(queryBuilder.leftJoinAndSelect).toHaveBeenCalledWith('limit.categories', 'categories');
     });
   });

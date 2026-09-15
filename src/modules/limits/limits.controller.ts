@@ -17,27 +17,31 @@ import type { AuthedRequest } from '@shared/types';
 import { LimitsService } from './limits.service';
 import { TransactionsService } from '@modules/transactions/transactions.service';
 import { CategoriesService } from '@modules/categories/categories.service';
+import { SpaceMembersService } from '@modules/spaces/space-members.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
-import { getEndOfMonth, getStartOfMonth, assertOwnership } from '@shared/utils';
+import { getEndOfMonth, getStartOfMonth, assertBelongsToSpace } from '@shared/utils';
 import { ErrorMessages } from '@shared/error-messages';
 
 @ApiTags('limits')
 @ApiBearerAuth()
-@Controller('limits')
+@Controller('spaces/:spaceId/limits')
 export class LimitsController {
   constructor(
     private readonly limitsService: LimitsService,
     private readonly transactionsService: TransactionsService,
     private readonly categoriesService: CategoriesService,
+    private readonly spaceMembersService: SpaceMembersService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
-  async getAll(@Request() req: AuthedRequest) {
-    const limits = await this.limitsService.getAll(req.user.id);
+  async getAll(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
+    const limits = await this.limitsService.getAll(spaceId);
     const transactions = await this.transactionsService.getForAllWallets(
-      req.user.id,
+      spaceId,
       getStartOfMonth(new Date()),
       getEndOfMonth(new Date()),
     );
@@ -47,43 +51,57 @@ export class LimitsController {
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
-  async create(@Request() req: AuthedRequest, @Body() createLimitDto: CreateLimitDto) {
-    await this.assertCategoriesOwnership(req.user.id, createLimitDto.category_ids);
+  async create(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Body() createLimitDto: CreateLimitDto,
+  ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.assertCategoriesOwnership(spaceId, createLimitDto.category_ids);
 
-    return this.limitsService.create(req.user.id, createLimitDto);
+    return this.limitsService.create(spaceId, createLimitDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Put(':limitId')
   async update(
     @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('limitId', ParseIntPipe) limitId: number,
     @Body() updateLimitDto: UpdateLimitDto,
   ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
     const limit = await this.limitsService.getOne(limitId);
-    assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_LIMIT);
+    assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
 
-    await this.assertCategoriesOwnership(req.user.id, updateLimitDto.category_ids);
+    await this.assertCategoriesOwnership(spaceId, updateLimitDto.category_ids);
 
-    await this.limitsService.update(limitId, req.user.id, limit, updateLimitDto);
+    await this.limitsService.update(limitId, spaceId, limit, updateLimitDto);
 
     return this.limitsService.getOne(limitId);
   }
 
   @Delete(':limitId')
-  async remove(@Request() req: AuthedRequest, @Param('limitId', ParseIntPipe) limitId: number): Promise<boolean> {
+  async remove(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('limitId', ParseIntPipe) limitId: number,
+  ): Promise<boolean> {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
     const limit = await this.limitsService.getOne(limitId);
-    assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_LIMIT);
+    assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
 
     await this.limitsService.remove(limitId);
 
     return true;
   }
 
-  private async assertCategoriesOwnership(userId: number, categoryIds?: number[]): Promise<void> {
+  private async assertCategoriesOwnership(spaceId: number, categoryIds?: number[]): Promise<void> {
     for (const categoryId of categoryIds ?? []) {
       const category = await this.categoriesService.getOne(categoryId);
-      assertOwnership(category, userId, ErrorMessages.FORBIDDEN_CATEGORY);
+      assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
     }
   }
 }

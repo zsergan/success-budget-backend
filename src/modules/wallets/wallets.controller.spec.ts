@@ -4,12 +4,14 @@ import { HttpException } from '@nestjs/common';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 import { TransactionsService } from '@modules/transactions/transactions.service';
+import { SpaceMembersService } from '@modules/spaces/space-members.service';
 import { ErrorMessages } from '@shared/error-messages';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
   let walletsService: jest.Mocked<WalletsService>;
   let transactionsService: jest.Mocked<TransactionsService>;
+  let spaceMembersService: jest.Mocked<SpaceMembersService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -28,60 +30,64 @@ describe('WalletsController', () => {
           },
         },
         { provide: TransactionsService, useValue: { getAllForWallets: jest.fn() } },
+        { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
     controller = module.get(WalletsController);
     walletsService = module.get(WalletsService);
     transactionsService = module.get(TransactionsService);
+    spaceMembersService = module.get(SpaceMembersService);
   });
 
   const req = { user: { id: 1 } } as any;
+  const spaceId = 10;
 
   describe('create', () => {
-    it('creates a wallet for the current user', async () => {
+    it('creates a wallet in the space', async () => {
       walletsService.create.mockResolvedValue({ id: 1 } as any);
 
-      const result = await controller.create(req, { wallet_name: 'Cash' } as any);
+      const result = await controller.create(req, spaceId, { wallet_name: 'Cash' } as any);
 
-      expect(walletsService.create).toHaveBeenCalledWith(1, { wallet_name: 'Cash' });
+      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(walletsService.create).toHaveBeenCalledWith(spaceId, { wallet_name: 'Cash' });
       expect(result).toEqual({ id: 1 });
     });
   });
 
   describe('update', () => {
-    it('rejects updating a wallet owned by someone else', async () => {
-      walletsService.getOne.mockResolvedValue({ id: 1, user_id: 2 } as any);
+    it('rejects updating a wallet that belongs to a different space', async () => {
+      walletsService.getOne.mockResolvedValue({ id: 1, space_id: 20 } as any);
 
-      await expect(controller.update(req, 1, {} as any)).rejects.toMatchObject(
+      await expect(controller.update(req, spaceId, 1, {} as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
       );
       expect(walletsService.update).not.toHaveBeenCalled();
     });
 
-    it('updates a wallet owned by the current user', async () => {
-      walletsService.getOne.mockResolvedValue({ id: 1, user_id: 1 } as any);
+    it('updates a wallet that belongs to the space', async () => {
+      walletsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId } as any);
 
-      await controller.update(req, 1, { wallet_name: 'Renamed' } as any);
+      await controller.update(req, spaceId, 1, { wallet_name: 'Renamed' } as any);
 
       expect(walletsService.update).toHaveBeenCalledWith(1, { wallet_name: 'Renamed' });
     });
   });
 
   describe('delete', () => {
-    it('rejects deleting a wallet owned by someone else', async () => {
-      walletsService.getOne.mockResolvedValue({ id: 1, user_id: 2 } as any);
+    it('rejects deleting a wallet that belongs to a different space', async () => {
+      walletsService.getOne.mockResolvedValue({ id: 1, space_id: 20 } as any);
 
-      await expect(controller.delete(req, 1)).rejects.toMatchObject(
+      await expect(controller.delete(req, spaceId, 1)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
       );
       expect(walletsService.delete).not.toHaveBeenCalled();
     });
 
-    it('deletes a wallet owned by the current user', async () => {
-      walletsService.getOne.mockResolvedValue({ id: 1, user_id: 1 } as any);
+    it('deletes a wallet that belongs to the space', async () => {
+      walletsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId } as any);
 
-      const result = await controller.delete(req, 1);
+      const result = await controller.delete(req, spaceId, 1);
 
       expect(walletsService.delete).toHaveBeenCalledWith(1);
       expect(result).toBe(true);
@@ -104,10 +110,11 @@ describe('WalletsController', () => {
 
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
-      const result = await controller.getAll(req, from, to);
+      const result = await controller.getAll(req, spaceId, from, to);
 
+      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(transactionsService.getAllForWallets).toHaveBeenCalledWith([1, 2], from, to);
-      expect(walletsService.buildOverview).toHaveBeenCalledWith(1, wallets, transactions);
+      expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, transactions);
       expect(result).toEqual(overview);
     });
   });
