@@ -4,11 +4,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 import { TransactionsModule } from '@modules/transactions/transactions.module';
+import { SpacesModule } from '@modules/spaces/spaces.module';
 import { Wallet } from '@entities/wallet.entity';
-import { User } from '@entities/user.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Wallet, User]), forwardRef(() => TransactionsModule)],
+  imports: [TypeOrmModule.forFeature([Wallet]), forwardRef(() => TransactionsModule), SpacesModule],
   controllers: [WalletsController],
   providers: [WalletsService],
   exports: [WalletsService],

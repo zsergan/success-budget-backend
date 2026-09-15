@@ -4,10 +4,10 @@ import { Repository } from 'typeorm';
 
 import { Wallet } from '@entities/wallet.entity';
 import { Transaction } from '@entities/transaction.entity';
-import { User } from '@entities/user.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
+import { SpacesService } from '@modules/spaces/spaces.service';
 
 export interface WalletSummary {
   wallet: Wallet;
@@ -27,8 +27,7 @@ export class WalletsService {
   constructor(
     @InjectRepository(Wallet)
     private readonly walletRepository: Repository<Wallet>,
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
+    private readonly spacesService: SpacesService,
   ) {}
 
   async getOne(walletId: number): Promise<Wallet> {
@@ -82,9 +81,12 @@ export class WalletsService {
   }
 
   async buildOverview(userId: number, wallets: Wallet[], transactions: Transaction[]): Promise<WalletsOverview> {
-    const user = await this.userRepository.findOne({ where: { id: userId }, relations: { baseCurrency: true } });
+    // Stage-1-only shim (see SpacesService.findOldestPersonalSpace) - once
+    // every wallet carries its space's single currency (Spaces Stage 3),
+    // this per-wallet-currency filter goes away entirely
+    const baseSpace = await this.spacesService.findOldestPersonalSpace(userId);
     const baseCurrencyWalletIds = new Set(
-      wallets.filter((wallet) => wallet.currency_id === user.base_currency_id).map((wallet) => wallet.id),
+      wallets.filter((wallet) => wallet.currency_id === baseSpace.currency_id).map((wallet) => wallet.id),
     );
 
     const total_balance = wallets
@@ -104,7 +106,7 @@ export class WalletsService {
 
     return {
       total_balance,
-      total_balance_currency: user.baseCurrency.code,
+      total_balance_currency: baseSpace.currency.code,
       delta_percent,
       wallets: this.summarize(wallets, transactions),
     };

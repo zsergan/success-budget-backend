@@ -3,6 +3,14 @@ import { CreateCategoryDto } from '@modules/categories/dto/create-category.dto';
 
 export const MAX_CONFIRMATION_CODE_ATTEMPTS = 5;
 
+// temporary defaults, not a considered business limit - revisit later
+export const SPACE_LIMITS = {
+  MAX_MEMBERS_PER_SPACE: 20,
+  MAX_PENDING_INVITES_PER_SPACE: 10,
+};
+
+export const SPACE_INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+
 export const DEFAULT_CATEGORIES: CreateCategoryDto[] = [
   { name: 'Salary', transaction_type: TransactionType.INCOME, icon: CategoryIcon.SALARY, color: AppColor.EVERGREEN },
   { name: 'Gifts', transaction_type: TransactionType.INCOME, icon: CategoryIcon.GIFTS, color: AppColor.CLAY },
