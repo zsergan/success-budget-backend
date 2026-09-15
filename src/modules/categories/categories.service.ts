@@ -9,7 +9,7 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertOwnership } from '@shared/utils';
+import { assertBelongsToSpace } from '@shared/utils';
 
 export interface CategoryView {
   id: number;
@@ -39,18 +39,18 @@ export class CategoriesService {
   }
 
   async getAll(
-    userId: number,
+    spaceId: number,
   ): Promise<{ incomes: CategoryView[]; expenses: CategoryView[]; archived: CategoryView[] }> {
     const categories = await this.categoryRepository
       .createQueryBuilder('category')
-      .where('category.user_id = :userId', { userId })
+      .where('category.space_id = :spaceId', { spaceId })
       .orderBy('category.sort', 'ASC')
       .getMany();
 
     const categoryIds = categories.map((category) => category.id);
     const [counts, limitMembership] = await Promise.all([
       this.getTransactionCounts(categoryIds),
-      this.getLimitMembership(userId),
+      this.getLimitMembership(spaceId),
     ]);
 
     const views = categories.map((category) => this.buildCategoryView(category, counts, limitMembership));
@@ -60,15 +60,6 @@ export class CategoriesService {
       expenses: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.EXPENSE),
       archived: views.filter((view) => view.is_active === 0),
     };
-  }
-
-  async initiateCategories(userId: number, categories: CreateCategoryDto[]) {
-    const userCategories = categories.map((category) => ({
-      ...category,
-      user_id: userId,
-    }));
-
-    return this.categoryRepository.save(userCategories);
   }
 
   async update(categoryId: number, updateCategory: UpdateCategoryDto): Promise<Category> {
@@ -90,8 +81,8 @@ export class CategoriesService {
     return this.categoryRepository.save(category);
   }
 
-  async create(userId: number, category: CreateCategoryDto): Promise<Category> {
-    const entity = this.categoryRepository.create({ ...category, user_id: userId });
+  async create(spaceId: number, category: CreateCategoryDto): Promise<Category> {
+    const entity = this.categoryRepository.create({ ...category, space_id: spaceId });
     return this.categoryRepository.save(entity);
   }
 
@@ -110,7 +101,7 @@ export class CategoriesService {
     return { archived: true };
   }
 
-  async reorder(userId: number, categoryIds: number[]): Promise<void> {
+  async reorder(spaceId: number, categoryIds: number[]): Promise<void> {
     if (categoryIds.length === 0) {
       return;
     }
@@ -122,7 +113,7 @@ export class CategoriesService {
     }
 
     for (const category of categories) {
-      assertOwnership(category, userId, ErrorMessages.FORBIDDEN_CATEGORY);
+      assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
     }
 
     const types = new Set(categories.map((category) => category.transaction_type));
@@ -155,11 +146,11 @@ export class CategoriesService {
     return new Map(rows.map((row) => [Number(row.category_id), Number(row.count)]));
   }
 
-  private async getLimitMembership(userId: number): Promise<Map<number, { id: number; name: string | null }>> {
+  private async getLimitMembership(spaceId: number): Promise<Map<number, { id: number; name: string | null }>> {
     const rows = await this.limitRepository
       .createQueryBuilder('limit')
       .innerJoin('limit.categories', 'category')
-      .where('limit.user_id = :userId', { userId })
+      .where('limit.space_id = :spaceId', { spaceId })
       .select('limit.id', 'limit_id')
       .addSelect('limit.name', 'limit_name')
       .addSelect('category.id', 'category_id')

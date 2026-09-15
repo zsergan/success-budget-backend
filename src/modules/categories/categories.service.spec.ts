@@ -81,10 +81,10 @@ describe('CategoriesService', () => {
   });
 
   describe('getAll', () => {
-    it('scopes to the user and orders by sort ascending', async () => {
+    it('scopes to the space and orders by sort ascending', async () => {
       await service.getAll(2);
 
-      expect(categoryQueryBuilder.where).toHaveBeenCalledWith('category.user_id = :userId', { userId: 2 });
+      expect(categoryQueryBuilder.where).toHaveBeenCalledWith('category.space_id = :spaceId', { spaceId: 2 });
       expect(categoryQueryBuilder.orderBy).toHaveBeenCalledWith('category.sort', 'ASC');
     });
 
@@ -113,20 +113,6 @@ describe('CategoriesService', () => {
 
       expect(result.expenses[0].transaction_count).toBe(4);
       expect(result.expenses[0].limit).toEqual({ id: 7, name: 'Fun' });
-    });
-  });
-
-  describe('initiateCategories', () => {
-    it('stamps every category with the given user id', async () => {
-      const categories = [{ name: 'Food' }, { name: 'Rent' }] as any[];
-      categoryRepository.save.mockResolvedValue([] as any);
-
-      await service.initiateCategories(9, categories);
-
-      expect(categoryRepository.save).toHaveBeenCalledWith([
-        { name: 'Food', user_id: 9 },
-        { name: 'Rent', user_id: 9 },
-      ]);
     });
   });
 
@@ -168,7 +154,7 @@ describe('CategoriesService', () => {
   });
 
   describe('create', () => {
-    it('saves a new category for the user', async () => {
+    it('saves a new category for the space', async () => {
       categoryRepository.save.mockResolvedValue({} as Category);
 
       await service.create(9, {
@@ -183,7 +169,7 @@ describe('CategoriesService', () => {
         transaction_type: TransactionType.EXPENSE,
         icon: CategoryIcon.GROCERY,
         color: AppColor.SLATE,
-        user_id: 9,
+        space_id: 9,
       });
     });
   });
@@ -238,9 +224,9 @@ describe('CategoriesService', () => {
   describe('reorder', () => {
     it('reassigns sort with the expense prefix (200) in the given order', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 2, user_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-        { id: 1, user_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-        { id: 3, user_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+        { id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+        { id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+        { id: 3, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
       ] as Category[]);
       categoryRepository.save.mockResolvedValue([] as any);
 
@@ -255,8 +241,8 @@ describe('CategoriesService', () => {
 
     it('reassigns sort with the income prefix (100) in the given order', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, user_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
-        { id: 2, user_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
+        { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
+        { id: 2, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
       ] as Category[]);
       categoryRepository.save.mockResolvedValue([] as any);
 
@@ -268,9 +254,9 @@ describe('CategoriesService', () => {
       ]);
     });
 
-    it('rejects a category owned by someone else', async () => {
+    it('rejects a category belonging to a different space', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, user_id: 2, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+        { id: 1, space_id: 2, transaction_type: TransactionType.EXPENSE, is_active: 1 },
       ] as Category[]);
 
       await expect(service.reorder(1, [1])).rejects.toMatchObject(
@@ -280,8 +266,8 @@ describe('CategoriesService', () => {
 
     it('rejects mixing income and expense categories in one reorder', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, user_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
-        { id: 2, user_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+        { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
+        { id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
       ] as Category[]);
 
       await expect(service.reorder(1, [1, 2])).rejects.toMatchObject(
@@ -291,7 +277,7 @@ describe('CategoriesService', () => {
 
     it('rejects reordering an archived category', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, user_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 0 },
+        { id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 0 },
       ] as Category[]);
 
       await expect(service.reorder(1, [1])).rejects.toMatchObject(

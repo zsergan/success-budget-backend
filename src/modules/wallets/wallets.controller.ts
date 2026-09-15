@@ -18,34 +18,45 @@ import { WalletsService, WalletsOverview } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '@shared/types';
-import { getEndOfMonth, getStartOfMonth, assertOwnership } from '@shared/utils';
+import { getEndOfMonth, getStartOfMonth, assertBelongsToSpace } from '@shared/utils';
 import { TransactionsService } from '@modules/transactions/transactions.service';
+import { SpaceMembersService } from '@modules/spaces/space-members.service';
 import { ErrorMessages } from '@shared/error-messages';
 
 @ApiTags('wallets')
 @ApiBearerAuth()
-@Controller('wallets')
+@Controller('spaces/:spaceId/wallets')
 export class WalletsController {
   constructor(
     private readonly walletsService: WalletsService,
     private readonly transactionsService: TransactionsService,
+    private readonly spaceMembersService: SpaceMembersService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
-  async create(@Request() req: AuthedRequest, @Body() createWalletDto: CreateWalletDto) {
-    return this.walletsService.create(req.user.id, createWalletDto);
+  async create(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Body() createWalletDto: CreateWalletDto,
+  ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
+    return this.walletsService.create(spaceId, createWalletDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Put(':walletId')
   async update(
     @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('walletId', ParseIntPipe) walletId: number,
     @Body() updateWalletDto: UpdateWalletDto,
   ) {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
     const wallet = await this.walletsService.getOne(walletId);
-    assertOwnership(wallet, req.user.id, ErrorMessages.FORBIDDEN_WALLET);
+    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
 
     return this.walletsService.update(walletId, updateWalletDto);
   }
@@ -54,23 +65,32 @@ export class WalletsController {
   @Get()
   async getAll(
     @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
     @Query('from') from: Date = getStartOfMonth(new Date()),
     @Query('to') to: Date = getEndOfMonth(new Date()),
   ): Promise<WalletsOverview> {
-    const wallets = await this.walletsService.getAll(req.user.id);
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
+    const wallets = await this.walletsService.getAll(spaceId);
     const transactions = await this.transactionsService.getAllForWallets(
       wallets.map((wallet) => wallet.id),
       from,
       to,
     );
 
-    return this.walletsService.buildOverview(req.user.id, wallets, transactions);
+    return this.walletsService.buildOverview(spaceId, wallets, transactions);
   }
 
   @Delete(':walletId')
-  async delete(@Request() req: AuthedRequest, @Param('walletId', ParseIntPipe) walletId: number): Promise<boolean> {
+  async delete(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('walletId', ParseIntPipe) walletId: number,
+  ): Promise<boolean> {
+    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+
     const wallet = await this.walletsService.getOne(walletId);
-    assertOwnership(wallet, req.user.id, ErrorMessages.FORBIDDEN_WALLET);
+    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
 
     await this.walletsService.delete(walletId);
 

@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { User } from './user.entity';
+import { Space } from './space.entity';
 import { Currency } from './currency.entity';
 import { AppColor } from '@shared/enums';
 
@@ -20,7 +20,7 @@ export class Wallet {
 
   @Exclude()
   @Column({ type: 'int' })
-  user_id: number;
+  space_id: number;
 
   @Column({ type: 'varchar', length: 255 })
   wallet_name: string;
@@ -43,9 +43,9 @@ export class Wallet {
   @Column({ type: 'timestamp', nullable: true })
   deleted_at: Date;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_id' })
-  user: User;
+  @ManyToOne(() => Space, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'space_id' })
+  space: Space;
 
   @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'currency_id' })

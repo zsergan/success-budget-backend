@@ -20,26 +20,26 @@ export class LimitsService {
     return this.limitRepository.findOne({ where: { id: limitId }, relations: { categories: true } });
   }
 
-  async getAll(userId: number) {
+  async getAll(spaceId: number) {
     return this.limitRepository
       .createQueryBuilder('limit')
-      .where('limit.user_id = :userId', { userId })
+      .where('limit.space_id = :spaceId', { spaceId })
       .leftJoinAndSelect('limit.categories', 'categories')
       .getMany();
   }
 
-  async create(userId: number, createLimit: CreateLimitDto) {
+  async create(spaceId: number, createLimit: CreateLimitDto) {
     const categoryIds = createLimit.category_ids ?? [];
     this.assertHasNameIfGroup(categoryIds, createLimit.name);
 
     if (categoryIds.length === 0) {
-      await this.assertNoOtherTotalLimit(userId);
+      await this.assertNoOtherTotalLimit(spaceId);
     } else {
-      await this.assertCategoriesAvailable(userId, categoryIds);
+      await this.assertCategoriesAvailable(spaceId, categoryIds);
     }
 
     const limit = this.limitRepository.create({
-      user_id: userId,
+      space_id: spaceId,
       amount: createLimit.amount,
       name: categoryIds.length > 1 ? createLimit.name : null,
       limit_type: categoryIds.length === 0 ? LimitType.OTHERS : LimitType.CATEGORY,
@@ -53,7 +53,7 @@ export class LimitsService {
     return this.getOne(saved.id);
   }
 
-  async update(limitId: number, userId: number, currentLimit: Limit, updateLimit: UpdateLimitDto): Promise<void> {
+  async update(limitId: number, spaceId: number, currentLimit: Limit, updateLimit: UpdateLimitDto): Promise<void> {
     const categoryIds = updateLimit.category_ids;
     const currentCategoryIds = currentLimit.categories.map((category) => category.id);
     const resultingCategoryIds = categoryIds ?? currentCategoryIds;
@@ -62,9 +62,9 @@ export class LimitsService {
 
     if (categoryIds !== undefined) {
       if (categoryIds.length === 0) {
-        await this.assertNoOtherTotalLimit(userId, limitId);
+        await this.assertNoOtherTotalLimit(spaceId, limitId);
       } else {
-        await this.assertCategoriesAvailable(userId, categoryIds, limitId);
+        await this.assertCategoriesAvailable(spaceId, categoryIds, limitId);
       }
     }
 
@@ -162,14 +162,14 @@ export class LimitsService {
   }
 
   private async assertCategoriesAvailable(
-    userId: number,
+    spaceId: number,
     categoryIds: number[],
     excludeLimitId?: number,
   ): Promise<void> {
     const query = this.limitRepository
       .createQueryBuilder('limit')
       .innerJoin('limit.categories', 'category')
-      .where('limit.user_id = :userId', { userId })
+      .where('limit.space_id = :spaceId', { spaceId })
       .andWhere('category.id IN (:...categoryIds)', { categoryIds });
 
     if (excludeLimitId) {
@@ -183,10 +183,10 @@ export class LimitsService {
     }
   }
 
-  private async assertNoOtherTotalLimit(userId: number, excludeLimitId?: number): Promise<void> {
+  private async assertNoOtherTotalLimit(spaceId: number, excludeLimitId?: number): Promise<void> {
     const query = this.limitRepository
       .createQueryBuilder('limit')
-      .where('limit.user_id = :userId', { userId })
+      .where('limit.space_id = :spaceId', { spaceId })
       .andWhere('limit.limit_type = :limitType', { limitType: LimitType.OTHERS });
 
     if (excludeLimitId) {

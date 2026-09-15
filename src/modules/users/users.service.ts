@@ -113,7 +113,7 @@ export class UsersService {
       const space = await manager.getRepository(Space).findOneOrFail({ where: { id: spaceMember.space_id } });
 
       const wallet = manager.getRepository(Wallet).create({
-        user_id: user.id,
+        space_id: space.id,
         wallet_name: 'Cash',
         balance: 0,
         design: AppColor.SLATE,
@@ -121,7 +121,7 @@ export class UsersService {
       });
       await manager.getRepository(Wallet).save(wallet);
 
-      const categories = DEFAULT_CATEGORIES.map((category) => ({ ...category, user_id: user.id }));
+      const categories = DEFAULT_CATEGORIES.map((category) => ({ ...category, space_id: space.id }));
       await manager.getRepository(Category).save(categories);
     });
 

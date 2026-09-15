@@ -19,14 +19,6 @@ describe('SpacesService', () => {
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let spaceInviteRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let dataSource: { transaction: jest.Mock };
-  let spaceQueryBuilder: {
-    innerJoin: jest.Mock;
-    innerJoinAndSelect: jest.Mock;
-    where: jest.Mock;
-    andWhere: jest.Mock;
-    orderBy: jest.Mock;
-    getOne: jest.Mock;
-  };
   let memberQueryBuilder: {
     select: jest.Mock;
     addSelect: jest.Mock;
@@ -36,14 +28,6 @@ describe('SpacesService', () => {
   };
 
   beforeEach(async () => {
-    spaceQueryBuilder = {
-      innerJoin: jest.fn().mockReturnThis(),
-      innerJoinAndSelect: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      orderBy: jest.fn().mockReturnThis(),
-      getOne: jest.fn(),
-    };
     memberQueryBuilder = {
       select: jest.fn().mockReturnThis(),
       addSelect: jest.fn().mockReturnThis(),
@@ -73,7 +57,6 @@ describe('SpacesService', () => {
           useValue: {
             findOne: jest.fn(),
             find: jest.fn(),
-            createQueryBuilder: jest.fn().mockReturnValue(spaceQueryBuilder),
           },
         },
         {
@@ -203,26 +186,6 @@ describe('SpacesService', () => {
         expect.objectContaining({ id: 10, role: SpaceRole.OWNER, member_count: 1 }),
         expect.objectContaining({ id: 11, role: SpaceRole.MEMBER, member_count: 4 }),
       ]);
-    });
-  });
-
-  describe('findOldestPersonalSpace', () => {
-    it('returns the earliest-created personal space for the user', async () => {
-      const space = { id: 5, type: SpaceType.PERSONAL } as Space;
-      spaceQueryBuilder.getOne.mockResolvedValue(space);
-
-      const result = await service.findOldestPersonalSpace(1);
-
-      expect(spaceQueryBuilder.orderBy).toHaveBeenCalledWith('space.created_at', 'ASC');
-      expect(result).toBe(space);
-    });
-
-    it('returns null when the user has no personal space', async () => {
-      spaceQueryBuilder.getOne.mockResolvedValue(null);
-
-      const result = await service.findOldestPersonalSpace(1);
-
-      expect(result).toBeNull();
     });
   });
 

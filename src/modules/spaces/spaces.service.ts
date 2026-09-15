@@ -116,25 +116,6 @@ export class SpacesService {
     return this.spaceRepository.findOne({ where: { id: spaceId }, relations: { currency: true } });
   }
 
-  /**
-   * Stage-1-only shim for WalletsService.buildOverview(), which still needs
-   * a single "the user's base currency" to decide which wallets count
-   * toward the legacy per-user total. A user can have more than one
-   * personal space (design decision 15), so this is a best-effort pick, not
-   * a real invariant - Stage 3 removes per-wallet-currency filtering
-   * entirely once every wallet in a space shares that space's currency.
-   */
-  async findOldestPersonalSpace(userId: number): Promise<Space | null> {
-    return this.spaceRepository
-      .createQueryBuilder('space')
-      .innerJoin(SpaceMember, 'member', 'member.space_id = space.id')
-      .innerJoinAndSelect('space.currency', 'currency')
-      .where('member.user_id = :userId', { userId })
-      .andWhere('space.type = :type', { type: SpaceType.PERSONAL })
-      .orderBy('space.created_at', 'ASC')
-      .getOne();
-  }
-
   async remove(spaceId: number, userId: number): Promise<void> {
     const spaceCount = await this.spaceMemberRepository.count({ where: { user_id: userId } });
 

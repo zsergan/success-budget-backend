@@ -6,11 +6,12 @@ import { Transaction } from '@entities/transaction.entity';
 import { Limit } from '@entities/limit.entity';
 import { CategoriesController } from './categories.controller';
 import { CategoriesService } from './categories.service';
+import { SpacesModule } from '@modules/spaces/spaces.module';
 
 @Module({
   // Transaction/Limit registered directly (not via their modules) to avoid a
   // forwardRef() cycle - both already import CategoriesModule.
-  imports: [TypeOrmModule.forFeature([Category, Transaction, Limit])],
+  imports: [TypeOrmModule.forFeature([Category, Transaction, Limit]), SpacesModule],
   controllers: [CategoriesController],
   providers: [CategoriesService],
   exports: [CategoriesService],

@@ -34,18 +34,18 @@ export class WalletsService {
     return await this.walletRepository.findOne({ where: { id: walletId } });
   }
 
-  async getAll(userId: number): Promise<Wallet[]> {
+  async getAll(spaceId: number): Promise<Wallet[]> {
     return await this.walletRepository
       .createQueryBuilder('wallet')
       .innerJoinAndSelect('wallet.currency', 'currency')
-      .where({ user_id: userId, is_deleted: 0 })
+      .where({ space_id: spaceId, is_deleted: 0 })
       .getMany();
   }
 
-  async create(userId: number, createWalletDto: CreateWalletDto): Promise<Wallet> {
+  async create(spaceId: number, createWalletDto: CreateWalletDto): Promise<Wallet> {
     const wallet = this.walletRepository.create({
       ...createWalletDto,
-      user_id: userId,
+      space_id: spaceId,
     });
     await this.walletRepository.save(wallet);
 
@@ -80,13 +80,14 @@ export class WalletsService {
     });
   }
 
-  async buildOverview(userId: number, wallets: Wallet[], transactions: Transaction[]): Promise<WalletsOverview> {
-    // Stage-1-only shim (see SpacesService.findOldestPersonalSpace) - once
-    // every wallet carries its space's single currency (Spaces Stage 3),
-    // this per-wallet-currency filter goes away entirely
-    const baseSpace = await this.spacesService.findOldestPersonalSpace(userId);
+  async buildOverview(spaceId: number, wallets: Wallet[], transactions: Transaction[]): Promise<WalletsOverview> {
+    // Wallets in one space can still carry different currencies until
+    // Spaces Stage 3 drops wallets.currency_id entirely - filter to the
+    // space's own currency, same as before, just from the real space now
+    // instead of the Stage-1 "guess a personal space" shim.
+    const space = await this.spacesService.getOne(spaceId);
     const baseCurrencyWalletIds = new Set(
-      wallets.filter((wallet) => wallet.currency_id === baseSpace.currency_id).map((wallet) => wallet.id),
+      wallets.filter((wallet) => wallet.currency_id === space.currency_id).map((wallet) => wallet.id),
     );
 
     const total_balance = wallets
@@ -106,7 +107,7 @@ export class WalletsService {
 
     return {
       total_balance,
-      total_balance_currency: baseSpace.currency.code,
+      total_balance_currency: space.currency.code,
       delta_percent,
       wallets: this.summarize(wallets, transactions),
     };
