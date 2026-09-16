@@ -135,8 +135,8 @@ Limits Stage 4, Categories Stage 5, Home Stage 2). Новая конвенция
   задним числом.
 
 Первое применение этой конвенции — инициатива "Spaces", план в
-`.private/spaces-implementation-plan.md` (не начата, см. "Что осталось"
-ниже).
+`.private/spaces-implementation-plan.md`. Завершена (Stages 1-4), см.
+"## Spaces Stage 1-4" ниже.
 
 ## Что сделано — по группам
 
@@ -378,29 +378,10 @@ Remaining round-2 phases (see the plan file, "Раунд 2" section):
 24→26) are being left open deliberately as a visible backlog marker - do
 not merge or close them without being asked.
 
-**New initiative planned, not started: Spaces (shared budgets), single
-space-level currency, derived wallet balance.** Full plan (4 stages +
-one standalone housekeeping fix) in `.private/spaces-implementation-plan.md`
-- read it before starting any of this work, don't re-derive it from
-`.private/modernization-plan.md` (that file is the superseded draft + the
-Q&A that produced the final plan, kept only as background). Uses the new
-naming convention above (`Spaces Stage 1-4`, branches
-`feat/spaces-stageN-...`). Highlights: personal `Space` now created at
-`register` (not `verify-email`), `users.base_currency_id` is dropped
-entirely rather than migrated later; Wallet/Category/Limit/Transaction all
-move from `user_id` to `space_id` ownership in one combined stage (found to
-be non-separable - see the plan for why); wallet starting balance becomes a
-regular `income` transaction against a system `Initial balance` category
-instead of a stored column; `wallets.balance`/`currency_id` and
-`transactions.currency_id` are dropped in favor of derived balance and a
-single space-level currency. Mobile design for this was read and
-cross-checked against the plan on 2026-09-14 (`Home Stage 2.dc.html` +
-`Auth & Settings Stage 6.dc.html` in the same Claude Design project as the
-other Stage files) - see the plan file's "Сверка с мобильным дизайном"
-section for the corrections that produced (single-owner model with automatic
-succession on leave instead of manual role changes, `is_personal` replaced
-by a `type: 'personal' | 'group'` space type, inline invites on space
-creation).
+**Spaces initiative (shared budgets, single space-level currency, derived
+wallet balance) - done, Stages 1-4 all merged.** See "## Spaces Stage 1-4"
+below for the full writeup; original plan in
+`.private/spaces-implementation-plan.md`.
 
 ## Transactions Stage 3 — mobile design gap-fill (2026-09-03)
 
@@ -717,11 +698,10 @@ the Limits Stage 4 `{ total, categories, over_allocation }` reshape) from
 a bare `WalletSummary[]` to `{ total_balance, total_balance_currency,
 delta_percent, wallets: WalletSummary[] }` - `wallets`' per-item shape is
 unchanged. No DB migration was needed - this is a pure read-side
-aggregation over existing columns
-(`WalletsService.buildOverview()`/`wallets.module.ts` now also registers
-`User` in its own `TypeOrmModule.forFeature`, following the precedent
-`CategoriesModule` already set of reading another module's entity
-directly rather than importing the whole owning module for one column).
+aggregation over existing columns (`WalletsService.buildOverview()`,
+reading the user's `base_currency_id` at the time - since superseded by
+the Spaces initiative, see "## Spaces Stage 1-4" below: currency now comes
+from the space, not the user).
 
 **Deliberately not added**: no currency conversion (there is no exchange-
 rate infrastructure in this app at all - out of scope for a Home-screen
@@ -732,13 +712,15 @@ together" pattern already used by Limits.
 
 **Note on `.private/`:** `.private/mobile-api-changes.md` and
 `.private/modernization-plan.md`, both described at length elsewhere in
-this file, do not currently exist on disk - `.private/` is an empty
-directory. They were always gitignored, so this isn't a git-history
-question; their content appears to have been lost locally at some point.
-This stage's change is documented here in full instead of being appended
-to a (currently nonexistent) client-facing doc; do not assume a full
-mobile-api-changes.md with earlier rounds' content still exists somewhere
-- verify before relying on it being current.
+this file, did not exist on disk as of this stage - `.private/` was an
+empty directory at the time. They were always gitignored, so this isn't a
+git-history question; their content appears to have been lost locally at
+some point. This stage's change is documented here in full instead of
+being appended to a (at-the-time nonexistent) client-facing doc; do not
+assume a full mobile-api-changes.md with earlier rounds' content exists
+somewhere - verify before relying on it being current. (`.private/` is no
+longer empty as of the Spaces initiative below -
+`spaces-implementation-plan.md` was added for it.)
 
 Covered by unit tests (`wallets.service.spec.ts` - base-currency
 filtering, delta calculation, the zero-wallets case, and the
@@ -750,3 +732,105 @@ total but present in the list, and the total/delta reflecting a real
 income transaction later in the flow). Full local `npm run test`,
 `npm run test:cov`, `npm run test:e2e`, `npm run lint`, and `npm run build`
 all pass as of this writing.
+
+## Spaces Stage 1-4 — shared/personal budget spaces (2026-09-14 to 2026-09-16)
+
+Four branches, one per stage, each cut from `main`: `feat/spaces-stage1-foundation`,
+`feat/spaces-stage2-resource-migration`, `feat/spaces-stage3-currency-and-balance`,
+`feat/spaces-stage4-closeout` (PRs #35-#38). Full design doc in
+`.private/spaces-implementation-plan.md` (gitignored). Mobile design for
+this was read and cross-checked against the plan on 2026-09-14
+(`Home Stage 2.dc.html` + `Auth & Settings Stage 6.dc.html`, same Claude
+Design project as the other Stage files) - see the plan file's "Сверка с
+мобильным дизайном" section for the corrections that produced (single-owner
+model with automatic succession on leave instead of manual role changes,
+`is_personal` replaced by a `type: 'personal' | 'group'` space type, inline
+invites on space creation).
+
+**Stage 1 - foundation.** New `Space` (`id`, `name`, `type: 'personal' |
+'group'`, `currency_id`), `SpaceMember` (`space_id`, `user_id`, `role: 'owner'
+| 'member'`), `SpaceInvite` entities. `UsersService.register()` now creates a
+personal `Space` + owner `SpaceMember` in the same transaction as the user
+(not deferred to `verify-email` as originally drafted) - `users.base_currency_id`
+is dropped entirely rather than migrated later, since the currency the user
+picks at registration goes straight onto their personal space's `currency_id`.
+Exactly one `owner` per space at all times, enforced in code
+(`SpaceMembersService`), not a DB constraint - role transfers automatically
+to the next member when the owner leaves, there's no manual role-change
+endpoint at all. `Wallet`/`Category`/`Limit`/`Transaction` deliberately left
+on `user_id` in this stage - the safest stage, almost entirely additive.
+
+**Stage 2 - resource migration.** Moved `Wallet`/`Category`/`Limit` from
+`user_id` to `space_id` ownership (`Transaction` derives ownership via
+`wallet_id → wallet.space_id`, no `space_id` column of its own - already
+covered by every query that touches it). Every route nests under
+`/api/v1/spaces/:spaceId/...`. `assertOwnership()` renamed to
+`assertBelongsToSpace()` (`src/shared/utils/space-ownership.ts`) - compares
+`space_id` instead of `user_id`, paired with a new
+`SpaceMembersService.assertMembership()` check on every handler (two
+different questions: "is this caller in this space at all" vs. "does this
+resource actually belong to the space in the URL").
+
+**Stage 3 - unified currency + derived balance.** Dropped `Wallet.currency_id`
+and `Transaction.currency_id` - `Space.currency_id` is now the only currency
+a wallet or transaction in that space can have. Dropped the stored
+`wallets.balance` column in favor of a derived balance
+(`SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE -amount END)`
+over the wallet's own transactions, `TransactionsService.getBalances()`).
+A wallet's starting balance is now a real `income` `Transaction` against a
+new system `Initial balance` category (`Category.is_system`, hidden from
+`GET /categories` and rejected everywhere a client could otherwise touch
+it - 403 on `POST /transactions`, 400 on any category-mutation endpoint or
+limit attachment) instead of a raw stored number - `POST /wallets`'s
+`balance` field renamed `initial_balance`, response reshaped to
+`{ wallet, transaction: Transaction | null }`. Found and fixed as part of
+this stage: `SpacesService.create()` never seeded default categories for
+any space (personal or group) created via `POST /spaces` - deferred from
+Stage 1 (`Category` wasn't space-scoped yet) and never picked up in Stage
+2; the additive migration backfills the gap into every existing space, and
+`SpacesService.create()` now seeds both the 15 defaults and the system
+category going forward. Also fixed while implementing this: the internal
+starting-balance transaction was leaving its `timestamp` to the DB column's
+`CURRENT_TIMESTAMP(3)` default, which lands several hours off from the
+actual UTC instant on this DB server - set explicitly in JS now, matching
+every other transaction-creation path.
+
+**Stage 4 - closeout.** No new endpoint - the plan originally called for a
+new `GET /spaces/:spaceId/overview`, but `GET /spaces/:spaceId/wallets`
+already returns exactly that shape (`total_balance`, `total_balance_currency`,
+`delta_percent`, per-wallet balance and period income/expense) since Home
+Stage 2 reshaped it, before the Spaces initiative even existed - Stage 3 kept
+that shape while swapping in the derived-balance internals. Confirmed via a
+full grep pass that the dead-reference cleanup the plan asked for
+(`assertOwnership`, wallet-level `currency`/`currency_id`, stored
+`wallets.balance`) was already clean from Stages 1-3 themselves - the only
+stale reference left was this file and `README.md`, both rewritten in this
+stage to describe the Spaces initiative for the first time.
+
+**Breaking changes across the initiative** (full detail in `README.md`'s
+"Breaking changes" section): `GET /users/profile` drops `base_currency`
+(Stage 1); every wallet/category/limit/transaction route moves under
+`/spaces/:spaceId/...` (Stage 2); `POST /wallets` drops `currency_id`,
+renames `balance` to `initial_balance`, and reshapes its response to
+`{ wallet, transaction }` (Stage 3).
+
+**Deliberately not added**: the `GET /spaces/:spaceId/overview` endpoint
+from the original plan draft (see Stage 4 above - `GET /wallets` already
+covers it, adding a near-duplicate route would just be two ways to ask the
+same question). No real-email delivery for space invites - the invite code
+is still returned directly in the API response, delivery is a separate,
+not-yet-scoped task. No user-account deletion endpoint, even though a
+design for it exists (`Auth & Settings Stage 6.dc.html`, Settings → "Delete
+account") - not part of this initiative, would need its own space-cleanup
+logic (delete every personal space where this user is the sole member,
+remove their membership elsewhere with the same owner-succession Stage 1
+already built).
+
+Every stage shipped with full unit test coverage for its own changes plus a
+growing, continuously-updated `test/app.e2e-spec.ts` scenario (registration
+through personal-space creation, group-space invites/membership/ownership
+transfer, cross-space 403s, starting-balance wallet creation, system-category
+rejections) - by Stage 4 this is one continuous regression suite covering
+all four stages together, re-run in full (`npm run lint`, `npm test`,
+`npm run test:cov`, `npm run build`, `npm run test:e2e`) as this stage's own
+verification, since Stage 4 itself changes no application behavior.
