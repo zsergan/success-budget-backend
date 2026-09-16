@@ -190,12 +190,13 @@ describe('UsersService', () => {
       expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 1 } });
       expect(spaceRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { id: 20 } });
       expect(walletRepositoryInTx.create).toHaveBeenCalledWith(
-        expect.objectContaining({ space_id: 20, wallet_name: 'Cash', currency_id: 5 }),
+        expect.objectContaining({ space_id: 20, wallet_name: 'Cash' }),
       );
       expect(walletRepositoryInTx.save).toHaveBeenCalledWith({ id: 10 });
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
-        expect.arrayContaining([expect.objectContaining({ space_id: 20 })]),
+        expect.arrayContaining([expect.objectContaining({ space_id: 20, name: 'Initial balance', is_system: 1 })]),
       );
+      expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(16);
       const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
       expect(decoded.id).toBe(1);
     });

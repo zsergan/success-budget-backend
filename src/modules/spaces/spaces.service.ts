@@ -5,9 +5,10 @@ import { DataSource, In, Repository } from 'typeorm';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
+import { Category } from '@entities/category.entity';
 import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
-import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
+import { SPACE_LIMITS, SPACE_INVITE_TTL_MS, DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
 import { generateRandomNumberString } from '@shared/utils';
 
@@ -58,6 +59,12 @@ export class SpacesService {
           role: SpaceRole.OWNER,
         }),
       );
+
+      const categories = [...DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY].map((category) => ({
+        ...category,
+        space_id: space.id,
+      }));
+      await manager.getRepository(Category).save(categories);
 
       if (invites.length) {
         const inviteRows = invites.map((email) =>

@@ -89,6 +89,15 @@ describe('LimitsController', () => {
       expect(limitsService.create).not.toHaveBeenCalled();
     });
 
+    it('rejects creating a limit for a system category', async () => {
+      categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId, is_system: 1 } as any);
+
+      await expect(controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
+      );
+      expect(limitsService.create).not.toHaveBeenCalled();
+    });
+
     it('propagates a duplicate-limit rejection from the service', async () => {
       categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId } as any);
       limitsService.create.mockRejectedValue(new HttpException(ErrorMessages.LIMIT_EXISTS, 400));
@@ -115,6 +124,16 @@ describe('LimitsController', () => {
 
       await expect(controller.update(req, spaceId, 1, { category_ids: [6], amount: 20 } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
+      );
+      expect(limitsService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects updating a limit to reference a system category', async () => {
+      limitsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, categories: [{ id: 5 }] } as any);
+      categoriesService.getOne.mockResolvedValue({ id: 6, space_id: spaceId, is_system: 1 } as any);
+
+      await expect(controller.update(req, spaceId, 1, { category_ids: [6], amount: 20 } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
       );
       expect(limitsService.update).not.toHaveBeenCalled();
     });

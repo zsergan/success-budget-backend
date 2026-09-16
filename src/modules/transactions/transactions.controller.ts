@@ -54,7 +54,11 @@ export class TransactionsController {
     const category = await this.categoriesService.getOne(createTransactionDto.category_id);
     assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
 
-    return this.transactionsService.create(wallet.id, wallet.currency_id, createTransactionDto);
+    if (category.is_system) {
+      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
+    }
+
+    return this.transactionsService.create(wallet, createTransactionDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)

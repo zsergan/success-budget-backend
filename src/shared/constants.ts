@@ -48,3 +48,13 @@ export const DEFAULT_CATEGORIES: CreateCategoryDto[] = [
   },
   { name: 'Utilities', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.UTILITIES, color: AppColor.SLATE },
 ];
+
+// separate from DEFAULT_CATEGORIES (typed CreateCategoryDto[], which has
+// no is_system field) - seeded once per space, never client-creatable
+export const INITIAL_BALANCE_CATEGORY = {
+  name: 'Initial balance',
+  transaction_type: TransactionType.INCOME,
+  icon: CategoryIcon.SAVINGS,
+  color: AppColor.SLATE,
+  is_system: 1,
+};

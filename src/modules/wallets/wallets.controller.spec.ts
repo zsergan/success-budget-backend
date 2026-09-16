@@ -29,7 +29,7 @@ describe('WalletsController', () => {
             buildOverview: jest.fn(),
           },
         },
-        { provide: TransactionsService, useValue: { getAllForWallets: jest.fn() } },
+        { provide: TransactionsService, useValue: { getAllForWallets: jest.fn(), getBalances: jest.fn() } },
         { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
@@ -45,13 +45,14 @@ describe('WalletsController', () => {
 
   describe('create', () => {
     it('creates a wallet in the space', async () => {
-      walletsService.create.mockResolvedValue({ id: 1 } as any);
+      const created = { wallet: { id: 1 }, transaction: null };
+      walletsService.create.mockResolvedValue(created as any);
 
       const result = await controller.create(req, spaceId, { wallet_name: 'Cash' } as any);
 
       expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(walletsService.create).toHaveBeenCalledWith(spaceId, { wallet_name: 'Cash' });
-      expect(result).toEqual({ id: 1 });
+      expect(result).toEqual(created);
     });
   });
 
@@ -95,9 +96,13 @@ describe('WalletsController', () => {
   });
 
   describe('getAll', () => {
-    it('fetches every wallet transaction in a single query and delegates the overview to the service', async () => {
+    it('fetches transactions and derived balances in parallel and delegates the overview to the service', async () => {
       const wallets = [{ id: 1 }, { id: 2 }] as any;
       const transactions = [{ wallet_id: 1, amount: '100' }] as any;
+      const balances = new Map([
+        [1, 100],
+        [2, 0],
+      ]);
       const overview = {
         total_balance: 100,
         total_balance_currency: 'USD',
@@ -106,6 +111,7 @@ describe('WalletsController', () => {
       };
       walletsService.getAll.mockResolvedValue(wallets);
       transactionsService.getAllForWallets.mockResolvedValue(transactions);
+      transactionsService.getBalances.mockResolvedValue(balances);
       walletsService.buildOverview.mockResolvedValue(overview as any);
 
       const from = new Date('2026-01-01');
@@ -114,7 +120,8 @@ describe('WalletsController', () => {
 
       expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(transactionsService.getAllForWallets).toHaveBeenCalledWith([1, 2], from, to);
-      expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, transactions);
+      expect(transactionsService.getBalances).toHaveBeenCalledWith([1, 2]);
+      expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, transactions, balances);
       expect(result).toEqual(overview);
     });
   });

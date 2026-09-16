@@ -72,13 +72,13 @@ export class WalletsController {
     await this.spaceMembersService.assertMembership(spaceId, req.user.id);
 
     const wallets = await this.walletsService.getAll(spaceId);
-    const transactions = await this.transactionsService.getAllForWallets(
-      wallets.map((wallet) => wallet.id),
-      from,
-      to,
-    );
+    const walletIds = wallets.map((wallet) => wallet.id);
+    const [transactions, balances] = await Promise.all([
+      this.transactionsService.getAllForWallets(walletIds, from, to),
+      this.transactionsService.getBalances(walletIds),
+    ]);
 
-    return this.walletsService.buildOverview(spaceId, wallets, transactions);
+    return this.walletsService.buildOverview(spaceId, wallets, transactions, balances);
   }
 
   @Delete(':walletId')

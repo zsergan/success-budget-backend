@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
 import { Transaction } from '@entities/transaction.entity';
@@ -10,118 +9,131 @@ import { TransactionType } from '@shared/enums';
 describe('TransactionsService', () => {
   let service: TransactionsService;
   let queryBuilder: Record<string, jest.Mock>;
-  let walletRepositoryInTx: { findOne: jest.Mock; update: jest.Mock };
-  let transactionRepositoryInTx: { create: jest.Mock; save: jest.Mock };
-  let dataSource: { transaction: jest.Mock };
-  let transactionRepository: { createQueryBuilder: jest.Mock };
+  let transactionRepository: { create: jest.Mock; save: jest.Mock; delete: jest.Mock; createQueryBuilder: jest.Mock };
 
   beforeEach(async () => {
     queryBuilder = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
+      setParameter: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
       getOne: jest.fn(),
+      getRawMany: jest.fn().mockResolvedValue([]),
     };
 
-    walletRepositoryInTx = { findOne: jest.fn(), update: jest.fn() };
-    transactionRepositoryInTx = { create: jest.fn(), save: jest.fn() };
-    const manager = {
-      getRepository: jest.fn((entity) => (entity === Wallet ? walletRepositoryInTx : transactionRepositoryInTx)),
-    };
-    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
     transactionRepository = {
+      create: jest.fn((entity) => entity),
+      save: jest.fn(),
+      delete: jest.fn(),
       createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        TransactionsService,
-        {
-          provide: getRepositoryToken(Transaction),
-          useValue: {
-            create: jest.fn(),
-            save: jest.fn(),
-            ...transactionRepository,
-          },
-        },
-        { provide: DataSource, useValue: dataSource },
-      ],
+      providers: [TransactionsService, { provide: getRepositoryToken(Transaction), useValue: transactionRepository }],
     }).compile();
 
     service = module.get(TransactionsService);
   });
 
   describe('create', () => {
-    it('locks the wallet row, applies the balance change, and creates the transaction in one DB transaction', async () => {
-      const wallet = { id: 1, balance: 100 };
-      walletRepositoryInTx.findOne.mockResolvedValue(wallet);
+    it('creates the transaction and derives the wallet balance from its previous history', async () => {
+      const wallet = { id: 1 } as Wallet;
+      queryBuilder.getRawMany.mockResolvedValue([{ wallet_id: '1', balance: '100' }]);
       const dto = { wallet_id: 1, amount: 10, transaction_type: TransactionType.INCOME } as any;
-      const created = { ...dto, currency_id: 3 } as Transaction;
-      transactionRepositoryInTx.create.mockReturnValue(created);
-      transactionRepositoryInTx.save.mockResolvedValue(created);
+      transactionRepository.save.mockResolvedValue({ ...dto, id: 'tx-1' });
 
-      const result = await service.create(1, 3, dto);
+      const result = await service.create(wallet, dto);
 
-      expect(dataSource.transaction).toHaveBeenCalled();
-      expect(walletRepositoryInTx.findOne).toHaveBeenCalledWith({
-        where: { id: 1 },
-        lock: { mode: 'pessimistic_write' },
+      expect(transactionRepository.create).toHaveBeenCalledWith(dto);
+      expect(transactionRepository.save).toHaveBeenCalledWith(dto);
+      expect(result).toEqual({
+        transaction: { ...dto, id: 'tx-1' },
+        wallet: { id: 1, balance: 110 },
+        previous_balance: 100,
       });
-      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 110 });
-      expect(transactionRepositoryInTx.create).toHaveBeenCalledWith({ ...dto, currency_id: 3 });
-      expect(result).toEqual({ transaction: created, wallet: { id: 1, balance: 110 }, previous_balance: 100 });
       expect(result.wallet).toBe(wallet);
     });
 
     it('subtracts the amount for an expense transaction', async () => {
-      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 100 });
+      const wallet = { id: 1 } as Wallet;
+      queryBuilder.getRawMany.mockResolvedValue([{ wallet_id: '1', balance: '100' }]);
       const dto = { wallet_id: 1, amount: 30, transaction_type: TransactionType.EXPENSE } as any;
-      transactionRepositoryInTx.create.mockReturnValue(dto);
-      transactionRepositoryInTx.save.mockResolvedValue(dto);
+      transactionRepository.save.mockResolvedValue(dto);
 
-      const result = await service.create(1, 3, dto);
+      const result = await service.create(wallet, dto);
 
-      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 70 });
       expect(result.previous_balance).toBe(100);
       expect(result.wallet.balance).toBe(70);
+    });
+
+    it('starts from a balance of 0 when the wallet has no transactions yet', async () => {
+      const wallet = { id: 1 } as Wallet;
+      const dto = { wallet_id: 1, amount: 50, transaction_type: TransactionType.INCOME } as any;
+      transactionRepository.save.mockResolvedValue(dto);
+
+      const result = await service.create(wallet, dto);
+
+      expect(result.previous_balance).toBe(0);
+      expect(result.wallet.balance).toBe(50);
     });
   });
 
   describe('remove', () => {
-    it('reverses an income transaction and deletes it in one DB transaction', async () => {
-      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 150 });
-      (transactionRepositoryInTx as any).delete = jest.fn();
-      const transaction = {
-        id: 'tx-1',
-        wallet_id: 1,
-        amount: 50,
-        transaction_type: TransactionType.INCOME,
-      } as any;
+    it('deletes the transaction with no wallet-side effect', async () => {
+      const transaction = { id: 'tx-1', wallet_id: 1, amount: 50, transaction_type: TransactionType.INCOME } as any;
 
       await service.remove(transaction);
 
-      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 100 });
-      expect((transactionRepositoryInTx as any).delete).toHaveBeenCalledWith('tx-1');
+      expect(transactionRepository.delete).toHaveBeenCalledWith('tx-1');
+    });
+  });
+
+  describe('getBalances', () => {
+    it('returns an empty map without querying when there are no wallets', async () => {
+      const result = await service.getBalances([]);
+
+      expect(result).toEqual(new Map());
+      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
     });
 
-    it('reverses an expense transaction and deletes it in one DB transaction', async () => {
-      walletRepositoryInTx.findOne.mockResolvedValue({ id: 1, balance: 100 });
-      (transactionRepositoryInTx as any).delete = jest.fn();
-      const transaction = {
-        id: 'tx-2',
-        wallet_id: 1,
-        amount: 20,
-        transaction_type: TransactionType.EXPENSE,
-      } as any;
+    it('defaults every requested wallet to 0 when none has transactions', async () => {
+      const result = await service.getBalances([1, 2]);
 
-      await service.remove(transaction);
+      expect(result).toEqual(
+        new Map([
+          [1, 0],
+          [2, 0],
+        ]),
+      );
+    });
 
-      expect(walletRepositoryInTx.update).toHaveBeenCalledWith(1, { balance: 120 });
-      expect((transactionRepositoryInTx as any).delete).toHaveBeenCalledWith('tx-2');
+    it('sums income and expense transactions per wallet', async () => {
+      queryBuilder.getRawMany.mockResolvedValue([
+        { wallet_id: '1', balance: '150' },
+        { wallet_id: '2', balance: '-20' },
+      ]);
+
+      const result = await service.getBalances([1, 2, 3]);
+
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
+        walletIds: [1, 2, 3],
+      });
+      expect(queryBuilder.setParameter).toHaveBeenCalledWith('income', TransactionType.INCOME);
+      expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
+      expect(result).toEqual(
+        new Map([
+          [1, 150],
+          [2, -20],
+          [3, 0],
+        ]),
+      );
     });
   });
 
