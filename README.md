@@ -22,8 +22,9 @@ currencies, health check).
 | Module                | Purpose                                                              |
 | ---------------------- | --------------------------------------------------------------------- |
 | `users`                | Registration, email verification, login, profile                    |
-| `wallets`              | User wallets (balance, currency, soft-delete)                       |
-| `transactions`         | Income/expense entries against a wallet, with atomic balance updates |
+| `spaces`               | Shared/personal budget spaces - membership, invites, single space-level currency |
+| `wallets`              | Space-owned wallets, derived balance, soft-delete                   |
+| `transactions`         | Income/expense entries against a wallet                             |
 | `categories`           | Income/expense categories - user-defined plus defaults on signup    |
 | `limits`               | Monthly spending limits, per category or overall                    |
 | `currencies`           | Read-only list of supported currencies (public)                     |
@@ -31,7 +32,30 @@ currencies, health check).
 | `health`               | `/health` liveness/readiness check for deployment tooling (public)  |
 
 All API routes are prefixed with `/api` and URI-versioned, e.g.
-`/api/v1/wallets`.
+`/api/v1/users/register`. Wallets, transactions, categories, and limits are
+all scoped under the space they belong to, e.g.
+`/api/v1/spaces/:spaceId/wallets` - every user gets a personal space
+automatically at registration, and can create or be invited into additional
+shared ones. See "Breaking changes" below if you're integrating against an
+older version of this API.
+
+## Breaking changes
+
+The Spaces initiative (personal/shared budget spaces) landed in three
+rounds, each changing the API surface for existing clients:
+
+- `GET /api/v1/users/profile` no longer returns `base_currency`/
+  `baseCurrency` - currency now lives on a space, fetched via
+  `GET /api/v1/spaces`.
+- `wallets`/`categories`/`limits`/`transactions` all moved from flat routes
+  (`/api/v1/wallets`) to space-scoped ones
+  (`/api/v1/spaces/:spaceId/wallets`).
+- `POST /api/v1/spaces/:spaceId/wallets` no longer accepts `currency_id`
+  (a wallet always uses its space's currency); its `balance` field is
+  renamed `initial_balance`, and the response shape changes to
+  `{ wallet, transaction }` - a starting balance above 0 is now recorded as
+  a real transaction, not a raw stored number. Wallet and transaction
+  responses no longer include `currency`/`currency_id` anywhere.
 
 ## API documentation
 
