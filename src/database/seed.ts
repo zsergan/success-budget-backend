@@ -24,6 +24,15 @@ const SEED_USERS: SeedUser[] = [
 ];
 
 async function bootstrap() {
+  // These are well-known emails and a well-known default password - fine
+  // for a disposable local/staging database, never fine to run against a
+  // real one, so this refuses outright rather than trusting the caller to
+  // remember not to.
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Refusing to run the dev seed script with NODE_ENV=production.');
+    process.exit(1);
+  }
+
   const app = await NestFactory.createApplicationContext(AppModule);
 
   const usersService = app.get(UsersService);
