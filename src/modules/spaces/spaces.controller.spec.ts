@@ -74,19 +74,53 @@ describe('SpacesController', () => {
 
   describe('getMembers', () => {
     it('composes members and pending invites, with can_remove true for an owner', async () => {
-      spaceMembersService.assertMembership.mockResolvedValue({ role: SpaceRole.OWNER, user_id: 1 } as SpaceMember);
+      // Membership ids (id) deliberately differ from user ids (user_id) --
+      // a fixture where they coincide would hide a regression that
+      // confuses the two.
+      const ownerReq = { user: { id: 101 } } as any;
+
+      spaceMembersService.assertMembership.mockResolvedValue({ role: SpaceRole.OWNER, user_id: 101 } as SpaceMember);
       spaceMembersService.getAll.mockResolvedValue([
-        { id: 1, user_id: 1, role: SpaceRole.OWNER, user: { name: 'Me', email: 'me@example.com' } } as SpaceMember,
-        { id: 2, user_id: 2, role: SpaceRole.MEMBER, user: { name: 'Them', email: 'them@example.com' } } as SpaceMember,
+        { id: 51, user_id: 101, role: SpaceRole.OWNER, user: { name: 'Me', email: 'me@example.com' } } as SpaceMember,
+        {
+          id: 52,
+          user_id: 102,
+          role: SpaceRole.MEMBER,
+          user: { name: 'Them', email: 'them@example.com' },
+        } as SpaceMember,
       ]);
       spaceInvitesService.getActive.mockResolvedValue([{ id: 3, email: 'pending@example.com' } as SpaceInvite]);
 
-      const result = await controller.getMembers(req, 10);
+      const result = await controller.getMembers(ownerReq, 10);
 
       expect(result).toEqual([
-        { type: 'member', id: 1, name: 'Me', email: 'me@example.com', role: SpaceRole.OWNER, can_remove: false },
-        { type: 'member', id: 2, name: 'Them', email: 'them@example.com', role: SpaceRole.MEMBER, can_remove: true },
-        { type: 'invite', id: 3, name: null, email: 'pending@example.com', role: null, can_remove: true },
+        {
+          type: 'member',
+          id: 51,
+          user_id: 101,
+          name: 'Me',
+          email: 'me@example.com',
+          role: SpaceRole.OWNER,
+          can_remove: false,
+        },
+        {
+          type: 'member',
+          id: 52,
+          user_id: 102,
+          name: 'Them',
+          email: 'them@example.com',
+          role: SpaceRole.MEMBER,
+          can_remove: true,
+        },
+        {
+          type: 'invite',
+          id: 3,
+          user_id: null,
+          name: null,
+          email: 'pending@example.com',
+          role: null,
+          can_remove: true,
+        },
       ]);
     });
 

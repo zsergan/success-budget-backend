@@ -26,6 +26,11 @@ import { SpaceRole } from '@shared/enums';
 interface SpaceMemberView {
   type: 'member' | 'invite';
   id: number;
+  // The user id behind this row -- distinct from `id`, which for a member
+  // row is the *membership* id. DELETE :id/members/:userId expects this
+  // value, not `id`. null for invite rows, which are removed by invite id
+  // (`id`) via DELETE :id/invites/:inviteId instead.
+  user_id: number | null;
   name: string | null;
   email: string;
   role: SpaceRole | null;
@@ -82,6 +87,7 @@ export class SpacesController {
     const memberViews: SpaceMemberView[] = members.map((member) => ({
       type: 'member',
       id: member.id,
+      user_id: member.user_id,
       name: member.user.name,
       email: member.user.email,
       role: member.role,
@@ -91,6 +97,7 @@ export class SpacesController {
     const inviteViews: SpaceMemberView[] = invites.map((invite) => ({
       type: 'invite',
       id: invite.id,
+      user_id: null,
       name: null,
       email: invite.email,
       role: null,
