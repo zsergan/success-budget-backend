@@ -2,10 +2,13 @@
 set -euo pipefail
 
 # Restores a backup produced by db-backup.sh into DB_DATABASE. Point this at
-# a NEW or empty database - it does not drop or truncate anything first, so
-# restoring on top of a live database will conflict with existing rows
-# instead of cleanly replacing them. See docs/deployment.md for the full
-# restore procedure (why a *new* database, not the live one).
+# a NEW, empty database - a standard mysqldump is not restore-safe against a
+# live one: mysqldump's default --opt group includes --add-drop-table, so
+# the dump itself contains `DROP TABLE IF EXISTS` before every `CREATE
+# TABLE` and importing it can drop and replace tables that already exist,
+# not just add to them. This script refuses to run against a non-empty
+# database rather than relying on that being safe. See docs/deployment.md
+# for the full restore procedure (why a *new* database, not the live one).
 #
 # Required env vars: DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_DATABASE
 #
@@ -19,8 +22,13 @@ set -euo pipefail
 
 dump_file="${1:?Usage: $0 path/to/backup.sql.gz}"
 
-if [[ ! -f "$dump_file" ]]; then
-  echo "No such file: $dump_file" >&2
+if [[ ! -r "$dump_file" ]]; then
+  echo "Cannot read $dump_file (missing or no permission)" >&2
+  exit 1
+fi
+
+if ! gzip -t "$dump_file" 2>/dev/null; then
+  echo "$dump_file failed gzip integrity check (corrupted or not a valid .sql.gz backup) - refusing to restore" >&2
   exit 1
 fi
 
@@ -30,14 +38,37 @@ if [[ "$docker_host" == "localhost" || "$docker_host" == "127.0.0.1" ]]; then
   docker_host="host.docker.internal"
 fi
 
-gunzip -c "$dump_file" | docker run --rm -i \
-  --add-host=host.docker.internal:host-gateway \
-  -e MYSQL_PWD="$DB_PASSWORD" \
-  mysql:8 \
-  mysql \
-  --host="$docker_host" \
-  --port="$DB_PORT" \
-  --user="$DB_USERNAME" \
-  "$DB_DATABASE"
+run_mysql() {
+  docker run --rm -i \
+    --add-host=host.docker.internal:host-gateway \
+    -e MYSQL_PWD="$DB_PASSWORD" \
+    mysql:8 \
+    mysql \
+    --host="$docker_host" \
+    --port="$DB_PORT" \
+    --user="$DB_USERNAME" \
+    "$@"
+}
 
-echo "Restored $dump_file into $DB_DATABASE"
+db_exists="$(run_mysql --silent --raw --skip-column-names \
+  -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = '${DB_DATABASE}'")"
+if [[ "$db_exists" != "1" ]]; then
+  echo "Database $DB_DATABASE does not exist - create it first, this script will not create it for you" >&2
+  exit 1
+fi
+
+# information_schema.tables also lists views (TABLE_TYPE='VIEW'), so this
+# one count covers both tables and views.
+object_count="$(run_mysql --silent --raw --skip-column-names \
+  -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${DB_DATABASE}'")"
+if [[ "$object_count" != "0" ]]; then
+  echo "Database $DB_DATABASE is not empty ($object_count table(s)/view(s) found) - refusing to restore on top of existing data" >&2
+  exit 1
+fi
+
+if gunzip -c "$dump_file" | run_mysql "$DB_DATABASE"; then
+  echo "Restored $dump_file into $DB_DATABASE"
+else
+  echo "Import into $DB_DATABASE failed partway through - it may now contain a partial restore. Not cleaned up automatically: inspect it, and drop/recreate the database before retrying." >&2
+  exit 1
+fi

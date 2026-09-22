@@ -35,6 +35,19 @@ fi
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out_file="$backup_dir/${DB_DATABASE}-${timestamp}.sql.gz"
 
+if [[ -e "$out_file" ]]; then
+  echo "Refusing to overwrite existing backup $out_file (another backup started in the same second?)" >&2
+  exit 1
+fi
+
+# Dump into a private temp file first and only rename it to out_file once
+# mysqldump *and* gzip have both fully succeeded - a reader must never see a
+# partial or failed dump under the final name. trap covers both `set -e`
+# aborting the script and an external signal (Ctrl-C, etc).
+tmp_file="$(mktemp "$backup_dir/.${DB_DATABASE}-${timestamp}.XXXXXX")"
+chmod 600 "$tmp_file"
+trap 'rm -f "$tmp_file"' ERR EXIT INT TERM
+
 # --no-tablespaces: without it, mysqldump 8.x tries to dump tablespace
 # metadata first, which needs the PROCESS privilege - an app-level DB user
 # (not root/admin, the norm on managed MySQL) doesn't have it, and the dump
@@ -52,6 +65,22 @@ docker run --rm \
   --triggers \
   --no-tablespaces \
   "$DB_DATABASE" \
-  | gzip > "$out_file"
+  | gzip > "$tmp_file"
+
+# -n: never clobber - if out_file appeared while we were dumping (a
+# concurrent backup that started in the same second), keep both dumps
+# intact instead of silently overwriting one of them.
+mv -n "$tmp_file" "$out_file"
+if [[ -e "$tmp_file" ]]; then
+  echo "Backup target $out_file already existed when the dump finished - refusing to overwrite it" >&2
+  exit 1
+fi
+
+trap - ERR EXIT INT TERM
+
+if [[ ! -e "$out_file" ]]; then
+  echo "Backup did not produce $out_file" >&2
+  exit 1
+fi
 
 echo "Backup written to $out_file"
