@@ -1,16 +1,16 @@
 import type { DataSourceOptions } from 'typeorm';
-import { join } from 'path';
 import { ConfigService } from '@nestjs/config';
 
-export const getOrmConfig = (configService: ConfigService): DataSourceOptions => ({
-  type: 'mysql',
-  host: configService.getOrThrow<string>('DB_HOST'),
-  port: configService.getOrThrow<number>('DB_PORT'),
-  username: configService.getOrThrow<string>('DB_USERNAME'),
-  password: configService.getOrThrow<string>('DB_PASSWORD'),
-  database: configService.getOrThrow<string>('DB_DATABASE'),
-  entities: [join(__dirname, '../entities/**.entity{.ts,.js}')],
-  migrations: [join(__dirname, '../migrations/**{.ts,.js}')],
-  synchronize: false,
-  migrationsRun: true,
-});
+import { buildDataSourceOptions } from './database.config';
+
+export const getOrmConfig = (configService: ConfigService): DataSourceOptions =>
+  buildDataSourceOptions({
+    DB_HOST: configService.getOrThrow<string>('DB_HOST'),
+    DB_PORT: configService.getOrThrow<number>('DB_PORT'),
+    DB_USERNAME: configService.getOrThrow<string>('DB_USERNAME'),
+    DB_PASSWORD: configService.getOrThrow<string>('DB_PASSWORD'),
+    DB_DATABASE: configService.getOrThrow<string>('DB_DATABASE'),
+    DB_SSL: configService.get<string>('DB_SSL'),
+    DB_SSL_CA: configService.get<string>('DB_SSL_CA'),
+    DB_SSL_REJECT_UNAUTHORIZED: configService.get<string>('DB_SSL_REJECT_UNAUTHORIZED'),
+  });

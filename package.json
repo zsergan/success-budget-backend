@@ -23,9 +23,15 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "migration:create": "typeorm migration:create",
-    "migration:run": "ts-node ./node_modules/typeorm/cli.js migration:run",
-    "migration:revert": "ts-node ./node_modules/typeorm/cli.js migration:revert",
-    "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts"
+    "migration:show": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js migration:show -d src/config/typeorm-cli.data-source.ts",
+    "migration:run": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js migration:run -d src/config/typeorm-cli.data-source.ts",
+    "migration:revert": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js migration:revert -d src/config/typeorm-cli.data-source.ts",
+    "migration:show:prod": "node ./node_modules/typeorm/cli.js migration:show -d dist/config/typeorm-cli.data-source.js",
+    "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/config/typeorm-cli.data-source.js",
+    "migration:revert:prod": "node ./node_modules/typeorm/cli.js migration:revert -d dist/config/typeorm-cli.data-source.js",
+    "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
+    "verify:reference-data": "ts-node -r tsconfig-paths/register src/database/verify-reference-data.ts",
+    "verify:reference-data:prod": "node dist/database/verify-reference-data.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.1",

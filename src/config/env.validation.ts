@@ -6,6 +6,11 @@ export const envValidationSchema = Joi.object({
   DB_USERNAME: Joi.string().required(),
   DB_PASSWORD: Joi.string().required(),
   DB_DATABASE: Joi.string().required(),
+  // Only meaningful against a managed MySQL instance that requires TLS -
+  // local/docker-compose MySQL doesn't need it, so this stays optional.
+  DB_SSL: Joi.string().valid('true', 'false').optional(),
+  DB_SSL_CA: Joi.string().optional(),
+  DB_SSL_REJECT_UNAUTHORIZED: Joi.string().valid('true', 'false').optional(),
   JWT_SECRET: Joi.string().min(16).required(),
   LOG_LEVEL: Joi.string().valid('fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent').optional(),
   // Left unconstrained on purpose: only "development" ever changes behavior
