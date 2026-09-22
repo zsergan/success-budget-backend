@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 
-import { ConfirmationType } from '@shared/enums';
+import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
 import { User } from './user.entity';
 
 @Entity('confirmation_codes')
@@ -26,8 +26,19 @@ export class ConfirmationCode {
   @Column({ type: 'timestamp' })
   expired_at: Date;
 
+  // set only once a send attempt is *confirmed* delivered to the SMTP
+  // server - see last_attempted_at for cooldown/rate-limit purposes
   @Column({ type: 'timestamp', nullable: true })
   last_sent_at: Date | null;
+
+  // set whenever a send is attempted, successful or not - this is what the
+  // resend cooldown is actually measured from, so a failed attempt still
+  // throttles immediate retries against a struggling SMTP server
+  @Column({ type: 'timestamp', nullable: true })
+  last_attempted_at: Date | null;
+
+  @Column({ type: 'enum', enum: ConfirmationCodeSendStatus, default: ConfirmationCodeSendStatus.PENDING })
+  send_status: ConfirmationCodeSendStatus;
 
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
