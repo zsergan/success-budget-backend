@@ -5,6 +5,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
+import { MailService } from '@modules/mail/mail.service';
 import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType } from '@shared/enums';
 
@@ -12,6 +13,7 @@ describe('UsersController', () => {
   let controller: UsersController;
   let usersService: jest.Mocked<UsersService>;
   let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
+  let mailService: jest.Mocked<MailService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -30,6 +32,10 @@ describe('UsersController', () => {
           provide: ConfirmationCodesService,
           useValue: { ensureCode: jest.fn() },
         },
+        {
+          provide: MailService,
+          useValue: { sendConfirmationCode: jest.fn() },
+        },
       ],
     })
       .overrideGuard(ThrottlerGuard)
@@ -39,19 +45,33 @@ describe('UsersController', () => {
     controller = module.get(UsersController);
     usersService = module.get(UsersService);
     confirmationCodesService = module.get(ConfirmationCodesService);
+    mailService = module.get(MailService);
   });
 
   describe('register', () => {
-    it('delegates to UsersService and ensures a confirmation code exists', async () => {
+    it('sends a confirmation email when a new code should be sent', async () => {
       const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
       const user = { id: 2, email: 'a@b.com' } as any;
       usersService.registerOrRefresh.mockResolvedValue(user);
+      confirmationCodesService.ensureCode.mockResolvedValue({ code: '123456', shouldSend: true });
 
       const result = await controller.register(dto);
 
       expect(usersService.registerOrRefresh).toHaveBeenCalledWith(dto);
       expect(confirmationCodesService.ensureCode).toHaveBeenCalledWith(2, ConfirmationType.EMAIL);
+      expect(mailService.sendConfirmationCode).toHaveBeenCalledWith('a@b.com', '123456');
       expect(result).toBe(user);
+    });
+
+    it('does not resend an email within the resend cooldown', async () => {
+      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+      const user = { id: 2, email: 'a@b.com' } as any;
+      usersService.registerOrRefresh.mockResolvedValue(user);
+      confirmationCodesService.ensureCode.mockResolvedValue({ code: '123456', shouldSend: false });
+
+      await controller.register(dto);
+
+      expect(mailService.sendConfirmationCode).not.toHaveBeenCalled();
     });
 
     it('propagates a rejection from the service (e.g. email already verified)', async () => {
@@ -61,6 +81,16 @@ describe('UsersController', () => {
         new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
       );
       expect(confirmationCodesService.ensureCode).not.toHaveBeenCalled();
+    });
+
+    it('propagates a controlled error when email delivery fails', async () => {
+      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+      const user = { id: 2, email: 'a@b.com' } as any;
+      usersService.registerOrRefresh.mockResolvedValue(user);
+      confirmationCodesService.ensureCode.mockResolvedValue({ code: '123456', shouldSend: true });
+      mailService.sendConfirmationCode.mockRejectedValue(new HttpException('Could not send', 503));
+
+      await expect(controller.register(dto)).rejects.toMatchObject(new HttpException('Could not send', 503));
     });
   });
 

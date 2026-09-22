@@ -26,6 +26,9 @@ export class ConfirmationCode {
   @Column({ type: 'timestamp' })
   expired_at: Date;
 
+  @Column({ type: 'timestamp', nullable: true })
+  last_sent_at: Date | null;
+
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   user: User;

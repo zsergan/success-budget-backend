@@ -23,8 +23,8 @@ describe('ConfirmationCodesService', () => {
         {
           provide: getRepositoryToken(ConfirmationCode),
           useValue: {
-            create: jest.fn(),
-            save: jest.fn(),
+            create: jest.fn((entity) => entity),
+            save: jest.fn((entity) => Promise.resolve(entity)),
             findOne: jest.fn(),
             update: jest.fn(),
             increment: jest.fn(),
@@ -66,26 +66,60 @@ describe('ConfirmationCodesService', () => {
   });
 
   describe('ensureCode', () => {
-    it('does nothing when a non-expired code already exists', async () => {
-      const queryBuilder = repository.createQueryBuilder();
-      (queryBuilder.getOne as jest.Mock).mockResolvedValue({ id: 1 } as ConfirmationCode);
-
-      await service.ensureCode(1, ConfirmationType.EMAIL);
-
-      expect(repository.create).not.toHaveBeenCalled();
-      expect(repository.save).not.toHaveBeenCalled();
-    });
-
-    it('creates a new code when none exists yet', async () => {
+    it('creates a new code and reports it should be sent when none exists yet', async () => {
       const queryBuilder = repository.createQueryBuilder();
       (queryBuilder.getOne as jest.Mock).mockResolvedValue(null);
 
-      await service.ensureCode(1, ConfirmationType.EMAIL);
+      const result = await service.ensureCode(1, ConfirmationType.EMAIL);
 
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({ user_id: 1, confirmation_type: ConfirmationType.EMAIL }),
       );
       expect(repository.save).toHaveBeenCalled();
+      expect(result).toEqual({ code: expect.any(String), shouldSend: true });
+    });
+
+    it('reuses an existing code without resending within the cooldown window', async () => {
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue({
+        id: 1,
+        confirmation_code: '123456',
+        last_sent_at: new Date(),
+      } as ConfirmationCode);
+
+      const result = await service.ensureCode(1, ConfirmationType.EMAIL);
+
+      expect(repository.create).not.toHaveBeenCalled();
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(result).toEqual({ code: '123456', shouldSend: false });
+    });
+
+    it('resends an existing code once the cooldown window has passed', async () => {
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue({
+        id: 1,
+        confirmation_code: '123456',
+        last_sent_at: new Date(Date.now() - 1000 * 60 * 5),
+      } as ConfirmationCode);
+
+      const result = await service.ensureCode(1, ConfirmationType.EMAIL);
+
+      expect(repository.update).toHaveBeenCalledWith(1, { last_sent_at: expect.any(Date) });
+      expect(result).toEqual({ code: '123456', shouldSend: true });
+    });
+
+    it('resends an existing code that has never been sent (e.g. legacy row with no last_sent_at)', async () => {
+      const queryBuilder = repository.createQueryBuilder();
+      (queryBuilder.getOne as jest.Mock).mockResolvedValue({
+        id: 1,
+        confirmation_code: '123456',
+        last_sent_at: null,
+      } as ConfirmationCode);
+
+      const result = await service.ensureCode(1, ConfirmationType.EMAIL);
+
+      expect(repository.update).toHaveBeenCalledWith(1, { last_sent_at: expect.any(Date) });
+      expect(result).toEqual({ code: '123456', shouldSend: true });
     });
   });
 

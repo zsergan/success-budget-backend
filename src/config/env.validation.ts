@@ -23,4 +23,11 @@ export const envValidationSchema = Joi.object({
   // here on purpose - the app itself treats "unset" as "trust nothing".
   TRUST_PROXY: Joi.string().optional(),
   SWAGGER_ENABLED: Joi.string().valid('true', 'false').optional(),
+  SMTP_HOST: Joi.string().required(),
+  SMTP_PORT: Joi.number().port().required(),
+  SMTP_SECURE: Joi.string().valid('true', 'false').optional(),
+  // Many local mail catchers (e.g. MailDev) need no auth at all.
+  SMTP_USER: Joi.string().allow('').optional(),
+  SMTP_PASSWORD: Joi.string().allow('').optional(),
+  MAIL_FROM: Joi.string().required(),
 }).unknown(true);

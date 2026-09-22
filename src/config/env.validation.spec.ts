@@ -8,6 +8,9 @@ describe('envValidationSchema', () => {
     DB_PASSWORD: 'pass',
     DB_DATABASE: 'db',
     JWT_SECRET: 'a-very-long-secret-value',
+    SMTP_HOST: 'localhost',
+    SMTP_PORT: '1025',
+    MAIL_FROM: 'Success Budget <no-reply@success-budget.local>',
   };
 
   it('accepts a fully populated, valid environment', () => {
