@@ -102,10 +102,15 @@ them from the UI directly.
 
 4. **Run database migrations**
 
-   Migrations run automatically on app startup (`migrationsRun: true` in
-   `src/config/ormconfig.ts`), so starting the app (step 5) is enough. To run
-   them explicitly without starting the app, see
-   [Database migrations](#database-migrations) below.
+   The app never changes the database schema on its own - migrations are
+   always a separate, explicit step, in every environment:
+
+   ```bash
+   npm run migration:run
+   ```
+
+   See [Database migrations](#database-migrations) below for the full set
+   of commands (including the production/compiled variants).
 
 5. **Start the app**
 
@@ -123,15 +128,42 @@ them from the UI directly.
 
 ## Database migrations
 
-Migrations live in `src/migrations/` and run automatically when the app
-boots. The `migration:create`/`migration:run`/`migration:revert` npm scripts
-wrap the TypeORM CLI directly, but currently do **not** work standalone:
-they point at `src/config/ormconfig.ts`, which exports a plain
-`DataSourceOptions` object rather than a `DataSource` instance, and the
-TypeORM CLI requires the latter. This predates this modernization pass and
-is not fixed here since the app itself does not rely on these scripts. If
-you need to run migrations outside of app boot, use a MySQL client or fix
-`ormconfig.ts` to export a `DataSource` first.
+Migrations live in `src/migrations/` and are always run as their own
+explicit step, in this order: **database up → migrations → app start**. The
+app's own `TypeOrmModule` config (`src/config/ormconfig.ts`) sets
+`migrationsRun: false` unconditionally - it never touches the schema itself,
+in any environment, including production.
+
+```bash
+# check what's pending, without running anything
+npm run migration:show
+
+# apply pending migrations (dev - runs the TypeScript sources via ts-node)
+npm run migration:run
+
+# revert the most recent migration
+npm run migration:revert
+
+# create a new empty migration file
+npm run migration:create -- src/migrations/SomeDescriptiveName
+```
+
+Each of `migration:show`/`migration:run`/`migration:revert` also has a
+`:prod` variant (`migration:run:prod`, etc.) that runs the already-compiled
+`dist/config/typeorm-cli.data-source.js` directly with plain `node` - no
+`ts-node`/`typescript` involved, so it works from a production install that
+only has production dependencies (see [Deployment](#deployment)).
+
+Both variants share one connection/TLS config builder
+(`src/config/database.config.ts`), so dev and production can never quietly
+diverge on how they connect to MySQL. Connecting to a managed MySQL that
+requires TLS is a few extra env vars (`DB_SSL`, `DB_SSL_CA`,
+`DB_SSL_REJECT_UNAUTHORIZED`) - see `.env.example`.
+
+After migrations, `npm run verify:reference-data` (`:prod` variant also
+available) checks that reference data seeded by migrations - currently just
+the `currencies` table - actually landed, so a deploy fails loudly here
+instead of surfacing later as every signup silently breaking.
 
 ## Dev seed data
 
@@ -171,8 +203,9 @@ npm run test
 # unit tests with coverage
 npm run test:cov
 
-# e2e tests - needs a real, running MySQL (see Local setup above) and a
-# .env with valid credentials; boots the full app and hits it over HTTP
+# e2e tests - needs a real, running, *migrated* MySQL (see Local setup
+# above - `npm run migration:run`) and a .env with valid credentials;
+# boots the full app and hits it over HTTP
 npm run test:e2e
 ```
 

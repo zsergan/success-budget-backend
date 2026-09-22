@@ -68,6 +68,8 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'npm'
       - run: npm ci
+      - run: npm run migration:run
+      - run: npm run verify:reference-data
       - run: npm run test:e2e
 
   build:
