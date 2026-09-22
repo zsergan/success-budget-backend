@@ -94,3 +94,62 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  docker:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: success_budget
+          MYSQL_USER: success_budget
+          MYSQL_PASSWORD: change-me
+          MYSQL_ROOT_PASSWORD: change-me
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USERNAME: success_budget
+      DB_PASSWORD: change-me
+      DB_DATABASE: success_budget
+      JWT_SECRET: ci-docker-smoke-test-secret-value
+      SMTP_HOST: 127.0.0.1
+      SMTP_PORT: 1025
+      MAIL_FROM: 'CI <no-reply@example.com>'
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t success-budget-backend:ci .
+      - name: Run migrations against the test database
+        run: |
+          docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE \
+            success-budget-backend:ci \
+            node ./node_modules/typeorm/cli.js migration:run -d dist/config/typeorm-cli.data-source.js
+      - name: Verify reference data landed
+        run: |
+          docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM \
+            success-budget-backend:ci \
+            node dist/database/verify-reference-data.js
+      - name: Start the container and check its health endpoint
+        run: |
+          docker run -d --network host --name api \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PORT=3000 \
+            success-budget-backend:ci
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:3000/api/v1/health && exit 0
+            sleep 2
+          done
+          echo "Container never became healthy" >&2
+          exit 1
+      - name: Container logs
+        if: always()
+        run: docker logs api || true

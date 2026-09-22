@@ -152,7 +152,7 @@ Each of `migration:show`/`migration:run`/`migration:revert` also has a
 `:prod` variant (`migration:run:prod`, etc.) that runs the already-compiled
 `dist/config/typeorm-cli.data-source.js` directly with plain `node` - no
 `ts-node`/`typescript` involved, so it works from a production install that
-only has production dependencies (see [Deployment](#deployment)).
+only has production dependencies (see [Deployment](docs/deployment.md)).
 
 Both variants share one connection/TLS config builder
 (`src/config/database.config.ts`), so dev and production can never quietly
@@ -227,6 +227,20 @@ MySQL service container on every push/PR.
 ```bash
 npm run lint
 ```
+
+## Deployment
+
+A multi-stage `Dockerfile` builds a production image (no dev dependencies,
+runs as an unprivileged user, `HEALTHCHECK` against `/api/v1/health`); the
+app reads `PORT` (default 3000) and binds `0.0.0.0`. Migrations are always
+a separate, explicit step (see [Database migrations](#database-migrations)
+above) - the app never touches the schema on its own, in any environment.
+
+Full deploy runbook - environment variables for local/staging/production,
+the exact build → migrate → verify → start → health-check → smoke-test
+sequence, what to do when a deploy fails, and the backup/restore procedure
+(`scripts/db-backup.sh` / `scripts/db-restore.sh`) - lives in
+[`docs/deployment.md`](docs/deployment.md).
 
 ## License
 
