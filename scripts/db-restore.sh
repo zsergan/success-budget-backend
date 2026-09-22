@@ -11,6 +11,9 @@ set -euo pipefail
 # for the full restore procedure (why a *new* database, not the live one).
 #
 # Required env vars: DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_DATABASE
+# Optional: DB_SSL/DB_SSL_CA/DB_SSL_REJECT_UNAUTHORIZED (see
+# scripts/lib/db-tls.sh and .env.example - same semantics as the app's own
+# DB_SSL* handling).
 #
 # Usage: ./scripts/db-restore.sh path/to/backup.sql.gz
 
@@ -32,6 +35,10 @@ if ! gzip -t "$dump_file" 2>/dev/null; then
   exit 1
 fi
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/db-tls.sh"
+db_tls_setup
+trap db_tls_cleanup ERR EXIT INT TERM
+
 # See db-backup.sh for why localhost/127.0.0.1 needs this substitution.
 docker_host="$DB_HOST"
 if [[ "$docker_host" == "localhost" || "$docker_host" == "127.0.0.1" ]]; then
@@ -39,15 +46,16 @@ if [[ "$docker_host" == "localhost" || "$docker_host" == "127.0.0.1" ]]; then
 fi
 
 run_mysql() {
-  docker run --rm -i \
-    --add-host=host.docker.internal:host-gateway \
-    -e MYSQL_PWD="$DB_PASSWORD" \
-    mysql:8 \
-    mysql \
-    --host="$docker_host" \
-    --port="$DB_PORT" \
-    --user="$DB_USERNAME" \
-    "$@"
+  local docker_args=(run --rm -i --add-host=host.docker.internal:host-gateway -e "MYSQL_PWD=$DB_PASSWORD")
+  if [[ ${#DB_TLS_DOCKER_ARGS[@]} -gt 0 ]]; then
+    docker_args+=("${DB_TLS_DOCKER_ARGS[@]}")
+  fi
+  docker_args+=(mysql:8 mysql --host="$docker_host" --port="$DB_PORT" --user="$DB_USERNAME")
+  if [[ ${#DB_TLS_MYSQL_ARGS[@]} -gt 0 ]]; then
+    docker_args+=("${DB_TLS_MYSQL_ARGS[@]}")
+  fi
+  docker_args+=("$@")
+  docker "${docker_args[@]}"
 }
 
 db_exists="$(run_mysql --silent --raw --skip-column-names \

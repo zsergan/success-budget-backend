@@ -37,9 +37,9 @@ manager, etc.), never in a committed file.
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE` | Yes | MySQL connection. |
-| `DB_SSL` | No | Set `true` for a managed MySQL that requires TLS. |
-| `DB_SSL_CA` | No | CA certificate (file path or raw PEM) - only meaningful with `DB_SSL=true`. |
-| `DB_SSL_REJECT_UNAUTHORIZED` | No | Defaults to `true`; only set `false` for a self-signed cert you can't otherwise verify. |
+| `DB_SSL` | No | Set `true` for a managed MySQL that requires TLS - honored by the app, migrations, and `scripts/db-backup.sh`/`scripts/db-restore.sh` alike. |
+| `DB_SSL_CA` | No | CA certificate (file path or raw PEM) - only meaningful with `DB_SSL=true`. For a provider using its own/self-signed CA, set this to that CA's certificate so it's trusted and still verified; don't reach for `DB_SSL_REJECT_UNAUTHORIZED=false` instead. |
+| `DB_SSL_REJECT_UNAUTHORIZED` | No | Defaults to `true`; only set `false` as a last resort when the provider's CA genuinely can't be obtained - this disables certificate validation entirely, it does not fix a self-signed cert (use `DB_SSL_CA` for that). |
 | `JWT_SECRET` | Yes | At least 16 characters. Rotating it invalidates every issued token. |
 | `PORT` | No | Defaults to `3000`. Most hosting platforms inject their own value here. |
 | `NODE_ENV` | No | `development`/`test`/`staging`/`production`. Only `development` changes behavior (pretty logs) - **leave unset in production rather than guessing**, since unset already gets the safe JSON-logging behavior; set it explicitly to `production` for the Swagger default below and for clarity in the logs/dashboards. |
@@ -166,7 +166,11 @@ or reproducing a deploy issue, without touching a real host.
 `scripts/db-backup.sh` / `scripts/db-restore.sh` wrap `mysqldump`/`mysql`
 via the `mysql:8` Docker image (see the scripts' own comments for exactly
 how) - no local MySQL client install needed, and they behave identically
-against local or managed MySQL.
+against local or managed MySQL. They read the same `DB_SSL`/`DB_SSL_CA`/
+`DB_SSL_REJECT_UNAUTHORIZED` variables as the app (via
+`scripts/lib/db-tls.sh`), so a managed MySQL that requires TLS gets the
+same encrypted, verified connection for backup/restore as it does for the
+app itself - set them the same way for both.
 
 ```bash
 # Backup (writes a timestamped, gzipped dump to ./backups by default)
@@ -195,6 +199,9 @@ backup. Once a hosting provider is chosen, add here:
 Verified locally as part of this change: `db-backup.sh` against a real
 database, `db-restore.sh` of that dump into a completely empty MySQL
 container, confirmed matching row/migration counts, and the app boots
-successfully against the restored database. Repeat this same drill
-periodically against whatever hosting is chosen - a backup nobody has ever
-restored is a hope, not a plan.
+successfully against the restored database. Also verified against a MySQL
+container with TLS required and a self-signed CA: backup/restore succeed
+with the correct `DB_SSL_CA` (both as a file path and as raw PEM content)
+and are rejected before touching the database with the wrong one. Repeat
+this same drill periodically against whatever hosting is chosen - a backup
+nobody has ever restored is a hope, not a plan.
