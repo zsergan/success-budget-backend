@@ -27,16 +27,21 @@ export class UsersController {
   @Post('register')
   async register(@Body() createUserDto: CreateUserDto) {
     const user = await this.usersService.registerOrRefresh(createUserDto);
-    const { code, shouldSend } = await this.confirmationCodesService.ensureCode(user.id, ConfirmationType.EMAIL);
 
-    // Skipped within the resend cooldown (see ConfirmationCodesService) -
-    // a repeat POST /register for the same still-unverified email (e.g. a
-    // client retrying, or the user clicking "resend") reuses the same code
-    // and doesn't hammer the mail provider. Delivery failure here throws a
-    // controlled 503 (MailService) - the user/space/code rows already
-    // committed are safe to retry against, not duplicated.
-    if (shouldSend) {
-      await this.mailService.sendConfirmationCode(user.email, code);
+    // reserveSend() throws a 429 (RetryAfterException) instead of returning
+    // when a prior attempt is still within its cooldown and unconfirmed -
+    // the user/space/code rows already committed above are safe to retry
+    // against on the next call, never duplicated.
+    const reservation = await this.confirmationCodesService.reserveSend(user.id, ConfirmationType.EMAIL);
+
+    if (reservation.shouldSend) {
+      try {
+        await this.mailService.sendConfirmationCode(user.email, reservation.code, reservation.expiresAt);
+        await this.confirmationCodesService.markSent(reservation.id);
+      } catch (error) {
+        await this.confirmationCodesService.markFailed(reservation.id);
+        throw error;
+      }
     }
 
     return user;

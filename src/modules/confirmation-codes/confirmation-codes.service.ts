@@ -1,19 +1,55 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
-import { CreateConfirmationCodeDto } from './dto/create-confirmation-code.dto';
-import { ConfirmationType } from '@shared/enums';
-import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS } from '@shared/constants';
+import { User } from '@entities/user.entity';
+import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
+import { ErrorMessages } from '@shared/error-messages';
+import { RetryAfterException } from '@shared/retry-after.exception';
+import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS, CONFIRMATION_CODE_TTL_MS } from '@shared/constants';
 import { generateRandomNumberString } from '@shared/utils';
 
-export interface EnsuredConfirmationCode {
+export interface ReservedConfirmationCode {
+  id: number;
   code: string;
-  // false means a valid code already exists and was sent recently enough
-  // (see CONFIRMATION_CODE_RESEND_COOLDOWN_MS) - the caller should not
-  // attempt to send another email for it.
+  expiresAt: Date;
+  // false means a valid code was already confirmed delivered recently
+  // enough (see CONFIRMATION_CODE_RESEND_COOLDOWN_MS) - the caller should
+  // not attempt to send another email for it.
   shouldSend: boolean;
+}
+
+type ExistingCodeSendState = Pick<ConfirmationCode, 'send_status' | 'last_attempted_at'>;
+
+type SendDecision =
+  { action: 'create' } | { action: 'send' } | { action: 'skip' } | { action: 'deny'; retryAfterSeconds: number };
+
+// Pure so it can be unit-tested without touching TypeORM. `existing` is null
+// when no active (non-expired) code exists yet for this user/type.
+export function decideSendAction(
+  existing: ExistingCodeSendState | null,
+  now: number,
+  cooldownMs: number,
+): SendDecision {
+  if (!existing) {
+    return { action: 'create' };
+  }
+
+  const elapsed = existing.last_attempted_at ? now - existing.last_attempted_at.getTime() : Infinity;
+
+  if (elapsed >= cooldownMs) {
+    return { action: 'send' };
+  }
+
+  // A confirmed-successful send within the cooldown is a quiet no-op (the
+  // client already got the email). A pending or failed attempt within the
+  // cooldown is not - the caller needs to know nothing was actually sent.
+  if (existing.send_status === ConfirmationCodeSendStatus.SENT) {
+    return { action: 'skip' };
+  }
+
+  return { action: 'deny', retryAfterSeconds: Math.ceil((cooldownMs - elapsed) / 1000) };
 }
 
 @Injectable()
@@ -21,6 +57,7 @@ export class ConfirmationCodesService {
   constructor(
     @InjectRepository(ConfirmationCode)
     private readonly confirmationCodeRepository: Repository<ConfirmationCode>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async getOne(userId: number, confirmationType: ConfirmationType): Promise<ConfirmationCode> {
@@ -31,38 +68,79 @@ export class ConfirmationCodesService {
       .getOne();
   }
 
-  async create(createConfirmationCodeDto: CreateConfirmationCodeDto): Promise<ConfirmationCode> {
-    const confirmation_code = this.confirmationCodeRepository.create({
-      ...createConfirmationCodeDto,
-      created_at: new Date(),
-      expired_at: new Date(Date.now() + 1000 * 60 * 10),
-      last_sent_at: new Date(),
-    });
+  // Atomically decides whether a send attempt is allowed and, if so,
+  // reserves it (writes last_attempted_at/send_status='pending' *before*
+  // returning) - the caller then does the actual SMTP call outside of any
+  // transaction and reports the outcome via markSent()/markFailed().
+  //
+  // Two concurrent calls for the same user are serialized by locking the
+  // user's row for the duration of this (short, network-call-free)
+  // transaction: the user row always exists by the time this runs (it's
+  // created earlier in the same request), so it doubles as a cheap mutex
+  // without needing a dedicated lock table or a unique index that would
+  // have to account for confirmation_codes' historical rows.
+  async reserveSend(userId: number, confirmationType: ConfirmationType): Promise<ReservedConfirmationCode> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager
+        .createQueryBuilder(User, 'user')
+        .setLock('pessimistic_write')
+        .where('user.id = :userId', { userId })
+        .getOne();
 
-    return this.confirmationCodeRepository.save(confirmation_code);
+      const existing = await manager
+        .createQueryBuilder(ConfirmationCode, 'confirmation_code')
+        .setLock('pessimistic_write')
+        .where({ user_id: userId, confirmation_type: confirmationType })
+        .andWhere('confirmation_code.expired_at >= :now', { now: new Date() })
+        .getOne();
+
+      const decision = decideSendAction(existing, Date.now(), CONFIRMATION_CODE_RESEND_COOLDOWN_MS);
+
+      if (decision.action === 'deny') {
+        throw new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, decision.retryAfterSeconds);
+      }
+
+      if (decision.action === 'skip') {
+        return { id: existing.id, code: existing.confirmation_code, expiresAt: existing.expired_at, shouldSend: false };
+      }
+
+      const now = new Date();
+      const repository = manager.getRepository(ConfirmationCode);
+
+      if (decision.action === 'create') {
+        const created = await repository.save(
+          repository.create({
+            user_id: userId,
+            confirmation_type: confirmationType,
+            confirmation_code: generateRandomNumberString(),
+            created_at: now,
+            expired_at: new Date(now.getTime() + CONFIRMATION_CODE_TTL_MS),
+            last_attempted_at: now,
+            send_status: ConfirmationCodeSendStatus.PENDING,
+          }),
+        );
+
+        return { id: created.id, code: created.confirmation_code, expiresAt: created.expired_at, shouldSend: true };
+      }
+
+      // decision.action === 'send': reuse the existing code (an active code
+      // keeps the same 10-minute expiry across resends), just reserve a
+      // fresh attempt for it.
+      await repository.update(existing.id, { last_attempted_at: now, send_status: ConfirmationCodeSendStatus.PENDING });
+
+      return { id: existing.id, code: existing.confirmation_code, expiresAt: existing.expired_at, shouldSend: true };
+    });
   }
 
-  async ensureCode(userId: number, confirmationType: ConfirmationType): Promise<EnsuredConfirmationCode> {
-    const existing = await this.getOne(userId, confirmationType);
+  async markSent(id: number): Promise<void> {
+    await this.confirmationCodeRepository.update(id, {
+      send_status: ConfirmationCodeSendStatus.SENT,
+      last_sent_at: new Date(),
+    });
+  }
 
-    if (!existing) {
-      const created = await this.create({
-        user_id: userId,
-        confirmation_code: generateRandomNumberString(),
-        confirmation_type: confirmationType,
-      });
-
-      return { code: created.confirmation_code, shouldSend: true };
-    }
-
-    const elapsedSinceLastSend = existing.last_sent_at ? Date.now() - existing.last_sent_at.getTime() : Infinity;
-    const shouldSend = elapsedSinceLastSend >= CONFIRMATION_CODE_RESEND_COOLDOWN_MS;
-
-    if (shouldSend) {
-      await this.confirmationCodeRepository.update(existing.id, { last_sent_at: new Date() });
-    }
-
-    return { code: existing.confirmation_code, shouldSend };
+  async markFailed(id: number): Promise<void> {
+    await this.confirmationCodeRepository.update(id, { send_status: ConfirmationCodeSendStatus.FAILED });
   }
 
   async incrementAttempts(id: number): Promise<void> {

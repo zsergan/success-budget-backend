@@ -51,7 +51,7 @@ describe('MailService', () => {
     service = new MailService(buildConfigService(baseEnv));
     sendMail.mockResolvedValue(undefined);
 
-    await service.sendConfirmationCode('user@example.com', '123456');
+    await service.sendConfirmationCode('user@example.com', '123456', new Date(Date.now() + 10 * 60000));
 
     expect(sendMail).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -63,12 +63,35 @@ describe('MailService', () => {
     );
   });
 
+  it('states the actual remaining time, not a fixed 10 minutes, for a resent code', async () => {
+    service = new MailService(buildConfigService(baseEnv));
+    sendMail.mockResolvedValue(undefined);
+
+    await service.sendConfirmationCode('user@example.com', '123456', new Date(Date.now() + 3 * 60000));
+
+    expect(sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('3 minutes'),
+        html: expect.stringContaining('3 minutes'),
+      }),
+    );
+  });
+
+  it('floors the stated expiry at 1 minute instead of showing a stale or negative value', async () => {
+    service = new MailService(buildConfigService(baseEnv));
+    sendMail.mockResolvedValue(undefined);
+
+    await service.sendConfirmationCode('user@example.com', '123456', new Date(Date.now() - 5000));
+
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('1 minute.') }));
+  });
+
   it('turns a delivery failure into a controlled ServiceUnavailableException', async () => {
     service = new MailService(buildConfigService(baseEnv));
     sendMail.mockRejectedValue(new Error('connection refused'));
 
-    await expect(service.sendConfirmationCode('user@example.com', '123456')).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
+    await expect(
+      service.sendConfirmationCode('user@example.com', '123456', new Date(Date.now() + 60000)),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 });

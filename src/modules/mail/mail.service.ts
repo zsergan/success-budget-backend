@@ -26,14 +26,20 @@ export class MailService {
     return user && pass ? { user, pass } : undefined;
   }
 
-  async sendConfirmationCode(to: string, code: string): Promise<void> {
+  async sendConfirmationCode(to: string, code: string, expiresAt: Date): Promise<void> {
+    // a resent code keeps its original expiry, not a fresh 10 minutes - say
+    // how long is actually left, rounded up so "expires in 1 minute" never
+    // reads as "expires in 0 minutes"
+    const minutesLeft = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000));
+    const expiryText = `${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}`;
+
     try {
       await this.transporter.sendMail({
         from: this.from,
         to,
         subject: 'Confirm your Success Budget account',
-        text: `Your confirmation code is ${code}. It expires in 10 minutes.`,
-        html: `<p>Your confirmation code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`,
+        text: `Your confirmation code is ${code}. It expires in ${expiryText}.`,
+        html: `<p>Your confirmation code is <strong>${code}</strong>.</p><p>It expires in ${expiryText}.</p>`,
       });
     } catch (error) {
       // Never log the code itself or SMTP credentials - just enough to
