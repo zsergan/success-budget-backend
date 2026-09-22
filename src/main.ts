@@ -1,9 +1,10 @@
 import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
-import { configureApp } from './app.config';
+import { configureApp, isSwaggerEnabled } from './app.config';
 
 async function bootstrap() {
   // bufferLogs holds Nest's own bootstrap-time log lines until useLogger()
@@ -18,15 +19,23 @@ async function bootstrap() {
   app.enableShutdownHooks();
   configureApp(app);
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Success Budget API')
-    .setDescription('Personal budget tracking API - wallets, transactions, categories, and spending limits.')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('docs', app, swaggerDocument);
+  const configService = app.get(ConfigService);
 
-  await app.listen(3000);
+  if (isSwaggerEnabled(configService)) {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('Success Budget API')
+      .setDescription('Personal budget tracking API - wallets, transactions, categories, and spending limits.')
+      .setVersion('1.0')
+      .addBearerAuth()
+      .build();
+    const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('docs', app, swaggerDocument);
+  }
+
+  const port = configService.get<number>('PORT', 3000);
+  // 0.0.0.0, not the default loopback-only binding - a container's health
+  // check and any reverse proxy connect from outside this network
+  // namespace, not from localhost inside it.
+  await app.listen(port, '0.0.0.0');
 }
 bootstrap();
