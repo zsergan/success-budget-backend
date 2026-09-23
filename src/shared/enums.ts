@@ -56,6 +56,14 @@ export enum ConfirmationType {
   RESET_PASSWORD = 'reset_password',
 }
 
+// tracks the outcome of the most recent send *attempt*, separately from
+// whether a code exists - see ConfirmationCodesService.reserveSend()
+export enum ConfirmationCodeSendStatus {
+  PENDING = 'pending',
+  SENT = 'sent',
+  FAILED = 'failed',
+}
+
 export enum LimitType {
   CATEGORY = 'category',
   OTHERS = 'others',

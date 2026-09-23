@@ -11,7 +11,10 @@ describe('getOrmConfig', () => {
       DB_PASSWORD: 'pass',
       DB_DATABASE: 'success_budget',
     };
-    const configService = { getOrThrow: jest.fn((key: string) => values[key]) } as unknown as ConfigService;
+    const configService = {
+      getOrThrow: jest.fn((key: string) => values[key]),
+      get: jest.fn((key: string) => values[key]),
+    } as unknown as ConfigService;
 
     const config = getOrmConfig(configService);
 
@@ -23,7 +26,7 @@ describe('getOrmConfig', () => {
       password: 'pass',
       database: 'success_budget',
       synchronize: false,
-      migrationsRun: true,
+      migrationsRun: false,
     });
   });
 });

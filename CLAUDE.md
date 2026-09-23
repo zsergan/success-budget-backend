@@ -1,836 +1,201 @@
 # success-budget-backend — контекст модернизации
 
-## Статус (на 2026-09-01)
+## Статус (на 2026-09-22)
 
-Идёт плановая модернизация legacy-проекта (был не обновлён ~2 года).
+Плановая модернизация legacy NestJS-проекта. Живёт на
+`github.com/zsergan/success-budget-backend`, ветка `main` — основная
+(GitLab больше не используется). Репозиторий публичный
+(`UNLICENSED`/all-rights-reserved — код виден, но не переиспользуем
+легально). Secret scanning, push protection, Dependabot включены;
+**branch protection на `main` всё ещё выключена** (открытый пункт, см.
+"Дальше").
 
-**Репозиторий переехал с GitLab на GitHub**: живёт на
-`github.com/zsergan/success-budget-backend`, ветка `main` — основная.
-GitLab-репозиторий физически не удалён и не тронут, но больше не
-используется из этого рабочего дерева.
+Фазы 0–14 исходного плана модернизации сделаны (аудит security/
+correctness, апдейт зависимостей, атомарные денежные операции, auth
+hardening, env-валидация, Swagger/versioning, архитектурная чистка,
+e2e/CI-зрелость, раунд 2: IDOR/cascade/structured logging). **Фаза 8
+(NestJS 11→12) намеренно отложена** — см. "Важные решения". Фаза 15
+(e2e-покрытие transactions/limits/categories) фактически закрыта e2e-
+тестами, добавленными в стадиях ниже. Полный план и статус:
+`.private/modernization-plan.md` (гитигнорено, читать перед тем как
+предлагать следующие шаги).
 
-**Update (2026-09-01):** the repo is now **public** (deliberately, for
-portfolio visibility) under `UNLICENSED`/all-rights-reserved terms (code is
-visible but not legally reusable - preserves the option to monetize later).
-Git history was rewritten with `git-filter-repo` to strip personal
-session-transcript links from commit trailers (kept `Co-Authored-By`
-trailers - AI authorship stays visible, only the session link was removed);
-`.env` was verified absent from history before doing this. Secret scanning,
-push protection, Dependabot, and `delete_branch_on_merge` are all enabled.
-Phases 6 through 12 are merged (PRs #6-#20); phase 8 (NestJS 12) was
-investigated and deferred - see the "Важные технические решения" entry
-below. A second 4-reviewer audit ran on 2026-09-01 (security, architecture,
-testing/CI/observability, dependencies) against the post-phase-8 state and
-produced phases 9-16 in `.private/modernization-plan.md` under "Раунд 2".
-Phases 9-14 from that round are done - phase 13 (Currency/Category cascade
-policy) required your sign-off before implementation and got it on
-2026-09-02, phase 14 (structured logging) done the same day, see
-"Важные технические решения" below.
+Дизайн-driven инициативы используют свой счётчик стадий с 1 (см.
+"Соглашение об именовании" ниже), а не сквозной Phase: **Transactions
+Stage 3, Limits Stage 4, Categories Stage 5, Home Stage 2, Spaces
+Stage 1-4 — все завершены и смёржены**, см. "Завершённые инициативы".
 
-**Этапы 0–5 из исходного плана модернизации формально завершены** (аудит,
-baseline, апдейт зависимостей, юнит-тесты, dev-окружение, CI).
-
-A full 5-reviewer audit ran on 2026-08-31 (dependencies, architecture/code,
-structure/tooling, tests/CI/observability, security) and produced a staged
-remediation plan in `.private/modernization-plan.md` (local file, gitignored,
-never committed - read it before proposing next steps, do not recreate it
-from scratch if it already exists). Every phase since has been done on its
-own short-lived branch (`fix/*`/`feat/*`/`refactor/*`), merged via a GitHub
-PR, one phase per PR:
-
-- **Phase 0** (critical security/correctness hotfixes) - merged, PR #1
-- **Phase 1** (safe dependency bumps) - merged, part of PR #1
-- **Phase 2** (atomic money operations: wallet balance updates, email
-  verification onboarding) - merged, PR #2
-- **Phase 3** (auth hardening: passport-jwt global guard replacing the old
-  Express middleware, rate limiting on login/register/verify-email, helmet)
-  - merged, PR #3
-- **Phase 4** (env validation via `@nestjs/config`, health check endpoint,
-  graceful shutdown, TypeScript path alias infrastructure) - merged, PR #4
-- **Phase 5** (Swagger docs at `/docs`, global `/api` prefix + URI
-  versioning, README architecture overview) - merged, PR #5
-- **Phase 6** (architecture cleanup: services own their business logic,
-  `assertOwnership()`, explicit `onDelete: 'CASCADE'`, audit columns) -
-  merged, PR #6
-- **Phase 7** (testing/CI maturity: real e2e tests, docker-compose MySQL,
-  coverage floor, Dependabot, CodeQL, Dependency Review) - merged, PR #7
-- **Phase 8** (NestJS 11→12 upgrade) - investigated, found to be a full
-  ESM migration with no guide yet, formally deferred (not executed)
-- **Phase 9** (docs sync + `LICENSE` file) - merged, PR #18
-- **Phase 10** (round-2 critical fixes: category-ownership IDOR on
-  transactions/limits, wallet `balance` no longer writable via update,
-  `ClassSerializerInterceptor` on wallets, `ValidationPipe` `transform:
-  true`) - merged, PR #18
-- **Phase 11** (auth hardening round 2: JWT revocation via user-existence
-  check, global throttling via `APP_GUARD`, login timing side-channel
-  fixed, constant-time confirmation-code comparison) - merged, PR #19
-- **Phase 12** (architecture cleanup round 2: module DI via export/import
-  instead of duplicated providers, remaining controller logic moved to
-  services, wallet response casing fixed to snake_case, update DTOs
-  standardized on `PartialType`) - merged, PR #20
-
-All the critical bugs the 2026-08-31 audit found (JWT expiring in ~246 years
-instead of 90 days, mass assignment via a missing `ValidationPipe`
-whitelist, unverified users able to log in, a brute-forceable confirmation
-code, non-atomic wallet balance updates/onboarding) are **fixed and merged**
-- do not re-flag them as open findings. Check `git log` and
-`.private/modernization-plan.md` for what is actually still open before
-assuming otherwise.
-
-Оригинальный план первой модернизации лежал в
-`/Users/zsergan/.claude/plans/ancient-orbiting-bachman.md` (локальный файл
-плана Claude Code, не в репозитории).
+Текущая ветка — `feat/deploy-readiness` (ещё не смёржена), см. "Deploy
+readiness" ниже.
 
 ## Стек
 
-- Node.js 24 (Active LTS, зафиксировано в `engines` + `.nvmrc`; Node 26 уже
-  вышел, но ещё не LTS — не переходить раньше времени)
-- NestJS 11, TypeScript 6.0.3 (см. ниже почему не 7.x), TypeORM 1.1.0, MySQL (`mysql2`)
-- Логирование — `nestjs-pino`/`pino-http` (структурированные JSON-логи,
-  request id на каждый запрос); `pino-pretty` только как devDependency,
-  для человекочитаемого вывода при `NODE_ENV=development`
-- Jest 30 + `@swc/jest` (не ts-jest!)
-- ESLint 10 flat config (`eslint.config.mjs`, не `.eslintrc.js`)
-- npm (не yarn/pnpm)
-- CI — **GitHub Actions** (`.github/workflows/ci.yml`): четыре джобы
-  (`lint`, `test` с `test:cov` + coverage-артефакт, `e2e` с сервис-контейнером
-  `mysql:8`, `build` + dist-артефакт), каждая через `actions/checkout@v7` +
-  `actions/setup-node@v7` (`node-version-file: .nvmrc`, `cache: npm`) +
-  `npm ci`, плюс `concurrency` (cancel-in-progress). Отдельно —
-  `.github/workflows/codeql.yml` (`github/codeql-action@v4`) и
-  `dependency-review.yml` (`actions/dependency-review-action@v5`) на PR.
-  `.gitlab-ci.yml` удалён (GitLab больше не используется).
+- Node.js 24 (Active LTS, `engines`+`.nvmrc`); Node 26 уже вышел, но
+  ещё не LTS — не переходить раньше времени
+- NestJS 11, TypeScript 6.0.3 (не 7.x, см. ниже), TypeORM 1.1.0, MySQL (`mysql2`)
+- Логирование — `nestjs-pino`/`pino-http`, JSON по умолчанию, pretty
+  только при `NODE_ENV=development` (см. "Важные решения")
+- Jest 30 + `@swc/jest` (не ts-jest!), ESLint 10 flat config, npm
+- CI — GitHub Actions (`.github/workflows/ci.yml`): `lint`, `test`
+  (+coverage), `e2e` (сервис-контейнеры `mysql:8`+`maildev`), `build`,
+  `docker` (build+migrate+smoke-test образа). Отдельно `codeql.yml`,
+  `dependency-review.yml` на PR.
 
 ## Стиль кода
 
-**Комментарии — только там, где без них реально не обойтись.** Не описывать
-словами то, что и так понятно из кода/имён; не пересказывать "что было
-сделано" или "что исправлено" (эта история — в PR/коммите, не в файле).
-Комментарий оправдан только для скрытого инварианта или неочевидного
-ограничения, которое иначе не восстановить, глядя на один файл (например:
-почему используется мутация вместо spread, почему нужны два прохода миграции).
-Если сомневаешься — не добавляй. По умолчанию писать без комментариев вообще,
-добавлять только когда это действительно необходимо.
+Комментарии — только там, где без них не обойтись: скрытый инвариант
+или неочевидное ограничение, которое не восстановить из одного файла.
+Не пересказывать словами то, что понятно из кода/имён, не описывать
+"что было сделано/исправлено" (это в PR/коммите). По умолчанию — без
+комментариев, добавлять только когда действительно необходимо.
 
 ## Соглашение об именовании: ветки и фазы (с 2026-09-14)
 
-Старая сквозная нумерация "Phase N" (см. "Статус" выше) дошла до 16 и дальше
-продолжаться не должна — через пару крупных инициатив она превратится в
-"Phase 100", ничего не говорящее о содержании. Уже был работающий прецедент —
-дизайн-driven работа со своим счётчиком на экран (Transactions Stage 3,
-Limits Stage 4, Categories Stage 5, Home Stage 2). Новая конвенция обобщает
-этот прецедент на любую крупную инициативу:
-
-- **Каждая крупная инициатива получает свой короткий префикс и свой счётчик
-  стадий, начинающийся с 1** (не продолжает общий счётчик Phase).
-- **Ветки:** существующая схема `feat/`/`fix/`/`refactor/` + суть в топике не
-  меняется, название инициативы и номер стадии просто становятся частью
-  топика: `feat/spaces-stage1-foundation`, `feat/spaces-stage2-...` и т.д.
-- **Журнал в этом файле:** новая инициатива описывается заголовками вида
-  `## <Инициатива> Stage N — <суть>` (как уже сделано для Transactions/
-  Limits/Categories/Home), а не как продолжение "Phase 17, 18...".
-- Мелкие точечные фиксы, не относящиеся ни к одной инициативе, вообще не
-  получают номер стадии — просто `fix/<короткое-название>`.
-- Phase 0-16 (см. "Статус" выше) — уже история, не переименовываются
-  задним числом.
-
-Первое применение этой конвенции — инициатива "Spaces", план в
-`.private/spaces-implementation-plan.md`. Завершена (Stages 1-4), см.
-"## Spaces Stage 1-4" ниже.
-
-## Что сделано — по группам
-
-Первая волна (25 коммитов, зависимости/тесты/CI/dev-окружение) — см. историю
-git, детали не дублирую здесь. Ключевое: `npm audit` было 53 находки →
-**0** (перепроверено 2026-08-31, всё ещё 0).
-
-Вторая волна (2026-08-31, в рамках этой же сессии):
-1. `fix(build): remove incremental tsc cache conflicting with deleteOutDir` —
-   `nest-cli.json` (`deleteOutDir: true`) стирает `dist/` перед каждой
-   watch-пересборкой, а `tsconfig.json` (`incremental: true`) держал
-   `.tsbuildinfo`-кэш, который не проверяет существование выходных файлов на
-   диске, только изменение исходников. После стирания `dist/` компилятор
-   решал, что эмитить нечего → `npm run start:dev`/`build` "проходили" с
-   "0 errors", но `dist/main.js` не создавался. Убрано `incremental` из
-   `tsconfig.json`.
-2. `fix(transactions): include full last day in getEndOfMonth range` —
-   `getEndOfMonth()` возвращал полночь последнего дня месяца вместо конца
-   дня, из-за чего `getAll` для транзакций/лимитов/кошельков отсекал всё,
-   созданное после полуночи в последний день месяца (проявлялось каждый
-   конец месяца).
-3. Живая проверка MySQL закрыта: локальный MySQL реально поднят через
-   docker (`success-budget-mysql`, порт 3306), `npm run seed` прогнан и
-   подтверждён идемпотентным (повторный запуск — все три юзера `skip
-   (already exists)`), `npm run start:dev`/`npm run build` реально проверены
-   рабочими end-to-end (`curl /currencies` → 200). Известный баг №2 из
-   секции "намеренно не исправленные проблемы" (ниже) закрыт.
-4. Переезд CI: `.gitlab-ci.yml` → `.github/workflows/ci.yml`, репозиторий
-   перенесён с GitLab на GitHub (см. "Статус" выше).
-5. Полный 5-агентный аудит (зависимости/архитектура/структура/тесты-CI/
-   security) — находки в `.private/modernization-plan.md`, **фиксы пока не
-   применялись**.
+Сквозная нумерация "Phase N" остановлена на 16 — дальше становилась бы
+бессмысленной ("Phase 100"). Каждая крупная инициатива теперь получает
+свой короткий префикс и свой счётчик стадий с 1 (не продолжает Phase).
+Ветки: `feat/<инициатива>-stage<N>-<суть>`. Журнал в этом файле — заголовки
+`## <Инициатива> Stage N`. Мелкие точечные фиксы вне инициатив — просто
+`fix/<название>`, без номера стадии. Phase 0-16 — уже история, задним
+числом не переименовываются.
 
 ## Важные технические решения (не переоткрывать без причины)
 
-- **TypeScript зафиксирован на 6.0.3, а не 7.x.** Перепроверено 2026-08-31:
-  latest dist-tag TypeScript = 7.0.2 (стабильный), 7.1 существует только как
-  nightly (`7.1.0-dev.*`). Даже свежий `@nestjs/cli@12.0.0` внутри себя всё
-  ещё пинует `typescript: ~6.0.2` — апгрейд самого Nest CLI до 12 не снимает
-  блокер. **Периодически проверяй** `npm view typescript versions` /
-  `npm view @nestjs/cli` — как только `@nestjs/cli` сдвинет свою зависимость
-  на `typescript: ^7.x`, можно апгрейдить одним коммитом.
-- **`@types/node` зафиксирован на `^24` (не `^26`)** — намеренно, соответствует
-  реальному рантайму (Node 24 Active LTS). Node 26 уже вышел, но ещё не LTS
-  (переход обычно в октябре) — не гнаться заранее.
-- **`ts-jest` заменён на `@swc/jest`.** Важный gotcha: `@swc/jest`
-  оборачивает `import * as x from 'y'` через `interopRequireWildcard`,
-  создавая **раздельную копию объекта на файл**. Поэтому
-  `jest.spyOn(bcrypt, 'compare')` в тестовом файле НЕ подменяет вызов внутри
-  тестируемого сервиса (это два разных объекта-обёртки). Работает только
-  `jest.mock('bcrypt', () => ({ compare: jest.fn() }))` — паттерн уже
-  применён в `src/modules/users/users.service.spec.ts`, копируй оттуда при
-  добавлении новых тестов с моками CJS-модулей через namespace-импорт.
-- **Роли/RBAC не добавлялись.** `User` entity не имеет `role`/`is_blocked`
-  полей и не будет — пользователь явно выбрал "без изменения схемы". Сид-скрипт
-  различает пользователей только через `email_verified` + имя/email
-  (`admin@dev.local` — это **только ярлык для читаемости**, без реальных прав).
-  Если в будущем понадобится настоящий RBAC — это отдельная архитектурная
-  задача, не путать с текущей "seed data" работой.
-- **Unit-тесты с моками TypeORM-репозиториев + реальные e2e-тесты.**
-  Качество юнит-тестов подтверждено аудитом как хорошее (не поверхностное,
-  реальные edge cases). `npm run test:e2e` **больше не падает** — phase 7
-  добавил `docker-compose.yml` для локальной MySQL, `test/app.e2e-spec.ts`
-  (register → verify-email → login → protected route, плюс 401/400 edge
-  cases) и `test/jest-e2e.json`/`test/tsconfig.json`; CI гоняет их в
-  отдельной `e2e`-джобе с сервис-контейнером `mysql:8`. e2e-покрытие пока
-  ограничено auth+currencies+health — транзакции/лимиты/категории без
-  e2e-тестов, см. план модернизации, этап 15 (раунд 2).
-- **CI — GitHub Actions**, не GitLab CI (см. "Стек" выше). Экшены обновлены
-  до `checkout@v7`/`setup-node@v7`/`upload-artifact@v7`, плюс CodeQL и
-  Dependency Review на PR — актуальное состояние см. "Стек" выше.
-- **`.private/` в корне репозитория** — гитигнорено (`/.private` в
-  `.gitignore`), используется как личный scratch-space пользователя для
-  заметок/планов, которые не должны попадать в git. Не удалять и не
-  переносить в трекаемую часть репозитория без явной просьбы.
-- **All DB foreign keys were already `onDelete: CASCADE` at the database
-  level** (set in the original migrations), even though no `@ManyToOne`
-  entity decorator declared it anywhere - found and fixed in phase 6
-  (entities now match reality; zero new migration needed for this part).
-- **Currency/Category cascade policy changed from CASCADE to RESTRICT**
-  (phase 13, decided with the user 2026-09-02): the five FKs pointing at
-  `currencies`/`categories` - `users.base_currency_id`,
-  `wallets.currency_id`, `transactions.currency_id`,
-  `transactions.category_id`, `limits.category_id` - now reject a delete
-  while any row still references them, instead of silently cascading.
-  Migration `1788311197732-RestrictCurrencyCategoryCascade`. FKs pointing
-  at `users`/`wallets` (genuinely owned child data - a user's own wallets/
-  categories/limits/transactions) are unchanged, still CASCADE. **No
-  delete endpoint for Currency or Category is planned** - `Category`
-  already has `is_active` for taking a category out of active use without
-  touching its history, and there is no real use case for deleting a
-  reference-data currency. If a delete endpoint for either is ever
-  proposed, it now just gets a clean 500/FK-constraint error instead of
-  silently destroying other users' data or transaction history - map that
-  to a proper 409 at the service layer when/if the endpoint is built.
-- **Structured (JSON) logging via `nestjs-pino`** (phase 14, 2026-09-02):
-  the default Nest logger is replaced app-wide (`main.ts`:
-  `app.useLogger(app.get(Logger))` + `bufferLogs: true`), and every HTTP
-  request gets a request id (`pino-http`'s `genReqId` - honors an incoming
-  `X-Request-Id` header, otherwise generates one) that's echoed back in
-  the `X-Request-Id` response header and in `HttpExceptionFilter`'s error
-  body (`requestId`). Log level per request reflects the actual status
-  (`customLogLevel`: `>=500` → error, `>=400` → warn, else info) via
-  `src/config/logger.config.ts`; `LoggerErrorInterceptor` (registered in
-  `main.ts`) makes the logged `err` the real thrown exception instead of a
-  generic wrapper. `Authorization`/`Cookie` headers are redacted
-  (`req.body` is never logged by pino-http by default, so password/
-  confirmation-code fields were never at risk). **Log format defaults to
-  JSON, pretty-print only when `NODE_ENV` is exactly `"development"`** -
-  deliberately the opposite of the more common "pretty unless told
-  otherwise" default, because `pino-pretty` is a devDependency: defaulting
-  to pretty would mean a deployment that forgets to set `NODE_ENV` crashes
-  on its first log line instead of just emitting JSON. See
-  `.private/stage-14-explained.md` for the full walkthrough.
-- **Soft-delete only exists on `Wallet`** (`is_deleted`/`deleted_at`) -
-  intentionally not added to `Category`/`Limit`/`Transaction` in phase 6,
-  since none of those has a delete endpoint at all yet. Add it if/when a
-  delete feature is actually built for them, not preemptively.
-- **NestJS 12 upgrade (plan phase 8) is deferred, not done.** Investigated
-  2026-09-01: NestJS 12 is a full ESM-only migration, not a normal breaking
-  major. Verified directly (`npm view @nestjs/core@12.0.1 type` / `exports`):
-  `@nestjs/core@12.0.1` has `"type": "module"` with no CommonJS export
-  condition at all, across the whole ecosystem (`common`, `core`,
-  `platform-express`, `testing`, `typeorm`, `schematics`, `cli`) - v11.2.1 by
-  contrast has no `type` field (plain CJS). Confirmed this is a genuine
-  stable `latest` release, not a mistagged pre-release (`dist-tags` +
-  version history: `alpha.0` through `alpha.7`, then `12.0.0`/`12.0.1`). No
-  official v11-to-v12 migration guide exists yet. This project is entirely
-  CommonJS (`tsconfig.json`: `"module": "commonjs"`), so this is a
-  project-wide ESM migration disguised as a dependency bump, not something
-  to fold into a routine "read the guide, run the tests" phase. **Do not
-  merge the Dependabot `@nestjs/*` v12 PRs individually** - the ecosystem
-  requires coordinated versions across packages. See
-  `.private/modernization-plan.md` ("Отложено / переоценить позже") for the
-  full writeup; re-evaluate once an official migration guide exists.
-- **API-breaking changes from round 2 (phases 10-12) - relevant to any
-  client, including the mobile app:** `PUT /api/v1/wallets/:id` no longer
-  accepts a `balance` field (400 if present - balance only changes via a
-  recorded transaction now); `POST/PUT` on transactions/limits now reject a
-  `category_id` that does not belong to the requesting user (403, was
-  previously a silent cross-user reference); `GET /api/v1/wallets` no
-  longer includes `user_id`/`currency_id`/`is_deleted`/`deleted_at` on the
-  wallet object, and its per-wallet summary fields were renamed
-  `totalSpend`/`totalIncome` → `total_spend`/`total_income`; update
-  endpoints for wallets/categories/limits now behave as true partial
-  updates (send only the fields you want to change). A full client-facing
-  writeup lives in `.private/mobile-api-changes.md` (gitignored, not
-  committed) - written specifically to hand to the mobile app project.
-- **JWT tokens are now revoked when the user is deleted** (phase 11):
-  `JwtStrategy.validate()` does an extra existence check per request. A
-  previously-valid token starts returning 401 immediately after the user
-  row is deleted, instead of staying valid for the rest of its 90-day
-  lifetime.
-- **Rate limiting is now global** (phase 11): every route is throttled at
-  100 requests/60s by default via a global `APP_GUARD`, with
-  `register`/`login`/`verify-email` keeping a stricter 5/60s override. A
-  client hammering any endpoint (not just auth) can now get a 429.
-- **Module DI convention**: modules must `export` the services other
-  modules need and `import` the owning module - never re-declare another
-  module's service as your own provider (this was a real bug fixed in
-  phase 12, found in Wallets/Transactions/Limits/Users). Wallets and
-  Transactions modules import each other and therefore both wrap that
-  import in `forwardRef()` - this is intentional NestJS practice for a
-  genuine circular module dependency, not a hack to undo.
-- **Path aliases (`@entities/*`, `@modules/*`, `@shared/*`, `@config/*`)
-  are now used for every cross-directory import, not just declared in
-  config.** Phase 4 only wired the infrastructure (`tsconfig.json` paths,
-  jest `moduleNameMapper` in both `package.json` and `test/jest-e2e.json`,
-  `tsc-alias` in the `build` script); the codebase kept using `../../../`
-  relative imports until 2026-09-01, done as a standalone cleanup outside
-  the numbered plan (see `.private/modernization-plan.md`, phase 4 note).
-  Same-directory and same-module imports (e.g. a DTO's own module, one
-  entity file importing a sibling entity) intentionally stay relative -
-  aliases are only for crossing into `entities/`, `modules/`, `shared/`,
-  or `config/` from outside.
-
-## Известные, намеренно не исправленные проблемы (задокументированы, не трогать втихую)
-
-1. **`migration:create`/`migration:run`/`migration:revert` npm-скрипты не
-   работают** — `src/config/ormconfig.ts` экспортирует голый
-   `DataSourceOptions`, а TypeORM CLI (с 0.3.x) требует экспорт именно
-   `DataSource`-инстанса. Предсуществующий баг, вероятно никогда не работал.
-   Приложение это не задевает — миграции гоняются автоматически при старте
-   через `TypeOrmModule.forRoot` (`migrationsRun: true`). Если чинить — это
-   отдельная задача (переписать `ormconfig.ts` на экспорт `DataSource`), не
-   мешать в коммит с чем-то другим.
-2. ~~Смоук-тест реального старта приложения и живой прогон `npm run seed` не
-   выполнены~~ — **закрыто 2026-08-31**, см. "Что сделано" выше.
-3. ~~Критические security/correctness баги из аудита 2026-08-31~~ — **fixed,
-   phases 0-2 merged (PRs #1-#2)**. See "Статус" above and
-   `.private/modernization-plan.md` for what is actually still open.
+- **TypeScript зафиксирован на 6.0.3, не 7.x** — даже `@nestjs/cli@12`
+  внутри пинует `typescript: ~6.0.2`. Периодически перепроверять
+  `npm view typescript`/`npm view @nestjs/cli`.
+- **`@types/node` на `^24`**, не `^26` — соответствует рантайму (Node 24
+  Active LTS), Node 26 ещё не LTS.
+- **`@swc/jest`, не `ts-jest`** — оборачивает `import * as x` через
+  `interopRequireWildcard`, создавая отдельный объект на файл, поэтому
+  `jest.spyOn(bcrypt, 'compare')` не подменяет вызов внутри сервиса.
+  Работает только `jest.mock('bcrypt', () => ({...}))` (см.
+  `users.service.spec.ts`).
+- **RBAC/роли не добавлялись** — `User` не имеет `role`/`is_blocked`,
+  осознанный выбор. `admin@dev.local` в сиде — просто ярлык, без прав.
+- **FK на `categories` — `RESTRICT`, не `CASCADE`** (изначально решение
+  касалось и `currencies`, но все FK на `currencies` с `users`/`wallets`/
+  `transactions` были удалены при переходе на Spaces — валюта теперь
+  только на уровне `Space`). `transactions.category_id`,
+  `limits.category_id`/`limit_categories.category_id` всё ещё `RESTRICT`
+  — удаление категории с историей падает ошибкой вместо тихого каскада.
+  Delete-эндпоинта для Category нет и не планируется (есть архивация,
+  см. Categories Stage 5 ниже).
+- **Структурное JSON-логирование** через `nestjs-pino` — JSON по
+  умолчанию, pretty только при `NODE_ENV==="development"` (буквально,
+  не "unless told otherwise") — `pino-pretty` только devDependency,
+  деплой без выставленного `NODE_ENV` не должен падать на первом логе.
+  Request id (`X-Request-Id`) на каждый запрос и в теле ошибки.
+- **Soft-delete только на `Wallet`** (`is_deleted`/`deleted_at`) — не
+  добавлять на `Category`/`Limit`/`Transaction` превентивно, пока для
+  них нет delete-эндпоинта.
+- **NestJS 12 отложен** — это полноценная ESM-миграция
+  (`@nestjs/core@12` имеет `"type":"module"`, нет CJS-условия экспорта
+  во всей экосистеме), официального гайда миграции пока нет, проект
+  целиком CommonJS. **Не мёржить Dependabot `@nestjs/*` v12 PR-ы
+  по отдельности** — 9 таких PR оставлены открытыми намеренно как
+  видимый backlog-маркер, не трогать без явной просьбы.
+  Переоценить, когда появится официальный гайд.
+- **Module DI**: модуль `export`-ит сервисы, которые нужны другим, а
+  использующий модуль их `import`-ит — не дублировать чужой сервис как
+  свой provider. `Wallets`/`Transactions` импортируют друг друга через
+  `forwardRef()` (реальная циклическая зависимость, это нормально).
+- **Path aliases** (`@entities/*`, `@modules/*`, `@shared/*`,
+  `@config/*`) — для каждого cross-directory импорта; same-directory/
+  same-module импорты остаются относительными.
+- **JWT отзывается при удалении пользователя** — `JwtStrategy.validate()`
+  делает existence-check на каждый запрос, токен 401-ится сразу, не
+  дожидаясь истечения 90-дневного срока.
+- **Rate limiting глобальный** — 100 req/60s через `APP_GUARD` на любой
+  роут, `register`/`login`/`verify-email` — строже, 5/60s.
+- **Валюта и баланс — на уровне `Space`, не `User`/`Wallet`** (после
+  Spaces Stage 3): у кошелька/транзакции своей валюты больше нет,
+  только `Space.currency_id`. Баланс кошелька — derived (`SUM` по его
+  транзакциям), не хранимая колонка; стартовый баланс — обычная
+  `income`-транзакция на системную категорию `Initial balance`
+  (`Category.is_system`, скрыта из `GET /categories`, недоступна
+  клиенту напрямую).
 
 ## Dev-окружение / сид-данные
 
-MySQL поднимается локально через docker (контейнер `success-budget-mysql`,
-порт 3306) — реально проверено рабочим 2026-08-31, не гипотетически.
+MySQL — локально через docker-compose (`mysql:8`, порт 3306). `npm run
+seed` создаёт 3 юзеров (идемпотентно, пароль по умолчанию
+`DevTest#2026`/`SEED_USER_PASSWORD`): `user@dev.local` и
+`admin@dev.local` (verified, ярлык admin без реальных прав, есть
+кошелёк+категории), `unverified@dev.local` (не verified, edge case).
+**Отказывается запускаться при `NODE_ENV=production`.**
 
-`npm run seed` (`src/database/seed.ts`) создаёт 3 юзеров (подтверждено живым
-прогоном, идемпотентность подтверждена повторным запуском):
-- `user@dev.local` — verified, есть кошелёк "Cash" + дефолтные категории
-- `admin@dev.local` — verified, идентичен user (label only, без реальных прав)
-- `unverified@dev.local` — НЕ verified, без кошелька/категорий (edge case)
+API: `/api/v1/...`, Swagger на `/docs` (переключается `SWAGGER_ENABLED`,
+по умолчанию выключен в production). CORS по-прежнему полностью
+выключен (`app.enableCors()` нигде не вызывается) — понадобится явная
+whitelist, когда появится фронт/мобильное приложение на другом origin.
+`.env.example` содержит все переменные, которые реально читает
+приложение.
 
-Пароль по умолчанию `DevTest#2026` (переопределяется через
-`SEED_USER_PASSWORD`), задокументирован в README, не хардкожен как "боевой"
-секрет. Скрипт идемпотентен (пропускает существующие email).
+## Deploy readiness (в работе, ветка `feat/deploy-readiness`, не смёржена)
 
-`.env.example` — есть все переменные, которые реально читает приложение
-(`DB_HOST/PORT/USERNAME/PASSWORD/DATABASE`, `JWT_SECRET`, плюс с этапа 14
-опциональные `LOG_LEVEL`/`NODE_ENV` для логирования). Реальный `.env`
-никогда не попадал в git-историю (проверено явно 2026-08-31).
+Делает приложение реально деплоящимся. Полный runbook:
+`docs/deployment.md`. Ключевые изменения (детали — `git log`):
 
-API: `http://localhost:3000`, глобальный префикс `/api` + URI-версионирование
-(с этапа 5) — реальные пути вида `/api/v1/...`. Логин —
-`POST /api/v1/users/login`. Swagger UI на `/docs`. CORS выключен полностью
-(`app.enableCors()` нигде не вызывается) — при появлении фронта/мобильного
-приложения на другом origin понадобится явная whitelist-конфигурация.
+- Приложение слушает `PORT`/`0.0.0.0` (было захардкожено 3000/loopback);
+  новые тогглы `TRUST_PROXY`, `SWAGGER_ENABLED`.
+- Multi-stage production `Dockerfile` (build → prod-deps → runtime,
+  непривилегированный `node`-юзер, `HEALTHCHECK` на `/api/v1/health`).
+- **Миграции больше не гоняются автоматически на старте**
+  (`migrationsRun` всегда `false`) — порядок деплоя явный: db → migrate
+  → verify-reference-data → start. Заодно почищен предсуществующий
+  известный баг — `migration:create/run/revert` npm-скрипты раньше не
+  работали (`ormconfig.ts` не экспортировал `DataSource`); теперь
+  работают, включая скомпилированный JS-вариант без TS-тулинга.
+- `DB_SSL`/`DB_SSL_CA`/`DB_SSL_REJECT_UNAUTHORIZED` — TLS до managed MySQL.
+- Письма с кодом подтверждения реально отправляются (`MailService`/
+  nodemailer, `SMTP_*` env). Ошибка отправки — контролируемый 503, не
+  тихая потеря. MailDev — в `docker-compose.yml` для dev/e2e.
+- `db-backup`/`db-restore` скрипты (оборачивают `mysqldump`/`mysql`
+  через Docker-образ `mysql:8`).
+- `docker-compose.prod.yml` — прогоняет собранный образ end-to-end
+  локально; CI-джоба `docker` — билдит+мигрирует+smoke-тестит образ на
+  каждый push/PR.
 
-## Что осталось / следующие шаги
+## Завершённые инициативы
 
-Phases 0-7 and 9-12 are done and merged. **Phase 8 (NestJS 11→12) is
-investigated and deferred**, not done - it turned out to be a full ESM
-migration with no migration guide yet (see "Важные технические решения"
-above). Full staged plan and status lives in `.private/modernization-plan.md`
-- read it before proposing next steps, do not invent a plan from scratch.
+Детали — `git log`/PR-ы, мобильные breaking changes — `.private/
+mobile-api-changes.md` и `.private/spaces-mobile-api-changes.md`
+(гитигнорены).
 
-Remaining round-2 phases (see the plan file, "Раунд 2" section):
-- **Phase 13 (Currency/Category cascade-delete policy) - done, decided
-  with the user 2026-09-02.** See "Важные технические решения" above.
-- **Phase 14 (structured logging, request/correlation IDs) - done,
-  2026-09-02.** See "Важные технические решения" above.
-- **Phase 15** - e2e coverage for transactions/limits/categories (currently
-  only auth/health/currencies are covered), plus a few trivial patch
-  dependency bumps.
-- **Phase 16** - branch protection on `main` (confirmed off via the GitHub
-  API), README badges.
+- **Spaces Stage 1-4** (2026-09-14–16, PR #35-38) — общие/личные
+  бюджетные пространства. `Space`/`SpaceMember`/`SpaceInvite`;
+  `Wallet`/`Category`/`Limit`/`Transaction` переехали с `user_id` на
+  `space_id`; роуты под `/spaces/:spaceId/...`; единая валюта на
+  уровне space; derived-баланс кошелька (см. "Важные решения" выше).
+  План: `.private/spaces-implementation-plan.md`.
+- **Home Stage 2** (2026-09-07) — ввёл форму ответа `{ total_balance,
+  total_balance_currency, delta_percent, wallets }` (изначально на
+  `GET /wallets`, отфильтрованную по `user.base_currency_id`; после
+  Spaces Stage 3 живёт на `GET /spaces/:spaceId/wallets` без
+  фильтрации — у всех кошельков space одна валюта). delta —
+  month-over-month, без FX-конвертации (её в приложении нет).
+- **Categories Stage 5** (2026-09-05) — общий enum `AppColor` (6
+  токенов) для `Wallet.design` и нового `Category.color`;
+  `Category.icon` → закрытый enum `CategoryIcon`; archive-жизненный
+  цикл (`is_active`/`archived_at`) — `DELETE` хард-удаляет, если нет
+  транзакций, иначе архивирует; `PUT /categories/reorder` заменил
+  `move-forward`.
+- **Limits Stage 4** (2026-09-04) — `Limit.category_id` заменён на
+  many-to-many `limit_categories`: 0 категорий = месячный total, 1 =
+  single-category, 2+ = именованная group. Total теперь суммирует все
+  расходы независимо от категорийных лимитов (могут расходиться —
+  `over_allocation` в ответе). `DELETE /limits/:id` — новый.
+- **Transactions Stage 3** (2026-09-03) — `POST /transactions` →
+  `{ transaction, wallet, previous_balance }`; `description` опционален;
+  `GET /transactions` принимает `from`/`to`; `DELETE /transactions/:id`
+  (undo) и `GET /transactions/latest` — новые.
 
-9 Dependabot PRs (8 for the deferred NestJS 12 bump, 1 for `@types/node`
-24→26) are being left open deliberately as a visible backlog marker - do
-not merge or close them without being asked.
+## Дальше
 
-**Spaces initiative (shared budgets, single space-level currency, derived
-wallet balance) - done, Stages 1-4 all merged.** See "## Spaces Stage 1-4"
-below for the full writeup; original plan in
-`.private/spaces-implementation-plan.md`.
-
-## Transactions Stage 3 — mobile design gap-fill (2026-09-03)
-
-Branch `feat/transactions-mobile-api-gapfill`, cut from `main` (not from
-the still-unmerged `feat/e2e-coverage-and-housekeeping`/phase-15 branch -
-this work is unrelated to that one and shouldn't depend on it merging
-first). Read the "Transactions Stage 3" mobile design (Claude Design
-project `2a33691a-d45d-43a2-8c2d-405c7d3c2d0d`, file
-`Transactions Stage 3.dc.html` + its `support.js` import) and closed the
-gaps between it and the API so the mobile app can actually implement it.
-Full client-facing writeup in `.private/mobile-api-changes.md` section 12
-("Round 3 changes"). Summary:
-
-- **Fixed two internal-FK leaks found while reading the code for this**:
-  `POST /transactions` was missing `ClassSerializerInterceptor` entirely
-  (leaked `wallet_id`/`category_id`/`currency_id` on every create
-  response), and `GET /transactions`'s controller had a
-  `{ ...transaction, wallet: ... }` spread before serialization - the same
-  `@Exclude()`-defeating spread-before-serialize pattern already
-  documented for `CategoriesService`/`LimitsService` in
-  `.private/modernization-plan.md` ("Этап 15"), just not previously
-  spotted in the transactions controller itself. Fixed by mutating the
-  loaded entity instances in place instead of spreading.
-- **`POST /transactions` response shape changed** (breaking) to
-  `{ transaction, wallet, previous_balance }` - the design's post-save
-  confirmation screen shows the wallet's new balance and its prior value
-  ("was $3,666.40"), which needs the freshly-updated wallet without a
-  second `GET /wallets` round trip.
-- **`description` is now optional** on `CreateTransactionDto` - the entity
-  column was already nullable, but the DTO required it; the design's Note
-  field is explicitly optional.
-- **`GET /transactions` accepts `from`/`to` query params** (same
-  convention as `GET /wallets`, defaults to the current month unchanged)
-  instead of being hardcoded to the current month - needed for the
-  design's Week/Month/Year presets and custom range-picker, which compute
-  the boundary dates client-side.
-- **`DELETE /transactions/:id` is new** - the design's "Undo" action on
-  the post-save confirmation screen. Reverses the wallet balance change
-  and deletes the row in one DB transaction; 403s (not 404s, matching the
-  IDOR-safe pattern used everywhere else in this API) if the transaction's
-  wallet isn't the caller's.
-- **`GET /transactions/latest` is new** - the design's filtered-empty
-  state ("Nothing in this period... Your last one was on 29 Aug" / "Jump
-  to 29 Aug") needs to know the most recent transaction across all
-  wallets regardless of the applied filter; there was no way to get that
-  without fetching unbounded history.
-
-**Deliberately not added**: no `PUT`/`PATCH` to edit an existing
-transaction. The Stage 3 design doesn't draw an edit screen yet (list rows
-are `cursor:pointer` but go nowhere in this design stage) - add it when
-that screen exists instead of guessing its shape now.
-
-**e2e cleanup note for whoever merges this alongside phase 15**: this
-branch's `test/app.e2e-spec.ts` needed its own minimal version of the
-`afterAll` fix phase 15 already made independently (delete transactions
-before deleting the user, since `transactions.category_id` is `RESTRICT`
-- see phase 13/15 notes above) - both branches touch the same lines for
-the same reason, so expect a merge conflict there, not a silent
-duplicate-fix bug. Resolve by keeping phase 15's fuller version (it also
-covers limits) and folding this branch's transaction-endpoint assertions
-into it.
-
-Covered by unit tests (`transactions.service.spec.ts`,
-`transactions.controller.spec.ts`) and a new e2e scenario in
-`test/app.e2e-spec.ts` (date-range filtering, `latest`, undo, and that the
-create/list responses don't leak `wallet_id`/`category_id`/`currency_id`).
-Full local `npm run test`, `npm run test:e2e`, `npm run lint`, and
-`npm run build` all pass as of this writing.
-
-## Limits Stage 4 — mobile design gap-fill (2026-09-04)
-
-Branch `feat/limits-stage4-groups-and-total`, cut from `main`. Read the
-"Limits Stage 4" mobile design (same Claude Design project as Transactions
-Stage 3 above, file `Limits Stage 4.dc.html` + its `support.js` import)
-and the original, pre-redesign Limits screen (`reference/Limits.tsx` in
-that project's handoff package - a flat overview card + one card per
-category, no groups, no independent total, AMD currency). The new design
-needs two things the old `Limit` entity couldn't express, so this closes
-that gap. Full client-facing writeup in `.private/mobile-api-changes.md`
-section 13 ("Round 4 changes").
-
-**Data model decision (don't relitigate without a reason):** `Limit`'s
-single nullable `category_id` FK is replaced with a `limit_categories`
-many-to-many join table (`Limit.categories: Category[]`, migration
-`1788565305877-AddLimitCategoriesAndName`, backfilled from existing rows).
-Category count *is* the scope, not a separate stored field: 0 categories
-= a "monthly total" limit, 1 = single-category, 2+ = a named "group"
-limit (`limits.name`, only meaningful for groups). `limit_type`
-(`category`/`others`) is kept as the total-vs-not discriminator rather
-than deriving it from `categories.length === 0` everywhere. The
-`limit_categories.category_id` FK is `RESTRICT` (matches the Currency/
-Category cascade policy from the earlier round-2 phase 13 decision); the
-`limit_id` FK is `CASCADE` (junction rows are owned by the limit).
-
-**Semantic decision (don't relitigate without a reason):** the monthly
-total limit now sums **all** expense transactions for the period,
-independently of the category limits below it. The old "others" limit
-summed only expenses *not* claimed by a category-specific limit (a
-catch-all bucket, mutually exclusive with category limits by
-construction) - that's structurally incompatible with the new design,
-where the total and the sum of category limits are allowed to disagree
-("Both keep counting, they just won't agree" is the design's own copy,
-not an error state). `LimitsService.calculateSpending()` was rewritten
-around this and now returns `{ total, categories, over_allocation }`
-instead of the old flat `{ limits, overall }` - `over_allocation` is only
-present when the category limits' amounts sum above the total's amount,
-computed server-side so the mobile app doesn't have to.
-
-Also fixed as part of the same rewrite (already flagged, unfixed, in
-`.private/modernization-plan.md` "Этап 15"): `calculateSpending()` used to
-return `{...limit, spent, in_percent}`, a spread of a real entity that
-defeats `@Exclude()` and leaked `user_id`/`category_id` in `GET /limits`.
-Every limit object in every response is now a clean, explicitly-built
-view instead.
-
-`DELETE /limits/:id` is new (the design's delete-confirmation dialog) -
-there was no delete endpoint of any kind before this. Cross-limit category
-exclusivity (a category can't be in two limits at once) is enforced on
-both create and update, extended from the old single-category duplicate
-check to cover group membership too; a group with 2+ categories rejects a
-missing `name` with `400 "A group limit needs a name"` (new error
-message, `ErrorMessages.LIMIT_NAME_REQUIRED`).
-
-**Deliberately not added**: no server-side threshold/color computation
-(ok/near-80%/over-100%, per-day pace, days-left) - pure display math the
-mobile client already derives itself elsewhere. No "preview impact of a
-pending transaction on a limit" endpoint - the design's add-transaction
-warning hint is fully computable client-side from the existing
-`GET /limits` numbers plus the amount being typed.
-
-Covered by unit tests (`limits.service.spec.ts`, `limits.controller.spec.ts`,
-rewritten for the array-based DTOs and the new total/group semantics) and
-a new e2e scenario in `test/app.e2e-spec.ts` (total + group + single-
-category limit together, cross-limit exclusivity rejection, unnamed-group
-rejection, delete, and that no response leaks `user_id`) - this restores
-limits e2e coverage that had been silently dropped by an unrelated later
-commit (`38a0e19`) despite the modernization plan still claiming it was in
-place. Verified live against the local docker MySQL: the migration
-correctly backfilled the two pre-existing seeded category limits into
-`limit_categories`, and a full create/read/update/delete pass against the
-running dev server behaved as designed (see PR for the exact `curl`
-transcript). Full local `npm run test`, `npm run test:e2e`, `npm run lint`,
-and `npm run build` all pass as of this writing.
-
-## Categories Stage 5 + shared color enum + WalletDesign bug fix (2026-09-05)
-
-Branch `feat/categories-archive-and-shared-colors`, cut from `main`. Two
-things drove this, done together because they turned out to share one enum:
-
-1. `.private/backend-legacy-design-data-needed.md` (left by whoever worked
-   on the mobile Limits Stage 4 migration) documented a **live bug**: the
-   mobile wallet redesign (stage 6) moved `WalletDesign` from
-   `green|yellow|blue|red|pink` to `slate|amber|evergreen|indigo|clay|plum`,
-   and the backend never followed - every `POST/PUT /wallets` with a current
-   mobile `design` value was rejected by DTO validation, and the DB column
-   was a native `ENUM` of the old five values underneath that.
-2. The "Categories Stage 5" mobile design (same Claude Design project as
-   Transactions Stage 3/Limits Stage 4, file `Categories Stage 5.dc.html`)
-   redesigns the categories screen from a chip grid to a data-rich list, and
-   its own color picker uses **the same six tokens** as `WalletDesign` (the
-   design's own copy: "the same six tones as the wallet presets in Stage
-   2"). So both were fixed under one shared enum instead of two branches.
-
-**Data model decisions (don't relitigate without a reason):**
-`WalletDesign` is gone, replaced by a shared `AppColor` enum in
-`src/shared/enums.ts` used by both `Wallet.design` and the new
-`Category.color` (previously a free `varchar(7)` hex string). Migration
-`1788600000000-AddSharedColorEnumAndCategoryArchive` widens
-`wallets.design`'s ENUM through a temporary superset (old + new values) so
-existing rows stay valid mid-migration, then narrows to the final 6 and
-backfills every row to `slate` - there's no principled 1:1 mapping from 5
-old wallet colors (or from arbitrary hex strings) onto 6 new tokens, so
-every existing row gets the same single fallback, same reasoning already
-used on the mobile side when it dropped its own old enum. `Category.icon`
-also moved from a free `varchar(255)` onto a new closed `CategoryIcon` enum
-(35 values, matching the design's own icon picker) - this one is **app-layer
-validation only**, no DB migration, since `categories.icon` was never a DB
-`ENUM` to begin with; existing rows with legacy MaterialIcons-style names
-(`shopping-basket`, etc.) are left alone, not enforced on read, same "not
-urgent" call already made in the legacy-data doc for that column.
-
-**`Category` gained an archive lifecycle.** `is_active` already existed on
-the entity/column but was completely unused anywhere in the service or
-controller until now - this is exactly the field the phase-13 note above
-anticipated ("`Category` already has `is_active` for taking a category out
-of active use"). One new nullable column, `categories.archived_at`, mirrors
-`Wallet`'s existing `is_deleted`/`deleted_at` pattern (needed because the
-design's archived rows show "Archived 12 Aug" and reusing `updated_at`
-would get corrupted by any other edit).
-
-**`DELETE /categories/:id` is new** - the design's delete/archive
-confirmation dialog. Decided by transaction history, not by the client:
-zero transactions ever filed under the category → hard delete (the DB FK
-`transactions.category_id` is already `RESTRICT`, so this is safe-by-
-construction even if the count were somehow wrong); one or more → archive
-instead (`is_active = 0`, `archived_at` stamped) and unlink from whatever
-limit currently contains it. **New rule, not in the original Limits Stage 4
-design**: unlinking a category that was the *only* category in a
-`CATEGORY`-type limit now deletes that limit too, rather than leaving a
-zombie limit with 0 categories that no `LimitsService` code path can
-produce on its own (a `CATEGORY`-type limit with 0 categories isn't one of
-the three valid states - 0 categories is reserved for the monthly total).
-Restore is just `PUT /categories/:id { is_active: 1 }` on the existing
-route (no new endpoint) - it clears `archived_at` but deliberately does
-**not** re-add the category to whatever limit it came from, matching the
-design's own footnote copy.
-
-**`transaction_type` is now immutable after creation.** `UpdateCategoryDto`
-is hand-written (matching the existing `UpdateWalletDto` precedent, which
-excludes `balance` the same way) and simply doesn't declare the field - with
-`forbidNonWhitelisted: true` already global, sending it now gets a clean 400
-instead of silently changing it (there was no guard at all before this).
-
-**`GET /categories` response shape changed** (breaking) from `{incomes,
-expenses}` to `{incomes, expenses, archived}`, and every row is now a
-plain built view (`transaction_count`, `limit: {id, name} | null`,
-`archived_at`, etc. - see `CategoriesService.buildCategoryView`) instead of
-a raw entity, computed via two grouped queries (transaction counts,
-limit-membership) rather than N+1 lookups. `CategoriesService` reads the
-`Transaction` and `Limit` repositories directly (registered in
-`CategoriesModule`'s own `TypeOrmModule.forFeature`) rather than importing
-`TransactionsModule`/`LimitsModule` back - both of those already import
-`CategoriesModule`, so importing them back would need `forwardRef()` on
-both sides for no benefit; this follows the precedent already set by
-`TransactionsService.create()/.remove()` querying `Wallet` directly instead
-of going through `WalletsService`.
-
-**`PUT /categories/reorder` is new, and replaces `move-forward` (removed)**
-- the design's drag-to-reorder needs a real "set the full order for one
-segment" operation, not "bump one item to the front"; keeping both would
-mutate the same `sort` column via two conflicting partial rules. Validates
-that every id belongs to the caller, shares one `transaction_type`, and
-isn't archived, then reassigns `sort` using the same 100/200 prefix
-convention the old `move-forward` used.
-
-**Found and fixed while touching this code, not part of the original
-plan**: `CategoriesService.create()`/`.update()` were doing
-`repository.save({...spread})` on a plain object instead of a real entity
-instance, the same `@Exclude()`-defeating spread pattern already fixed in
-Transactions/Limits/Categories' `GET` responses per the modernization plan
-- this one leaked `user_id`/`sort` on `POST`/`PUT /categories` specifically.
-Fixed the same way `TransactionsService.create()` already does it:
-`repository.create()` (or mutating the loaded entity in place) before
-`.save()`.
-
-`DEFAULT_CATEGORIES` (`src/shared/constants.ts`, consumed by both
-`seed.ts` and live signups in `users.service.ts`) got new names/icons/colors
-to match the new enums (`Groceries`→`Grocery`, `Restaurants`→`Restaurant`,
-`Clothing`→`Clothes`, `Transportation`→`Transport`, `Gift`→`Gifts`, `Rent`
-folded into `Housing` - no separate icon for it in the new set).
-
-**Deliberately not added**: no legacy icon-name backfill migration for
-existing rows (per the legacy-data doc, "not urgent"). No server-side
-limit-impact-preview endpoint for the archive dialog - the client already
-has everything it needs from `GET /categories`'s new `limit: {id, name}`
-field plus the existing `GET /limits` response, same "client computes it"
-call already made for Limits Stage 4. No search endpoint/param -
-`GET /categories` already returns the full list in one shot.
-
-Covered by unit tests (`categories.service.spec.ts`,
-`categories.controller.spec.ts`, rewritten for the new DTOs, the three-way
-`getAll` split, delete-vs-archive branching, the empty-limit cleanup, and
-reorder) and three new e2e scenarios in `test/app.e2e-spec.ts` (hard-delete
-vs. archive decided by history, `transaction_type` rejected on update,
-archiving unlinks from and can delete a limit, restore doesn't re-link,
-reorder persists and rejects mixed-owner/mixed-type input). Verified live
-against the local docker MySQL: the migration correctly backfilled existing
-wallets/categories to `slate`, and a full create/reject-invalid-icon/reject-
-type-change/archive/restore pass against the running dev server behaved as
-designed. Full local `npm run test`, `npm run test:e2e`, `npm run lint`, and
-`npm run build` all pass as of this writing.
-
-## Home Stage 2 — wallets overview gap-fill (2026-09-07)
-
-Branch `feat/home-stage2-wallets-overview`, cut from `main`. Read the
-"Home Stage 2" mobile design (same Claude Design project as
-Transactions Stage 3/Limits Stage 4/Categories Stage 5, file
-`Home Stage 2.dc.html` + its `support.js` import) and the original
-pre-redesign Home screen (`uploads/success-budget-handoff/reference/Home.tsx`
-in that project's handoff package - a raw Figma export explicitly marked
-as the screen's ORIGINAL layout, kept there for comparison). The design's
-own stated changes are three front-end-only IA moves: a single aggregated
-"Total balance" hero replacing "first random wallet's balance", a floating
-(+) button replacing the two Income/Expense buttons, and transactions
-grouped by Today/Yesterday/date instead of a flat list. Almost all of it
-was already servable: `GET /wallets` already returned per-wallet
-`total_spend`/`total_income`/`design`/`currency`, `GET /transactions`
-already spanned all of a user's wallets (not one), and the design's
-35-icon set matches `CategoryIcon` in `src/shared/enums.ts` exactly. The
-one real gap was the hero's total-balance number and its period delta
-badge ("▲4.2%") - nothing resembling an aggregate or a period-over-period
-comparison existed anywhere in `wallets/` or `transactions/`.
-
-**Data/decision notes (don't relitigate without a reason):** wallets can
-each carry a different `currency_id` with zero FX/conversion logic
-anywhere in this app. Decided with the user: `total_balance` only sums
-wallets whose `currency_id` matches the user's `base_currency_id` -
-wallets in another currency are silently excluded from the total (but
-still appear in the per-wallet `wallets` array, unaffected). The delta
-period is the **current calendar month**, chosen specifically because it
-reuses the `from`/`to` (`getStartOfMonth`/`getEndOfMonth`) transactions
-`GET /wallets` already fetches for the per-wallet income/expense summary
-- zero extra DB queries beyond one `User` lookup (with its `baseCurrency`
-relation) for the currency label. `net = income - expense` for
-base-currency wallets in the period; `balance_at_period_start =
-total_balance - net`; `delta_percent = balance_at_period_start !== 0 ?
-round((net / balance_at_period_start) * 100, 1 decimal) : 0`. A
-zero/negative period-start balance is an accepted, documented limitation
-(same pragmatic style as `LimitsService.calculateSpending()`'s
-`in_percent`), not specially handled beyond the divide-by-zero guard.
-
-**`GET /wallets`'s response shape changed** (breaking, same precedent as
-the Limits Stage 4 `{ total, categories, over_allocation }` reshape) from
-a bare `WalletSummary[]` to `{ total_balance, total_balance_currency,
-delta_percent, wallets: WalletSummary[] }` - `wallets`' per-item shape is
-unchanged. No DB migration was needed - this is a pure read-side
-aggregation over existing columns (`WalletsService.buildOverview()`,
-reading the user's `base_currency_id` at the time - since superseded by
-the Spaces initiative, see "## Spaces Stage 1-4" below: currency now comes
-from the space, not the user).
-
-**Deliberately not added**: no currency conversion (there is no exchange-
-rate infrastructure in this app at all - out of scope for a Home-screen
-gap-fill); no rolling-7-day delta option (current-month was chosen for
-its zero-extra-query property, see above); no separate aggregate endpoint
-- the reshape follows the same "one round trip, aggregate + breakdown
-together" pattern already used by Limits.
-
-**Note on `.private/`:** `.private/mobile-api-changes.md` and
-`.private/modernization-plan.md`, both described at length elsewhere in
-this file, did not exist on disk as of this stage - `.private/` was an
-empty directory at the time. They were always gitignored, so this isn't a
-git-history question; their content appears to have been lost locally at
-some point. This stage's change is documented here in full instead of
-being appended to a (at-the-time nonexistent) client-facing doc; do not
-assume a full mobile-api-changes.md with earlier rounds' content exists
-somewhere - verify before relying on it being current. (`.private/` is no
-longer empty as of the Spaces initiative below -
-`spaces-implementation-plan.md` was added for it.)
-
-Covered by unit tests (`wallets.service.spec.ts` - base-currency
-filtering, delta calculation, the zero-wallets case, and the
-`balance_at_period_start === 0` guard; `wallets.controller.spec.ts` -
-updated for the new response shape) and an extended/new e2e scenario in
-`test/app.e2e-spec.ts` (total/currency/delta right after signup with one
-empty wallet, a second wallet in a non-base currency excluded from the
-total but present in the list, and the total/delta reflecting a real
-income transaction later in the flow). Full local `npm run test`,
-`npm run test:cov`, `npm run test:e2e`, `npm run lint`, and `npm run build`
-all pass as of this writing.
-
-## Spaces Stage 1-4 — shared/personal budget spaces (2026-09-14 to 2026-09-16)
-
-Four branches, one per stage, each cut from `main`: `feat/spaces-stage1-foundation`,
-`feat/spaces-stage2-resource-migration`, `feat/spaces-stage3-currency-and-balance`,
-`feat/spaces-stage4-closeout` (PRs #35-#38). Full design doc in
-`.private/spaces-implementation-plan.md` (gitignored). Mobile design for
-this was read and cross-checked against the plan on 2026-09-14
-(`Home Stage 2.dc.html` + `Auth & Settings Stage 6.dc.html`, same Claude
-Design project as the other Stage files) - see the plan file's "Сверка с
-мобильным дизайном" section for the corrections that produced (single-owner
-model with automatic succession on leave instead of manual role changes,
-`is_personal` replaced by a `type: 'personal' | 'group'` space type, inline
-invites on space creation).
-
-**Stage 1 - foundation.** New `Space` (`id`, `name`, `type: 'personal' |
-'group'`, `currency_id`), `SpaceMember` (`space_id`, `user_id`, `role: 'owner'
-| 'member'`), `SpaceInvite` entities. `UsersService.register()` now creates a
-personal `Space` + owner `SpaceMember` in the same transaction as the user
-(not deferred to `verify-email` as originally drafted) - `users.base_currency_id`
-is dropped entirely rather than migrated later, since the currency the user
-picks at registration goes straight onto their personal space's `currency_id`.
-Exactly one `owner` per space at all times, enforced in code
-(`SpaceMembersService`), not a DB constraint - role transfers automatically
-to the next member when the owner leaves, there's no manual role-change
-endpoint at all. `Wallet`/`Category`/`Limit`/`Transaction` deliberately left
-on `user_id` in this stage - the safest stage, almost entirely additive.
-
-**Stage 2 - resource migration.** Moved `Wallet`/`Category`/`Limit` from
-`user_id` to `space_id` ownership (`Transaction` derives ownership via
-`wallet_id → wallet.space_id`, no `space_id` column of its own - already
-covered by every query that touches it). Every route nests under
-`/api/v1/spaces/:spaceId/...`. `assertOwnership()` renamed to
-`assertBelongsToSpace()` (`src/shared/utils/space-ownership.ts`) - compares
-`space_id` instead of `user_id`, paired with a new
-`SpaceMembersService.assertMembership()` check on every handler (two
-different questions: "is this caller in this space at all" vs. "does this
-resource actually belong to the space in the URL").
-
-**Stage 3 - unified currency + derived balance.** Dropped `Wallet.currency_id`
-and `Transaction.currency_id` - `Space.currency_id` is now the only currency
-a wallet or transaction in that space can have. Dropped the stored
-`wallets.balance` column in favor of a derived balance
-(`SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE -amount END)`
-over the wallet's own transactions, `TransactionsService.getBalances()`).
-A wallet's starting balance is now a real `income` `Transaction` against a
-new system `Initial balance` category (`Category.is_system`, hidden from
-`GET /categories` and rejected everywhere a client could otherwise touch
-it - 403 on `POST /transactions`, 400 on any category-mutation endpoint or
-limit attachment) instead of a raw stored number - `POST /wallets`'s
-`balance` field renamed `initial_balance`, response reshaped to
-`{ wallet, transaction: Transaction | null }`. Found and fixed as part of
-this stage: `SpacesService.create()` never seeded default categories for
-any space (personal or group) created via `POST /spaces` - deferred from
-Stage 1 (`Category` wasn't space-scoped yet) and never picked up in Stage
-2; the additive migration backfills the gap into every existing space, and
-`SpacesService.create()` now seeds both the 15 defaults and the system
-category going forward. Also fixed while implementing this: the internal
-starting-balance transaction was leaving its `timestamp` to the DB column's
-`CURRENT_TIMESTAMP(3)` default, which lands several hours off from the
-actual UTC instant on this DB server - set explicitly in JS now, matching
-every other transaction-creation path.
-
-**Stage 4 - closeout.** No new endpoint - the plan originally called for a
-new `GET /spaces/:spaceId/overview`, but `GET /spaces/:spaceId/wallets`
-already returns exactly that shape (`total_balance`, `total_balance_currency`,
-`delta_percent`, per-wallet balance and period income/expense) since Home
-Stage 2 reshaped it, before the Spaces initiative even existed - Stage 3 kept
-that shape while swapping in the derived-balance internals. Confirmed via a
-full grep pass that the dead-reference cleanup the plan asked for
-(`assertOwnership`, wallet-level `currency`/`currency_id`, stored
-`wallets.balance`) was already clean from Stages 1-3 themselves - the only
-stale reference left was this file and `README.md`, both rewritten in this
-stage to describe the Spaces initiative for the first time.
-
-**Breaking changes across the initiative** (full detail in `README.md`'s
-"Breaking changes" section): `GET /users/profile` drops `base_currency`
-(Stage 1); every wallet/category/limit/transaction route moves under
-`/spaces/:spaceId/...` (Stage 2); `POST /wallets` drops `currency_id`,
-renames `balance` to `initial_balance`, and reshapes its response to
-`{ wallet, transaction }` (Stage 3).
-
-**Deliberately not added**: the `GET /spaces/:spaceId/overview` endpoint
-from the original plan draft (see Stage 4 above - `GET /wallets` already
-covers it, adding a near-duplicate route would just be two ways to ask the
-same question). No real-email delivery for space invites - the invite code
-is still returned directly in the API response, delivery is a separate,
-not-yet-scoped task. No user-account deletion endpoint, even though a
-design for it exists (`Auth & Settings Stage 6.dc.html`, Settings → "Delete
-account") - not part of this initiative, would need its own space-cleanup
-logic (delete every personal space where this user is the sole member,
-remove their membership elsewhere with the same owner-succession Stage 1
-already built).
-
-Every stage shipped with full unit test coverage for its own changes plus a
-growing, continuously-updated `test/app.e2e-spec.ts` scenario (registration
-through personal-space creation, group-space invites/membership/ownership
-transfer, cross-space 403s, starting-balance wallet creation, system-category
-rejections) - by Stage 4 this is one continuous regression suite covering
-all four stages together, re-run in full (`npm run lint`, `npm test`,
-`npm run test:cov`, `npm run build`, `npm run test:e2e`) as this stage's own
-verification, since Stage 4 itself changes no application behavior.
+- Довести до конца и смёржить `feat/deploy-readiness`.
+- **Phase 16**: branch protection на `main` (всё ещё выключена),
+  README-бейджи.
+- 9 Dependabot PR-ов (8 на NestJS 12, 1 на `@types/node` 24→26) —
+  намеренно открыты как backlog-маркер, не мёржить/закрывать без просьбы.
+- Переоценить NestJS 12 upgrade, когда появится официальный CJS→ESM гайд.

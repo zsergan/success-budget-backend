@@ -54,6 +54,11 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=10
+      maildev:
+        image: maildev/maildev
+        ports:
+          - 1025:1025
+          - 1080:1080
     env:
       DB_HOST: 127.0.0.1
       DB_PORT: 3306
@@ -61,6 +66,9 @@ jobs:
       DB_PASSWORD: change-me
       DB_DATABASE: success_budget
       JWT_SECRET: ci-e2e-test-secret-value
+      SMTP_HOST: 127.0.0.1
+      SMTP_PORT: 1025
+      MAIL_FROM: 'Success Budget <no-reply@success-budget.local>'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -68,6 +76,8 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'npm'
       - run: npm ci
+      - run: npm run migration:run
+      - run: npm run verify:reference-data
       - run: npm run test:e2e
 
   build:
@@ -85,3 +95,139 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  docker:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: success_budget
+          MYSQL_USER: success_budget
+          MYSQL_PASSWORD: change-me
+          MYSQL_ROOT_PASSWORD: change-me
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      maildev:
+        image: maildev/maildev
+        ports:
+          - 1025:1025
+          - 1080:1080
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USERNAME: success_budget
+      DB_PASSWORD: change-me
+      DB_DATABASE: success_budget
+      JWT_SECRET: ci-docker-smoke-test-secret-value
+      SMTP_HOST: 127.0.0.1
+      SMTP_PORT: 1025
+      MAIL_FROM: 'CI <no-reply@example.com>'
+      # Deliberately not 3000 (the Dockerfile's default/EXPOSE) - proves the
+      # app actually listens on whatever PORT it's given rather than that
+      # value being hardcoded somewhere.
+      PORT: 4123
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t success-budget-backend:ci .
+      - name: Run migrations against the test database
+        run: |
+          docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE \
+            success-budget-backend:ci \
+            node ./node_modules/typeorm/cli.js migration:run -d dist/config/typeorm-cli.data-source.js
+      - name: Re-run migrations and confirm they're idempotent
+        run: |
+          output=$(docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE \
+            success-budget-backend:ci \
+            node ./node_modules/typeorm/cli.js migration:run -d dist/config/typeorm-cli.data-source.js)
+          echo "$output"
+          echo "$output" | grep -q "No migrations are pending" || {
+            echo "Second migration:run applied something - migrations are not idempotent" >&2
+            exit 1
+          }
+      - name: Verify reference data landed
+        run: |
+          docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM \
+            success-budget-backend:ci \
+            node dist/database/verify-reference-data.js
+      - name: Start the container (production mode, non-default PORT) and check its health endpoint
+        run: |
+          docker run -d --network host --name api \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PORT -e NODE_ENV=production \
+            success-budget-backend:ci
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:${PORT}/api/v1/health && exit 0
+            sleep 2
+          done
+          echo "Container never became healthy" >&2
+          exit 1
+      - name: Swagger is disabled by default in production
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PORT}/docs)
+          if [ "$status" = "200" ]; then
+            echo "GET /docs returned 200 with NODE_ENV=production and SWAGGER_ENABLED unset - it should be disabled" >&2
+            exit 1
+          fi
+      - name: Smoke-test registration through an actually-delivered confirmation email
+        run: |
+          set -e
+          email="docker-smoke-$(date +%s)@example.com"
+
+          curl -sf -X POST "http://127.0.0.1:${PORT}/api/v1/users/register" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"Docker Smoke\",\"email\":\"${email}\",\"password\":\"DevTest#2026\",\"base_currency_id\":1}" > /dev/null
+
+          code=""
+          for i in $(seq 1 20); do
+            code=$(curl -sf http://127.0.0.1:1080/api/email \
+              | jq -r --arg email "$email" '[.[] | select((.to // [])[]?.address == $email)] | last | .text // empty' \
+              | grep -oE '[0-9]+' | head -1 || true)
+            [ -n "$code" ] && break
+            sleep 1
+          done
+          if [ -z "$code" ]; then
+            echo "No confirmation code found in a delivered email for $email" >&2
+            exit 1
+          fi
+
+          curl -sf -X POST "http://127.0.0.1:${PORT}/api/v1/users/verify-email" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"${email}\",\"code\":\"${code}\"}" > /dev/null
+
+          token=$(curl -sf -X POST "http://127.0.0.1:${PORT}/api/v1/users/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"${email}\",\"password\":\"DevTest#2026\"}")
+
+          curl -sf "http://127.0.0.1:${PORT}/api/v1/users/profile" \
+            -H "Authorization: Bearer ${token}" | grep -q "${email}"
+      - name: Container stops cleanly on SIGTERM
+        run: |
+          docker stop -t 10 api
+          exit_code=$(docker inspect api --format '{{.State.ExitCode}}')
+          # NestJS's enableShutdownHooks() (src/main.ts) runs its shutdown
+          # hooks, removes its own signal listener, then re-delivers the
+          # same signal to itself (see listenToShutdownSignals() in
+          # @nestjs/core) rather than calling process.exit() - a graceful
+          # shutdown legitimately self-terminates via that now-unhandled
+          # SIGTERM, which Docker reports as 143 (128+15), not 0. Both are
+          # "shut down within the -t grace period on its own terms"; only a
+          # forced kill (137 = SIGKILL after the grace period, i.e. the app
+          # hung) or any other exit code (a crash during shutdown) is a
+          # real failure here.
+          if [ "$exit_code" != "0" ] && [ "$exit_code" != "143" ]; then
+            echo "Container exited with code $exit_code instead of shutting down cleanly (expected 0 or 143)" >&2
+            exit 1
+          fi
+      - name: Container logs
+        if: always()
+        run: docker logs api || true

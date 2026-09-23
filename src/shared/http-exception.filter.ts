@@ -2,6 +2,8 @@ import { ExceptionFilter, Catch, ArgumentsHost, HttpException } from '@nestjs/co
 import { Request, Response } from 'express';
 import 'pino-http';
 
+import { RetryAfterException } from './retry-after.exception';
+
 @Catch(HttpException)
 export class HttpExceptionFilter implements ExceptionFilter {
   catch(exception: HttpException, host: ArgumentsHost) {
@@ -11,6 +13,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const status = exception.getStatus();
     const exceptionResponse = exception.getResponse();
     const error = typeof exceptionResponse === 'string' ? { message: exceptionResponse } : exceptionResponse;
+
+    if (exception instanceof RetryAfterException) {
+      response.set('Retry-After', String(exception.retryAfterSeconds));
+    }
 
     response.status(status).json({
       timestamp: new Date().toISOString(),

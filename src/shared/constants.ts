@@ -3,6 +3,13 @@ import { CreateCategoryDto } from '@modules/categories/dto/create-category.dto';
 
 export const MAX_CONFIRMATION_CODE_ATTEMPTS = 5;
 
+// Minimum time between confirmation-code emails for the same code, counted
+// from the last send *attempt* (successful or not) - this also throttles
+// retries against a struggling SMTP server, not just deliberate resends.
+export const CONFIRMATION_CODE_RESEND_COOLDOWN_MS = 1000 * 60; // 1 minute
+
+export const CONFIRMATION_CODE_TTL_MS = 1000 * 60 * 10; // 10 minutes
+
 // temporary defaults, not a considered business limit - revisit later
 export const SPACE_LIMITS = {
   MAX_MEMBERS_PER_SPACE: 20,
