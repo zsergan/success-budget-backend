@@ -297,3 +297,42 @@ Run it whenever `scripts/db-backup.sh`/`scripts/db-restore.sh` or the
 deploy pipeline around them changes, and periodically once a real hosting
 provider is chosen - a backup nobody has ever restored is a hope, not a
 plan.
+
+## What's verified, and what's still host-specific
+
+Verified by actually running it (CI on every push/PR, plus this repo's own
+scripts on demand) - not just asserted in this doc:
+
+- build → migrate → confirm migrations are idempotent → verify reference
+  data → start on a non-default `PORT` → health check → Swagger disabled
+  by default in production → a full register/verify/login/protected-route
+  flow through a **real, delivered** confirmation email → clean shutdown
+  on SIGTERM (CI's `docker` job).
+- Confirmation-email resend/failure handling, including the send-attempt
+  race fix (`test/confirmation-code-send-race.e2e-spec.ts`) - a slower,
+  stale send attempt can no longer overwrite a newer one's confirmed-sent
+  status.
+- Backup → restore into a separate empty database → boot → login and data
+  confirmed through the API, plus `DB_SSL_CA` accepting a correct CA and
+  rejecting a wrong one (`scripts/verify-backup-restore.sh`, run manually,
+  not in CI - see above).
+
+Still specific to whatever host is eventually chosen, and not yet
+configured or verified anywhere in this repo:
+
+- **HTTPS** - the app itself only ever speaks plain HTTP; TLS termination
+  is expected to happen in front of it (the hosting platform's own load
+  balancer/ingress, or a reverse proxy you run) - set `TRUST_PROXY`
+  accordingly once that's in place (see "Reverse proxy / client IP" above).
+- **Production email** - `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/
+  `SMTP_PASSWORD`/`SMTP_SECURE` need a real provider's credentials; MailDev
+  (dev/CI/the verification scripts) is a catcher, not something to point
+  production at.
+- **Backup schedule** - `scripts/db-backup.sh` runs on demand, not on a
+  schedule; see the bullet list under "Backup & restore" above for what to
+  decide once a host is chosen (cron vs. the provider's own managed
+  backups, retention, off-site storage).
+- **Notifications/alerting** - nothing today watches the health endpoint,
+  error rates, or backup success/failure and tells anyone - that's
+  entirely the chosen host/monitoring stack's job, not something this
+  codebase does on its own.
