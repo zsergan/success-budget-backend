@@ -16,16 +16,6 @@ export class SpaceMembersService {
     private readonly spacesService: SpacesService,
   ) {}
 
-  async assertMembership(spaceId: number, userId: number, minRole?: SpaceRole): Promise<SpaceMember> {
-    const member = await this.spaceMemberRepository.findOne({ where: { space_id: spaceId, user_id: userId } });
-
-    if (!member || (minRole === SpaceRole.OWNER && member.role !== SpaceRole.OWNER)) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_SPACE, HttpStatus.FORBIDDEN);
-    }
-
-    return member;
-  }
-
   async getAll(spaceId: number): Promise<SpaceMember[]> {
     return this.spaceMemberRepository.find({
       where: { space_id: spaceId },

@@ -22,7 +22,7 @@ import { ErrorMessages } from '@shared/error-messages';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
 import { assertBelongsToSpace } from '@shared/utils';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 @ApiTags('categories')
 @ApiBearerAuth()
@@ -30,13 +30,13 @@ import { SpaceMembersService } from '@modules/spaces/space-members.service';
 export class CategoriesController {
   constructor(
     private readonly categoriesService: CategoriesService,
-    private readonly spaceMembersService: SpaceMembersService,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     return this.categoriesService.getAll(spaceId);
   }
@@ -48,7 +48,7 @@ export class CategoriesController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() body: ReorderCategoriesDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     await this.categoriesService.reorder(spaceId, body.category_ids);
   }
@@ -61,7 +61,7 @@ export class CategoriesController {
     @Param('categoryId', ParseIntPipe) categoryId: number,
     @Body() updateCategory: UpdateCategoryDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const category = await this.categoriesService.getOne(categoryId);
     assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
@@ -80,7 +80,7 @@ export class CategoriesController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() createCategory: CreateCategoryDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     return this.categoriesService.create(spaceId, createCategory);
   }
@@ -92,7 +92,7 @@ export class CategoriesController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('categoryId', ParseIntPipe) categoryId: number,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const category = await this.categoriesService.getOne(categoryId);
     assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);

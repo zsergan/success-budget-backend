@@ -19,7 +19,7 @@ import type { AuthedRequest } from '@shared/types';
 import { LimitsService } from './limits.service';
 import { TransactionsService } from '@modules/transactions/transactions.service';
 import { CategoriesService } from '@modules/categories/categories.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { getEndOfMonth, getStartOfMonth, assertBelongsToSpace } from '@shared/utils';
@@ -33,13 +33,13 @@ export class LimitsController {
     private readonly limitsService: LimitsService,
     private readonly transactionsService: TransactionsService,
     private readonly categoriesService: CategoriesService,
-    private readonly spaceMembersService: SpaceMembersService,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const limits = await this.limitsService.getAll(spaceId);
     const categoryTotals = await this.transactionsService.getExpensesByCategory(
@@ -58,7 +58,7 @@ export class LimitsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() createLimitDto: CreateLimitDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
     await this.assertCategoriesOwnership(spaceId, createLimitDto.category_ids);
 
     return this.limitsService.create(spaceId, createLimitDto);
@@ -72,7 +72,7 @@ export class LimitsController {
     @Param('limitId', ParseIntPipe) limitId: number,
     @Body() updateLimitDto: UpdateLimitDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const limit = await this.limitsService.getOne(limitId);
     assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
@@ -90,7 +90,7 @@ export class LimitsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('limitId', ParseIntPipe) limitId: number,
   ): Promise<boolean> {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const limit = await this.limitsService.getOne(limitId);
     assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);

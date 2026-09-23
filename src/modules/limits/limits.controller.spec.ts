@@ -5,7 +5,7 @@ import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
 import { TransactionsService } from '@modules/transactions/transactions.service';
 import { CategoriesService } from '@modules/categories/categories.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
 
 describe('LimitsController', () => {
@@ -13,7 +13,7 @@ describe('LimitsController', () => {
   let limitsService: jest.Mocked<LimitsService>;
   let transactionsService: jest.Mocked<TransactionsService>;
   let categoriesService: jest.Mocked<CategoriesService>;
-  let spaceMembersService: jest.Mocked<SpaceMembersService>;
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -32,7 +32,7 @@ describe('LimitsController', () => {
         },
         { provide: TransactionsService, useValue: { getExpensesByCategory: jest.fn() } },
         { provide: CategoriesService, useValue: { getMany: jest.fn() } },
-        { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
@@ -40,7 +40,7 @@ describe('LimitsController', () => {
     limitsService = module.get(LimitsService);
     transactionsService = module.get(TransactionsService);
     categoriesService = module.get(CategoriesService);
-    spaceMembersService = module.get(SpaceMembersService);
+    spaceAccessService = module.get(SpaceAccessService);
   });
 
   const req = { user: { id: 1 } } as any;
@@ -55,7 +55,7 @@ describe('LimitsController', () => {
 
       const result = await controller.getAll(req, spaceId);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(limitsService.calculateSpending).toHaveBeenCalledWith([{ id: 1 }], categoryTotals);
       expect(result).toEqual({ total: null, categories: [], over_allocation: null });
     });

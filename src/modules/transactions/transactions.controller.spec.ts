@@ -5,7 +5,7 @@ import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
 import { TransactionType } from '@shared/enums';
 
@@ -14,7 +14,7 @@ describe('TransactionsController', () => {
   let transactionsService: jest.Mocked<TransactionsService>;
   let walletsService: jest.Mocked<WalletsService>;
   let categoriesService: jest.Mocked<CategoriesService>;
-  let spaceMembersService: jest.Mocked<SpaceMembersService>;
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -32,7 +32,7 @@ describe('TransactionsController', () => {
         },
         { provide: WalletsService, useValue: { getOne: jest.fn() } },
         { provide: CategoriesService, useValue: { getOne: jest.fn() } },
-        { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
@@ -40,7 +40,7 @@ describe('TransactionsController', () => {
     transactionsService = module.get(TransactionsService);
     walletsService = module.get(WalletsService);
     categoriesService = module.get(CategoriesService);
-    spaceMembersService = module.get(SpaceMembersService);
+    spaceAccessService = module.get(SpaceAccessService);
   });
 
   const req = { user: { id: 1 } } as any;
@@ -132,7 +132,7 @@ describe('TransactionsController', () => {
 
       const result = await controller.create(req, spaceId, dto);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(transactionsService.create).toHaveBeenCalledWith(wallet, dto);
       expect(result).toEqual(created);
     });
@@ -147,7 +147,7 @@ describe('TransactionsController', () => {
 
       const result = await controller.getAll(req, spaceId);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(transactionsService.getForAllWallets).toHaveBeenCalledWith(spaceId, expect.any(Date), expect.any(Date));
       expect(result[0].wallet).toEqual({ id: 1, is_deleted: 0 });
       expect(result[1].wallet).toBeNull();
@@ -160,7 +160,7 @@ describe('TransactionsController', () => {
 
       const result = await controller.getLatest(req, spaceId);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(transactionsService.getLatest).toHaveBeenCalledWith(spaceId);
       expect(result).toBeNull();
     });

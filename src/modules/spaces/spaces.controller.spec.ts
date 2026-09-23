@@ -5,6 +5,7 @@ import { SpacesController } from './spaces.controller';
 import { SpacesService } from './spaces.service';
 import { SpaceMembersService } from './space-members.service';
 import { SpaceInvitesService } from './space-invites.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
@@ -14,6 +15,7 @@ import { ErrorMessages } from '@shared/error-messages';
 describe('SpacesController', () => {
   let controller: SpacesController;
   let spacesService: jest.Mocked<SpacesService>;
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
   let spaceMembersService: jest.Mocked<SpaceMembersService>;
   let spaceInvitesService: jest.Mocked<SpaceInvitesService>;
   let usersService: jest.Mocked<UsersService>;
@@ -28,9 +30,10 @@ describe('SpacesController', () => {
           provide: SpacesService,
           useValue: { create: jest.fn(), getAllForUser: jest.fn(), getOne: jest.fn(), remove: jest.fn() },
         },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
         {
           provide: SpaceMembersService,
-          useValue: { assertMembership: jest.fn(), getAll: jest.fn(), leaveOrRemove: jest.fn() },
+          useValue: { getAll: jest.fn(), leaveOrRemove: jest.fn() },
         },
         {
           provide: SpaceInvitesService,
@@ -42,6 +45,7 @@ describe('SpacesController', () => {
 
     controller = module.get(SpacesController);
     spacesService = module.get(SpacesService);
+    spaceAccessService = module.get(SpaceAccessService);
     spaceMembersService = module.get(SpaceMembersService);
     spaceInvitesService = module.get(SpaceInvitesService);
     usersService = module.get(UsersService);
@@ -51,21 +55,21 @@ describe('SpacesController', () => {
     const forbidden = new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
     it('rejects a plain member deleting a space', async () => {
-      spaceMembersService.assertMembership.mockRejectedValue(forbidden);
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden);
 
       await expect(controller.remove(req, 10)).rejects.toMatchObject(forbidden);
       expect(spacesService.remove).not.toHaveBeenCalled();
     });
 
     it('rejects a plain member creating an invite', async () => {
-      spaceMembersService.assertMembership.mockRejectedValue(forbidden);
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden);
 
       await expect(controller.createInvite(req, 10, { email: 'a@example.com' })).rejects.toMatchObject(forbidden);
       expect(spaceInvitesService.create).not.toHaveBeenCalled();
     });
 
     it('rejects a plain member revoking an invite', async () => {
-      spaceMembersService.assertMembership.mockRejectedValue(forbidden);
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden);
 
       await expect(controller.revokeInvite(req, 10, 5)).rejects.toMatchObject(forbidden);
       expect(spaceInvitesService.revoke).not.toHaveBeenCalled();
@@ -79,7 +83,7 @@ describe('SpacesController', () => {
       // confuses the two.
       const ownerReq = { user: { id: 101 } } as any;
 
-      spaceMembersService.assertMembership.mockResolvedValue({ role: SpaceRole.OWNER, user_id: 101 } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue({ role: SpaceRole.OWNER, user_id: 101 } as SpaceMember);
       spaceMembersService.getAll.mockResolvedValue([
         { id: 51, user_id: 101, role: SpaceRole.OWNER, user: { name: 'Me', email: 'me@example.com' } } as SpaceMember,
         {
@@ -125,7 +129,7 @@ describe('SpacesController', () => {
     });
 
     it('sets can_remove false everywhere for a plain member caller', async () => {
-      spaceMembersService.assertMembership.mockResolvedValue({ role: SpaceRole.MEMBER, user_id: 2 } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue({ role: SpaceRole.MEMBER, user_id: 2 } as SpaceMember);
       spaceMembersService.getAll.mockResolvedValue([
         { id: 1, user_id: 1, role: SpaceRole.OWNER, user: { name: 'Me', email: 'me@example.com' } } as SpaceMember,
       ]);

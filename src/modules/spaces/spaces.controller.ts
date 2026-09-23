@@ -19,6 +19,7 @@ import { SpaceInvitesService } from './space-invites.service';
 import { CreateSpaceDto } from './dto/create-space.dto';
 import { CreateSpaceInviteDto } from './dto/create-space-invite.dto';
 import { AcceptSpaceInviteDto } from './dto/accept-space-invite.dto';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
 import type { AuthedRequest } from '@shared/types';
 import { SpaceRole } from '@shared/enums';
@@ -43,6 +44,7 @@ interface SpaceMemberView {
 export class SpacesController {
   constructor(
     private readonly spacesService: SpacesService,
+    private readonly spaceAccessService: SpaceAccessService,
     private readonly spaceMembersService: SpaceMembersService,
     private readonly spaceInvitesService: SpaceInvitesService,
     private readonly usersService: UsersService,
@@ -69,14 +71,14 @@ export class SpacesController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Get(':id')
   async getOne(@Request() req: AuthedRequest, @Param('id', ParseIntPipe) id: number) {
-    await this.spaceMembersService.assertMembership(id, req.user.id);
+    await this.spaceAccessService.assertMembership(id, req.user.id);
 
     return this.spacesService.getOne(id);
   }
 
   @Get(':id/members')
   async getMembers(@Request() req: AuthedRequest, @Param('id', ParseIntPipe) id: number): Promise<SpaceMemberView[]> {
-    const caller = await this.spaceMembersService.assertMembership(id, req.user.id);
+    const caller = await this.spaceAccessService.assertMembership(id, req.user.id);
     const isOwner = caller.role === SpaceRole.OWNER;
 
     const [members, invites] = await Promise.all([
@@ -109,7 +111,7 @@ export class SpacesController {
 
   @Delete(':id')
   async remove(@Request() req: AuthedRequest, @Param('id', ParseIntPipe) id: number): Promise<boolean> {
-    await this.spaceMembersService.assertMembership(id, req.user.id, SpaceRole.OWNER);
+    await this.spaceAccessService.assertMembership(id, req.user.id, SpaceRole.OWNER);
     await this.spacesService.remove(id, req.user.id);
 
     return true;
@@ -122,7 +124,7 @@ export class SpacesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() createSpaceInviteDto: CreateSpaceInviteDto,
   ) {
-    await this.spaceMembersService.assertMembership(id, req.user.id, SpaceRole.OWNER);
+    await this.spaceAccessService.assertMembership(id, req.user.id, SpaceRole.OWNER);
     const space = await this.spacesService.getOne(id);
     const invite = await this.spaceInvitesService.create(space, createSpaceInviteDto.email);
 
@@ -137,7 +139,7 @@ export class SpacesController {
     @Param('id', ParseIntPipe) id: number,
     @Param('inviteId', ParseIntPipe) inviteId: number,
   ): Promise<boolean> {
-    await this.spaceMembersService.assertMembership(id, req.user.id, SpaceRole.OWNER);
+    await this.spaceAccessService.assertMembership(id, req.user.id, SpaceRole.OWNER);
     await this.spaceInvitesService.revoke(inviteId, id);
 
     return true;
@@ -149,7 +151,7 @@ export class SpacesController {
     @Param('id', ParseIntPipe) id: number,
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<boolean> {
-    await this.spaceMembersService.assertMembership(id, req.user.id);
+    await this.spaceAccessService.assertMembership(id, req.user.id);
     await this.spaceMembersService.leaveOrRemove(id, req.user.id, userId);
 
     return true;

@@ -43,31 +43,6 @@ describe('SpaceMembersService', () => {
     spacesService = module.get(SpacesService);
   });
 
-  describe('assertMembership', () => {
-    it('passes for an owner when an owner is required', async () => {
-      const member = { role: SpaceRole.OWNER } as SpaceMember;
-      spaceMemberRepository.findOne.mockResolvedValue(member);
-
-      await expect(service.assertMembership(10, 1, SpaceRole.OWNER)).resolves.toBe(member);
-    });
-
-    it('rejects a plain member when an owner is required', async () => {
-      spaceMemberRepository.findOne.mockResolvedValue({ role: SpaceRole.MEMBER } as SpaceMember);
-
-      await expect(service.assertMembership(10, 1, SpaceRole.OWNER)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
-      );
-    });
-
-    it('rejects a non-member regardless of the required role', async () => {
-      spaceMemberRepository.findOne.mockResolvedValue(null);
-
-      await expect(service.assertMembership(10, 1)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
-      );
-    });
-  });
-
   describe('leaveOrRemove', () => {
     it('lets an owner remove another member', async () => {
       spaceMemberRepository.findOne

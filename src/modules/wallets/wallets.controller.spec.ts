@@ -4,14 +4,14 @@ import { HttpException } from '@nestjs/common';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 import { TransactionsService } from '@modules/transactions/transactions.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
   let walletsService: jest.Mocked<WalletsService>;
   let transactionsService: jest.Mocked<TransactionsService>;
-  let spaceMembersService: jest.Mocked<SpaceMembersService>;
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -30,14 +30,14 @@ describe('WalletsController', () => {
           },
         },
         { provide: TransactionsService, useValue: { getPeriodTotals: jest.fn(), getBalances: jest.fn() } },
-        { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
     controller = module.get(WalletsController);
     walletsService = module.get(WalletsService);
     transactionsService = module.get(TransactionsService);
-    spaceMembersService = module.get(SpaceMembersService);
+    spaceAccessService = module.get(SpaceAccessService);
   });
 
   const req = { user: { id: 1 } } as any;
@@ -50,7 +50,7 @@ describe('WalletsController', () => {
 
       const result = await controller.create(req, spaceId, { wallet_name: 'Cash' } as any);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(walletsService.create).toHaveBeenCalledWith(spaceId, { wallet_name: 'Cash' });
       expect(result).toEqual(created);
     });
@@ -121,7 +121,7 @@ describe('WalletsController', () => {
       const to = new Date('2026-01-31');
       const result = await controller.getAll(req, spaceId, from, to);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(transactionsService.getPeriodTotals).toHaveBeenCalledWith([1, 2], from, to);
       expect(transactionsService.getBalances).toHaveBeenCalledWith([1, 2]);
       expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, periodTotals, balances);

@@ -18,7 +18,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '@shared/types';
 import { getEndOfMonth, getStartOfMonth, assertBelongsToSpace } from '@shared/utils';
@@ -32,7 +32,7 @@ export class TransactionsController {
     private readonly transactionsService: TransactionsService,
     private readonly walletsService: WalletsService,
     private readonly categoriesService: CategoriesService,
-    private readonly spaceMembersService: SpaceMembersService,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -42,7 +42,7 @@ export class TransactionsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() createTransactionDto: CreateTransactionDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const wallet = await this.walletsService.getOne(createTransactionDto.wallet_id);
     assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
@@ -64,7 +64,7 @@ export class TransactionsController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Get('latest')
   async getLatest(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const transaction = await this.transactionsService.getLatest(spaceId);
 
@@ -87,7 +87,7 @@ export class TransactionsController {
     @Query('from') from: Date = getStartOfMonth(new Date()),
     @Query('to') to: Date = getEndOfMonth(new Date()),
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const transactions = await this.transactionsService.getForAllWallets(spaceId, from, to);
 
@@ -106,7 +106,7 @@ export class TransactionsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('transactionId') transactionId: string,
   ): Promise<boolean> {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
+    await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const transaction = await this.transactionsService.getOneWithWallet(transactionId);
     assertBelongsToSpace(transaction?.wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);

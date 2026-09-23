@@ -3,13 +3,13 @@ import { HttpException } from '@nestjs/common';
 
 import { CategoriesController } from './categories.controller';
 import { CategoriesService } from './categories.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
 
 describe('CategoriesController', () => {
   let controller: CategoriesController;
   let categoriesService: jest.Mocked<CategoriesService>;
-  let spaceMembersService: jest.Mocked<SpaceMembersService>;
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -26,13 +26,13 @@ describe('CategoriesController', () => {
             reorder: jest.fn(),
           },
         },
-        { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
     controller = module.get(CategoriesController);
     categoriesService = module.get(CategoriesService);
-    spaceMembersService = module.get(SpaceMembersService);
+    spaceAccessService = module.get(SpaceAccessService);
   });
 
   const req = { user: { id: 1 } } as any;
@@ -45,7 +45,7 @@ describe('CategoriesController', () => {
 
       const result = await controller.getAll(req, spaceId);
 
-      expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
       expect(categoriesService.getAll).toHaveBeenCalledWith(spaceId);
       expect(result).toBe(view);
     });
