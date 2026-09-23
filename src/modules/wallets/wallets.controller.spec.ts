@@ -29,7 +29,7 @@ describe('WalletsController', () => {
             buildOverview: jest.fn(),
           },
         },
-        { provide: TransactionsService, useValue: { getAllForWallets: jest.fn(), getBalances: jest.fn() } },
+        { provide: TransactionsService, useValue: { getWalletTotals: jest.fn() } },
         { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
@@ -96,12 +96,11 @@ describe('WalletsController', () => {
   });
 
   describe('getAll', () => {
-    it('fetches transactions and derived balances in parallel and delegates the overview to the service', async () => {
+    it('fetches wallet totals in one query and delegates the overview to the service', async () => {
       const wallets = [{ id: 1 }, { id: 2 }] as any;
-      const transactions = [{ wallet_id: 1, amount: '100' }] as any;
-      const balances = new Map([
-        [1, 100],
-        [2, 0],
+      const totals = new Map([
+        [1, { balance: 100, period_income: 100, period_spend: 30 }],
+        [2, { balance: 0, period_income: 0, period_spend: 0 }],
       ]);
       const overview = {
         total_balance: 100,
@@ -110,8 +109,7 @@ describe('WalletsController', () => {
         wallets: [{ wallet: { id: 1 }, total_spend: 30, total_income: 100 }],
       };
       walletsService.getAll.mockResolvedValue(wallets);
-      transactionsService.getAllForWallets.mockResolvedValue(transactions);
-      transactionsService.getBalances.mockResolvedValue(balances);
+      transactionsService.getWalletTotals.mockResolvedValue(totals);
       walletsService.buildOverview.mockResolvedValue(overview as any);
 
       const from = new Date('2026-01-01');
@@ -119,9 +117,8 @@ describe('WalletsController', () => {
       const result = await controller.getAll(req, spaceId, from, to);
 
       expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(transactionsService.getAllForWallets).toHaveBeenCalledWith([1, 2], from, to);
-      expect(transactionsService.getBalances).toHaveBeenCalledWith([1, 2]);
-      expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, transactions, balances);
+      expect(transactionsService.getWalletTotals).toHaveBeenCalledWith([1, 2], from, to);
+      expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, totals);
       expect(result).toEqual(overview);
     });
   });

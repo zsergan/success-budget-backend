@@ -73,12 +73,9 @@ export class WalletsController {
 
     const wallets = await this.walletsService.getAll(spaceId);
     const walletIds = wallets.map((wallet) => wallet.id);
-    const [transactions, balances] = await Promise.all([
-      this.transactionsService.getAllForWallets(walletIds, from, to),
-      this.transactionsService.getBalances(walletIds),
-    ]);
+    const totals = await this.transactionsService.getWalletTotals(walletIds, from, to);
 
-    return this.walletsService.buildOverview(spaceId, wallets, transactions, balances);
+    return this.walletsService.buildOverview(spaceId, wallets, totals);
   }
 
   @Delete(':walletId')
