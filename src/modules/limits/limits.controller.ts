@@ -42,13 +42,13 @@ export class LimitsController {
     await this.spaceMembersService.assertMembership(spaceId, req.user.id);
 
     const limits = await this.limitsService.getAll(spaceId);
-    const transactions = await this.transactionsService.getForAllWallets(
+    const totals = await this.transactionsService.getExpenseTotals(
       spaceId,
       getStartOfMonth(new Date()),
       getEndOfMonth(new Date()),
     );
 
-    return this.limitsService.calculateSpending(limits, transactions);
+    return this.limitsService.calculateSpending(limits, totals);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)

@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 
 import { LimitsService } from './limits.service';
 import { Limit } from '@entities/limit.entity';
-import { LimitType, TransactionType } from '@shared/enums';
+import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 
 describe('LimitsService', () => {
@@ -208,15 +208,18 @@ describe('LimitsService', () => {
         { id: 1, limit_type: LimitType.OTHERS, amount: 2000, name: null, categories: [] },
         { id: 2, limit_type: LimitType.CATEGORY, amount: 400, name: null, categories: [{ id: 10 }] },
       ] as any;
-      const transactions = [
-        { category_id: 10, transaction_type: TransactionType.EXPENSE, amount: 350 },
-        { category_id: 99, transaction_type: TransactionType.EXPENSE, amount: 50 },
-        { category_id: 10, transaction_type: TransactionType.INCOME, amount: 1000 },
-      ] as any;
+      // total = ALL expenses (350 + 50), not just the unclaimed 50 -
+      // income never enters this aggregate in the first place
+      const totals = {
+        total: 400,
+        byCategory: new Map([
+          [10, 350],
+          [99, 50],
+        ]),
+      };
 
-      const result = service.calculateSpending(limits, transactions);
+      const result = service.calculateSpending(limits, totals);
 
-      // total = ALL expenses (350 + 50), not just the unclaimed 50
       expect(result.total).toMatchObject({ id: 1, spent: 400, in_percent: 20 });
       expect(result.categories[0]).toMatchObject({ id: 2, spent: 350, in_percent: 87 });
       expect(result.over_allocation).toBeNull();
@@ -226,12 +229,15 @@ describe('LimitsService', () => {
       const limits = [
         { id: 1, limit_type: LimitType.CATEGORY, amount: 220, name: 'Fun', categories: [{ id: 1 }, { id: 2 }] },
       ] as any;
-      const transactions = [
-        { category_id: 1, transaction_type: TransactionType.EXPENSE, amount: 80 },
-        { category_id: 2, transaction_type: TransactionType.EXPENSE, amount: 40 },
-      ] as any;
+      const totals = {
+        total: 120,
+        byCategory: new Map([
+          [1, 80],
+          [2, 40],
+        ]),
+      };
 
-      const result = service.calculateSpending(limits, transactions);
+      const result = service.calculateSpending(limits, totals);
 
       expect(result.categories[0]).toMatchObject({ spent: 120, in_percent: 54 });
     });
@@ -243,18 +249,28 @@ describe('LimitsService', () => {
         { id: 3, limit_type: LimitType.CATEGORY, amount: 1250, name: null, categories: [{ id: 2 }] },
       ] as any;
 
-      const result = service.calculateSpending(limits, []);
+      const result = service.calculateSpending(limits, { total: 0, byCategory: new Map() });
 
       expect(result.over_allocation).toEqual({ category_total: 2150, difference: 150 });
     });
 
     it('returns 0 percent instead of Infinity/NaN when a limit amount is 0', () => {
       const limits = [{ id: 1, limit_type: LimitType.CATEGORY, amount: 0, name: null, categories: [{ id: 1 }] }] as any;
-      const transactions = [{ category_id: 1, transaction_type: TransactionType.EXPENSE, amount: 40 }] as any;
+      const totals = { total: 40, byCategory: new Map([[1, 40]]) };
 
-      const result = service.calculateSpending(limits, transactions);
+      const result = service.calculateSpending(limits, totals);
 
       expect(result.categories[0]).toMatchObject({ spent: 40, in_percent: 0 });
+    });
+
+    it('treats a category with no expenses in the period as zero spend', () => {
+      const limits = [
+        { id: 1, limit_type: LimitType.CATEGORY, amount: 100, name: null, categories: [{ id: 1 }] },
+      ] as any;
+
+      const result = service.calculateSpending(limits, { total: 0, byCategory: new Map() });
+
+      expect(result.categories[0]).toMatchObject({ spent: 0, in_percent: 0 });
     });
   });
 });
