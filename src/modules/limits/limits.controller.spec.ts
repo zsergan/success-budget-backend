@@ -30,7 +30,7 @@ describe('LimitsController', () => {
             calculateSpending: jest.fn(),
           },
         },
-        { provide: TransactionsService, useValue: { getExpenseTotals: jest.fn() } },
+        { provide: TransactionsService, useValue: { getExpensesByCategory: jest.fn() } },
         { provide: CategoriesService, useValue: { getMany: jest.fn() } },
         { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
       ],
@@ -47,16 +47,16 @@ describe('LimitsController', () => {
   const spaceId = 10;
 
   describe('getAll', () => {
-    it('fetches limits and expense totals, then delegates the spending calculation to the service', async () => {
-      const totals = { total: 100, byCategory: new Map([[10, 100]]) };
+    it('fetches limits and category expense totals, then delegates the spending calculation to the service', async () => {
+      const categoryTotals = new Map([[10, 100]]);
       limitsService.getAll.mockResolvedValue([{ id: 1 }] as any);
-      transactionsService.getExpenseTotals.mockResolvedValue(totals as any);
+      transactionsService.getExpensesByCategory.mockResolvedValue(categoryTotals);
       limitsService.calculateSpending.mockReturnValue({ total: null, categories: [], over_allocation: null } as any);
 
       const result = await controller.getAll(req, spaceId);
 
       expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(limitsService.calculateSpending).toHaveBeenCalledWith([{ id: 1 }], totals);
+      expect(limitsService.calculateSpending).toHaveBeenCalledWith([{ id: 1 }], categoryTotals);
       expect(result).toEqual({ total: null, categories: [], over_allocation: null });
     });
   });

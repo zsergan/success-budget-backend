@@ -18,11 +18,6 @@ export interface WalletPeriodTotals {
   spend: number;
 }
 
-export interface ExpenseTotals {
-  total: number;
-  byCategory: Map<number, number>;
-}
-
 @Injectable()
 export class TransactionsService {
   constructor(
@@ -124,11 +119,11 @@ export class TransactionsService {
     return totals;
   }
 
-  // one aggregated query for GET /spaces/:spaceId/limits - the total and
-  // every category limit's spend all come out of the same
-  // space-wide expense GROUP BY, including history of deleted wallets
-  // (limits track space spend, not per-wallet)
-  async getExpenseTotals(spaceId: number, from: Date, to: Date): Promise<ExpenseTotals> {
+  // one aggregated query for GET /spaces/:spaceId/limits - every category's
+  // expense spend for the period, grouped in SQL. Joined to wallet only to
+  // scope by space_id (still includes deleted-wallet history, since limits
+  // track space spend, not per-wallet); no wallet/category entities loaded.
+  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, number>> {
     const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoin('transaction.wallet', 'wallet')
@@ -141,10 +136,7 @@ export class TransactionsService {
       .groupBy('transaction.category_id')
       .getRawMany<{ category_id: number; spent: string }>();
 
-    const byCategory = new Map(rows.map((row) => [Number(row.category_id), Number(row.spent)]));
-    const total = rows.reduce((sum, row) => sum + Number(row.spent), 0);
-
-    return { total, byCategory };
+    return new Map(rows.map((row) => [Number(row.category_id), Number(row.spent)]));
   }
 
   async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<Transaction[]> {

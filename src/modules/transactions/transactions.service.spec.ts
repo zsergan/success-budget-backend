@@ -197,8 +197,8 @@ describe('TransactionsService', () => {
     });
   });
 
-  describe('getExpenseTotals', () => {
-    it('sums expenses per category and overall for a space in one grouped query', async () => {
+  describe('getExpensesByCategory', () => {
+    it('sums expenses per category for a space in one grouped query', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       queryBuilder.getRawMany.mockResolvedValue([
@@ -206,7 +206,7 @@ describe('TransactionsService', () => {
         { category_id: 20, spent: '50' },
       ]);
 
-      const result = await service.getExpenseTotals(9, from, to);
+      const result = await service.getExpensesByCategory(9, from, to);
 
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
@@ -214,8 +214,7 @@ describe('TransactionsService', () => {
         expense: TransactionType.EXPENSE,
       });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.category_id');
-      expect(result.total).toBe(400);
-      expect(result.byCategory).toEqual(
+      expect(result).toEqual(
         new Map([
           [10, 350],
           [20, 50],
@@ -223,11 +222,10 @@ describe('TransactionsService', () => {
       );
     });
 
-    it('returns a zero total and an empty map when there are no expenses', async () => {
-      const result = await service.getExpenseTotals(9, new Date(), new Date());
+    it('returns an empty map when there are no expenses', async () => {
+      const result = await service.getExpensesByCategory(9, new Date(), new Date());
 
-      expect(result.total).toBe(0);
-      expect(result.byCategory).toEqual(new Map());
+      expect(result).toEqual(new Map());
     });
   });
 

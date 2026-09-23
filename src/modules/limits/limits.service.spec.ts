@@ -210,15 +210,12 @@ describe('LimitsService', () => {
       ] as any;
       // total = ALL expenses (350 + 50), not just the unclaimed 50 -
       // income never enters this aggregate in the first place
-      const totals = {
-        total: 400,
-        byCategory: new Map([
-          [10, 350],
-          [99, 50],
-        ]),
-      };
+      const categoryTotals = new Map([
+        [10, 350],
+        [99, 50],
+      ]);
 
-      const result = service.calculateSpending(limits, totals);
+      const result = service.calculateSpending(limits, categoryTotals);
 
       expect(result.total).toMatchObject({ id: 1, spent: 400, in_percent: 20 });
       expect(result.categories[0]).toMatchObject({ id: 2, spent: 350, in_percent: 87 });
@@ -229,15 +226,12 @@ describe('LimitsService', () => {
       const limits = [
         { id: 1, limit_type: LimitType.CATEGORY, amount: 220, name: 'Fun', categories: [{ id: 1 }, { id: 2 }] },
       ] as any;
-      const totals = {
-        total: 120,
-        byCategory: new Map([
-          [1, 80],
-          [2, 40],
-        ]),
-      };
+      const categoryTotals = new Map([
+        [1, 80],
+        [2, 40],
+      ]);
 
-      const result = service.calculateSpending(limits, totals);
+      const result = service.calculateSpending(limits, categoryTotals);
 
       expect(result.categories[0]).toMatchObject({ spent: 120, in_percent: 54 });
     });
@@ -249,16 +243,16 @@ describe('LimitsService', () => {
         { id: 3, limit_type: LimitType.CATEGORY, amount: 1250, name: null, categories: [{ id: 2 }] },
       ] as any;
 
-      const result = service.calculateSpending(limits, { total: 0, byCategory: new Map() });
+      const result = service.calculateSpending(limits, new Map());
 
       expect(result.over_allocation).toEqual({ category_total: 2150, difference: 150 });
     });
 
     it('returns 0 percent instead of Infinity/NaN when a limit amount is 0', () => {
       const limits = [{ id: 1, limit_type: LimitType.CATEGORY, amount: 0, name: null, categories: [{ id: 1 }] }] as any;
-      const totals = { total: 40, byCategory: new Map([[1, 40]]) };
+      const categoryTotals = new Map([[1, 40]]);
 
-      const result = service.calculateSpending(limits, totals);
+      const result = service.calculateSpending(limits, categoryTotals);
 
       expect(result.categories[0]).toMatchObject({ spent: 40, in_percent: 0 });
     });
@@ -268,7 +262,7 @@ describe('LimitsService', () => {
         { id: 1, limit_type: LimitType.CATEGORY, amount: 100, name: null, categories: [{ id: 1 }] },
       ] as any;
 
-      const result = service.calculateSpending(limits, { total: 0, byCategory: new Map() });
+      const result = service.calculateSpending(limits, new Map());
 
       expect(result.categories[0]).toMatchObject({ spent: 0, in_percent: 0 });
     });
