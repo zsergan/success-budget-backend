@@ -15,6 +15,7 @@ describe('TransactionsService', () => {
     queryBuilder = {
       select: jest.fn().mockReturnThis(),
       addSelect: jest.fn().mockReturnThis(),
+      innerJoin: jest.fn().mockReturnThis(),
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -151,26 +152,80 @@ describe('TransactionsService', () => {
     });
   });
 
-  describe('getAllForWallets', () => {
-    it('filters transactions for a set of wallets by date range in one query', async () => {
+  describe('getPeriodTotals', () => {
+    it('returns an all-zero map without querying when there are no wallets', async () => {
+      const result = await service.getPeriodTotals([], new Date(), new Date());
+
+      expect(result).toEqual(new Map());
+      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('defaults every requested wallet to zero totals when none has transactions', async () => {
+      const result = await service.getPeriodTotals([1, 2], new Date(), new Date());
+
+      expect(result).toEqual(
+        new Map([
+          [1, { income: 0, spend: 0 }],
+          [2, { income: 0, spend: 0 }],
+        ]),
+      );
+    });
+
+    it('sums income and expense transactions per wallet within the date range in one grouped query', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
-      queryBuilder.getMany.mockResolvedValue([]);
+      queryBuilder.getRawMany.mockResolvedValue([
+        { wallet_id: '1', income: '200', spend: '0' },
+        { wallet_id: '2', income: '0', spend: '50' },
+      ]);
 
-      await service.getAllForWallets([1, 2, 3], from, to);
+      const result = await service.getPeriodTotals([1, 2, 3], from, to);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
         walletIds: [1, 2, 3],
       });
       expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
       expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
+      expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
+      expect(result).toEqual(
+        new Map([
+          [1, { income: 200, spend: 0 }],
+          [2, { income: 0, spend: 50 }],
+          [3, { income: 0, spend: 0 }],
+        ]),
+      );
+    });
+  });
+
+  describe('getExpensesByCategory', () => {
+    it('sums expenses per category for a space in one grouped query', async () => {
+      const from = new Date('2026-01-01');
+      const to = new Date('2026-01-31');
+      queryBuilder.getRawMany.mockResolvedValue([
+        { category_id: 10, spent: '350' },
+        { category_id: 20, spent: '50' },
+      ]);
+
+      const result = await service.getExpensesByCategory(9, from, to);
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :expense', {
+        expense: TransactionType.EXPENSE,
+      });
+      expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.category_id');
+      expect(result).toEqual(
+        new Map([
+          [10, 350],
+          [20, 50],
+        ]),
+      );
     });
 
-    it('returns an empty array without querying when there are no wallets', async () => {
-      const result = await service.getAllForWallets([], new Date(), new Date());
+    it('returns an empty map when there are no expenses', async () => {
+      const result = await service.getExpensesByCategory(9, new Date(), new Date());
 
-      expect(result).toEqual([]);
-      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(result).toEqual(new Map());
     });
   });
 

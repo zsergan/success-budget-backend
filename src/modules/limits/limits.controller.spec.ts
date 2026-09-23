@@ -30,8 +30,8 @@ describe('LimitsController', () => {
             calculateSpending: jest.fn(),
           },
         },
-        { provide: TransactionsService, useValue: { getForAllWallets: jest.fn() } },
-        { provide: CategoriesService, useValue: { getOne: jest.fn() } },
+        { provide: TransactionsService, useValue: { getExpensesByCategory: jest.fn() } },
+        { provide: CategoriesService, useValue: { getMany: jest.fn() } },
         { provide: SpaceMembersService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
@@ -47,28 +47,53 @@ describe('LimitsController', () => {
   const spaceId = 10;
 
   describe('getAll', () => {
-    it('fetches limits and transactions, then delegates the spending calculation to the service', async () => {
+    it('fetches limits and category expense totals, then delegates the spending calculation to the service', async () => {
+      const categoryTotals = new Map([[10, 100]]);
       limitsService.getAll.mockResolvedValue([{ id: 1 }] as any);
-      transactionsService.getForAllWallets.mockResolvedValue([{ id: 'tx-1' }] as any);
+      transactionsService.getExpensesByCategory.mockResolvedValue(categoryTotals);
       limitsService.calculateSpending.mockReturnValue({ total: null, categories: [], over_allocation: null } as any);
 
       const result = await controller.getAll(req, spaceId);
 
       expect(spaceMembersService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(limitsService.calculateSpending).toHaveBeenCalledWith([{ id: 1 }], [{ id: 'tx-1' }]);
+      expect(limitsService.calculateSpending).toHaveBeenCalledWith([{ id: 1 }], categoryTotals);
       expect(result).toEqual({ total: null, categories: [], over_allocation: null });
     });
   });
 
   describe('create', () => {
     it('delegates to LimitsService.create', async () => {
-      categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 5, space_id: spaceId }] as any);
       limitsService.create.mockResolvedValue({ id: 1 } as any);
 
       const result = await controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any);
 
+      expect(categoriesService.getMany).toHaveBeenCalledWith([5]);
       expect(limitsService.create).toHaveBeenCalledWith(spaceId, { category_ids: [5], amount: 10 });
       expect(result).toEqual({ id: 1 });
+    });
+
+    it('checks every category in a single batched call, not one per id', async () => {
+      categoriesService.getMany.mockResolvedValue([
+        { id: 5, space_id: spaceId },
+        { id: 6, space_id: spaceId },
+      ] as any);
+      limitsService.create.mockResolvedValue({ id: 1 } as any);
+
+      await controller.create(req, spaceId, { category_ids: [5, 6], name: 'Fun', amount: 10 } as any);
+
+      expect(categoriesService.getMany).toHaveBeenCalledTimes(1);
+      expect(categoriesService.getMany).toHaveBeenCalledWith([5, 6]);
+    });
+
+    it('passes a duplicate category id through unchanged - dedup is the service read, not a data change', async () => {
+      categoriesService.getMany.mockResolvedValue([{ id: 5, space_id: spaceId }] as any);
+      limitsService.create.mockResolvedValue({ id: 1 } as any);
+
+      await controller.create(req, spaceId, { category_ids: [5, 5], amount: 10 } as any);
+
+      expect(categoriesService.getMany).toHaveBeenCalledWith([5, 5]);
+      expect(limitsService.create).toHaveBeenCalledWith(spaceId, { category_ids: [5, 5], amount: 10 });
     });
 
     it('allows creating a monthly total limit with no categories', async () => {
@@ -76,12 +101,21 @@ describe('LimitsController', () => {
 
       await controller.create(req, spaceId, { amount: 2000 } as any);
 
-      expect(categoriesService.getOne).not.toHaveBeenCalled();
+      expect(categoriesService.getMany).not.toHaveBeenCalled();
       expect(limitsService.create).toHaveBeenCalledWith(spaceId, { amount: 2000 });
     });
 
     it('rejects creating a limit for a category belonging to a different space', async () => {
-      categoriesService.getOne.mockResolvedValue({ id: 5, space_id: 20 } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 5, space_id: 20 }] as any);
+
+      await expect(controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
+      );
+      expect(limitsService.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects creating a limit for a category id that does not exist', async () => {
+      categoriesService.getMany.mockResolvedValue([]);
 
       await expect(controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
@@ -90,7 +124,7 @@ describe('LimitsController', () => {
     });
 
     it('rejects creating a limit for a system category', async () => {
-      categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId, is_system: 1 } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 5, space_id: spaceId, is_system: 1 }] as any);
 
       await expect(controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
@@ -99,7 +133,7 @@ describe('LimitsController', () => {
     });
 
     it('propagates a duplicate-limit rejection from the service', async () => {
-      categoriesService.getOne.mockResolvedValue({ id: 5, space_id: spaceId } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 5, space_id: spaceId }] as any);
       limitsService.create.mockRejectedValue(new HttpException(ErrorMessages.LIMIT_EXISTS, 400));
 
       await expect(controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any)).rejects.toMatchObject(
@@ -120,7 +154,7 @@ describe('LimitsController', () => {
 
     it('rejects updating a limit to reference a category belonging to a different space', async () => {
       limitsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, categories: [{ id: 5 }] } as any);
-      categoriesService.getOne.mockResolvedValue({ id: 6, space_id: 20 } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 6, space_id: 20 }] as any);
 
       await expect(controller.update(req, spaceId, 1, { category_ids: [6], amount: 20 } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
@@ -130,7 +164,7 @@ describe('LimitsController', () => {
 
     it('rejects updating a limit to reference a system category', async () => {
       limitsService.getOne.mockResolvedValue({ id: 1, space_id: spaceId, categories: [{ id: 5 }] } as any);
-      categoriesService.getOne.mockResolvedValue({ id: 6, space_id: spaceId, is_system: 1 } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 6, space_id: spaceId, is_system: 1 }] as any);
 
       await expect(controller.update(req, spaceId, 1, { category_ids: [6], amount: 20 } as any)).rejects.toMatchObject(
         new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
@@ -141,7 +175,7 @@ describe('LimitsController', () => {
     it('delegates to LimitsService.update with the current limit and returns the refreshed one', async () => {
       const current = { id: 1, space_id: spaceId, categories: [{ id: 5 }] };
       limitsService.getOne.mockResolvedValueOnce(current as any).mockResolvedValueOnce({ id: 1, amount: 20 } as any);
-      categoriesService.getOne.mockResolvedValue({ id: 6, space_id: spaceId } as any);
+      categoriesService.getMany.mockResolvedValue([{ id: 6, space_id: spaceId }] as any);
 
       const result = await controller.update(req, spaceId, 1, { category_ids: [6], amount: 20 } as any);
 

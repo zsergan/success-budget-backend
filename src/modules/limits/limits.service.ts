@@ -3,10 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { Limit } from '@entities/limit.entity';
-import { Transaction } from '@entities/transaction.entity';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
-import { LimitType, TransactionType } from '@shared/enums';
+import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 
 @Injectable()
@@ -101,28 +100,21 @@ export class LimitsService {
     await this.limitRepository.delete(limitId);
   }
 
-  calculateSpending(limits: Limit[], transactions: Transaction[]) {
-    const expenseTransactions = transactions.filter(
-      (transaction) => transaction.transaction_type === TransactionType.EXPENSE,
-    );
-
+  calculateSpending(limits: Limit[], categoryTotals: Map<number, number>) {
     const totalLimit = limits.find((limit) => limit.limit_type === LimitType.OTHERS);
     const categoryLimits = limits.filter((limit) => limit.limit_type === LimitType.CATEGORY);
 
-    // the monthly total tracks ALL expenses independently - it is not a sum
-    // of the category limits below it, and the two are allowed to disagree
-    const total = totalLimit
-      ? this.buildLimitView(
-          totalLimit,
-          expenseTransactions.reduce((sum, transaction) => sum + Number(transaction.amount), 0),
-        )
-      : null;
+    // the monthly total tracks ALL expenses independently - one pass over
+    // every category's spend, not just the sum of the category limits below it
+    let totalSpend = 0;
+    for (const spent of categoryTotals.values()) {
+      totalSpend += spent;
+    }
+
+    const total = totalLimit ? this.buildLimitView(totalLimit, totalSpend) : null;
 
     const categories = categoryLimits.map((limit) => {
-      const categoryIds = limit.categories.map((category) => category.id);
-      const spent = expenseTransactions
-        .filter((transaction) => categoryIds.includes(transaction.category_id))
-        .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+      const spent = limit.categories.reduce((sum, category) => sum + (categoryTotals.get(category.id) ?? 0), 0);
 
       return this.buildLimitView(limit, spent);
     });

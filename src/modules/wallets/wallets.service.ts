@@ -9,6 +9,7 @@ import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
 import { SpacesService } from '@modules/spaces/spaces.service';
+import type { WalletPeriodTotals } from '@modules/transactions/transactions.service';
 
 export interface WalletSummary {
   wallet: Wallet;
@@ -98,30 +99,18 @@ export class WalletsService {
     await this.walletRepository.update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
   }
 
-  summarize(wallets: Wallet[], transactions: Transaction[]): WalletSummary[] {
+  summarize(wallets: Wallet[], periodTotals: Map<number, WalletPeriodTotals>): WalletSummary[] {
     return wallets.map((wallet) => {
-      const walletTransactions = transactions.filter((transaction) => transaction.wallet_id === wallet.id);
-      const totals = walletTransactions.reduce(
-        (acc, transaction) => {
-          if (transaction.transaction_type === TransactionType.INCOME) {
-            acc.total_income += Number(transaction.amount);
-          } else {
-            acc.total_spend += Number(transaction.amount);
-          }
+      const totals = periodTotals.get(wallet.id) ?? { income: 0, spend: 0 };
 
-          return acc;
-        },
-        { total_spend: 0, total_income: 0 },
-      );
-
-      return { wallet, ...totals };
+      return { wallet, total_spend: totals.spend, total_income: totals.income };
     });
   }
 
   async buildOverview(
     spaceId: number,
     wallets: Wallet[],
-    transactions: Transaction[],
+    periodTotals: Map<number, WalletPeriodTotals>,
     balances: Map<number, number>,
   ): Promise<WalletsOverview> {
     const space = await this.spacesService.getOne(spaceId);
@@ -132,11 +121,9 @@ export class WalletsService {
 
     const total_balance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
 
-    const net = transactions.reduce((sum, transaction) => {
-      const amount = Number(transaction.amount);
-
-      return sum + (transaction.transaction_type === TransactionType.INCOME ? amount : -amount);
-    }, 0);
+    const totalIncome = wallets.reduce((sum, wallet) => sum + (periodTotals.get(wallet.id)?.income ?? 0), 0);
+    const totalSpend = wallets.reduce((sum, wallet) => sum + (periodTotals.get(wallet.id)?.spend ?? 0), 0);
+    const net = totalIncome - totalSpend;
 
     const balanceAtPeriodStart = total_balance - net;
     const delta_percent = balanceAtPeriodStart !== 0 ? Math.round((net / balanceAtPeriodStart) * 1000) / 10 : 0;
@@ -145,7 +132,7 @@ export class WalletsService {
       total_balance,
       total_balance_currency: space.currency.code,
       delta_percent,
-      wallets: this.summarize(wallets, transactions),
+      wallets: this.summarize(wallets, periodTotals),
     };
   }
 }

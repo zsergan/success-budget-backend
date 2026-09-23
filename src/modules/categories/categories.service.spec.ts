@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 
 import { CategoriesService } from './categories.service';
 import { Category } from '@entities/category.entity';
@@ -115,6 +115,32 @@ describe('CategoriesService', () => {
 
       expect(result.expenses[0].transaction_count).toBe(4);
       expect(result.expenses[0].limit).toEqual({ id: 7, name: 'Fun' });
+    });
+  });
+
+  describe('getMany', () => {
+    it('fetches every requested category in a single query', async () => {
+      categoryRepository.find.mockResolvedValue([{ id: 1 }, { id: 2 }] as Category[]);
+
+      const result = await service.getMany([1, 2]);
+
+      expect(categoryRepository.find).toHaveBeenCalledWith({ where: { id: In([1, 2]) } });
+      expect(result).toEqual([{ id: 1 }, { id: 2 }]);
+    });
+
+    it('returns an empty array without querying when no ids are given', async () => {
+      const result = await service.getMany([]);
+
+      expect(result).toEqual([]);
+      expect(categoryRepository.find).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates repeated ids before querying', async () => {
+      categoryRepository.find.mockResolvedValue([{ id: 5 }] as Category[]);
+
+      await service.getMany([5, 5, 5]);
+
+      expect(categoryRepository.find).toHaveBeenCalledWith({ where: { id: In([5]) } });
     });
   });
 

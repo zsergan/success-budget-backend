@@ -13,6 +13,11 @@ export interface CreateTransactionResult {
   previous_balance: number;
 }
 
+export interface WalletPeriodTotals {
+  income: number;
+  spend: number;
+}
+
 @Injectable()
 export class TransactionsService {
   constructor(
@@ -85,17 +90,53 @@ export class TransactionsService {
       .getMany();
   }
 
-  async getAllForWallets(walletIds: number[], from: Date, to: Date): Promise<Transaction[]> {
+  // one aggregated query for GET /spaces/:spaceId/wallets - the period
+  // income/spend per wallet, grouped in SQL instead of filtering a raw
+  // transaction-row fetch in JS. All-time balance is a separate concern,
+  // still served by getBalances().
+  async getPeriodTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletPeriodTotals>> {
+    const totals = new Map(walletIds.map((id) => [id, { income: 0, spend: 0 }]));
+
     if (walletIds.length === 0) {
-      return [];
+      return totals;
     }
 
-    return this.transactionRepository
+    const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
+      .select('transaction.wallet_id', 'wallet_id')
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)', 'spend')
       .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
-      .getMany();
+      .setParameter('income', TransactionType.INCOME)
+      .setParameter('expense', TransactionType.EXPENSE)
+      .groupBy('transaction.wallet_id')
+      .getRawMany<{ wallet_id: string; income: string; spend: string }>();
+
+    rows.forEach((row) => totals.set(Number(row.wallet_id), { income: Number(row.income), spend: Number(row.spend) }));
+
+    return totals;
+  }
+
+  // one aggregated query for GET /spaces/:spaceId/limits - every category's
+  // expense spend for the period, grouped in SQL. Joined to wallet only to
+  // scope by space_id (still includes deleted-wallet history, since limits
+  // track space spend, not per-wallet); no wallet/category entities loaded.
+  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, number>> {
+    const rows = await this.transactionRepository
+      .createQueryBuilder('transaction')
+      .innerJoin('transaction.wallet', 'wallet')
+      .select('transaction.category_id', 'category_id')
+      .addSelect('SUM(transaction.amount)', 'spent')
+      .where('wallet.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.transaction_type = :expense', { expense: TransactionType.EXPENSE })
+      .andWhere('transaction.timestamp >= :from', { from })
+      .andWhere('transaction.timestamp <= :to', { to })
+      .groupBy('transaction.category_id')
+      .getRawMany<{ category_id: number; spent: string }>();
+
+    return new Map(rows.map((row) => [Number(row.category_id), Number(row.spent)]));
   }
 
   async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<Transaction[]> {

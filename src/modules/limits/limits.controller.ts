@@ -42,13 +42,13 @@ export class LimitsController {
     await this.spaceMembersService.assertMembership(spaceId, req.user.id);
 
     const limits = await this.limitsService.getAll(spaceId);
-    const transactions = await this.transactionsService.getForAllWallets(
+    const categoryTotals = await this.transactionsService.getExpensesByCategory(
       spaceId,
       getStartOfMonth(new Date()),
       getEndOfMonth(new Date()),
     );
 
-    return this.limitsService.calculateSpending(limits, transactions);
+    return this.limitsService.calculateSpending(limits, categoryTotals);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -101,8 +101,18 @@ export class LimitsController {
   }
 
   private async assertCategoriesOwnership(spaceId: number, categoryIds?: number[]): Promise<void> {
-    for (const categoryId of categoryIds ?? []) {
-      const category = await this.categoriesService.getOne(categoryId);
+    const ids = categoryIds ?? [];
+
+    if (ids.length === 0) {
+      return;
+    }
+
+    const categoriesById = new Map(
+      (await this.categoriesService.getMany(ids)).map((category) => [category.id, category]),
+    );
+
+    for (const categoryId of ids) {
+      const category = categoriesById.get(categoryId);
       assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
 
       if (category.is_system) {
