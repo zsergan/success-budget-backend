@@ -273,20 +273,27 @@ Backup/restore is **not** part of automated CI - unlike the migrate →
 verify → start → smoke-test → shutdown sequence above, which CI's `docker`
 job re-runs on every push/PR (see `.github/workflows/ci.yml`), nothing
 today automatically re-proves that a backup can be restored. Treat that gap
-as a standing, manual periodic task, not a one-time checkbox:
+as a standing, manual periodic task, not a one-time checkbox.
 
-1. Create real budget data (a wallet, a transaction) against a running app.
-2. `db-backup.sh` it, then `db-restore.sh` the dump into a second, empty
-   database.
-3. Start the app against that restored database and confirm login and the
-   created data are both present, and (separately, if `DB_SSL` is in use)
-   that a correct `DB_SSL_CA` restores successfully while a wrong one is
-   rejected before touching the database.
+`scripts/verify-backup-restore.sh` runs the whole drill in one command,
+against entirely disposable, isolated containers (never your dev
+`docker compose` MySQL/MailDev, and never a real deployment's database):
 
-This exact drill has been run manually against a real MySQL instance (both
-with and without TLS/a self-signed CA) each time this backup/restore
-tooling or the deploy pipeline around it changed - see `git log` for
-`scripts/db-backup.sh`/`scripts/db-restore.sh` for when. Repeat it again
-whenever either script changes, and periodically once a real hosting
+```bash
+./scripts/verify-backup-restore.sh
+```
+
+It builds the production image, registers a real user and creates a real
+wallet/transaction against it, `db-backup.sh`'s that database, creates a
+second empty database, `db-restore.sh`'s the dump into it, boots a second
+app instance against the restored database and confirms login and the
+created data are both present **through the API**, then repeats the
+`DB_SSL_CA` check on its own - a correct CA succeeds, a wrong one is
+rejected before the backup ever touches the database. Every container,
+network, and generated certificate it creates is removed again when it
+exits, whether it passes or fails.
+
+Run it whenever `scripts/db-backup.sh`/`scripts/db-restore.sh` or the
+deploy pipeline around them changes, and periodically once a real hosting
 provider is chosen - a backup nobody has ever restored is a hope, not a
 plan.
