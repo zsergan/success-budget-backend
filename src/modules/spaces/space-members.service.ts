@@ -5,6 +5,7 @@ import { DataSource, Not, Repository } from 'typeorm';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
 
 @Injectable()
@@ -13,6 +14,7 @@ export class SpaceMembersService {
     @InjectRepository(SpaceMember)
     private readonly spaceMemberRepository: Repository<SpaceMember>,
     private readonly dataSource: DataSource,
+    private readonly spaceAccessService: SpaceAccessService,
     private readonly spacesService: SpacesService,
   ) {}
 
@@ -25,13 +27,7 @@ export class SpaceMembersService {
   }
 
   async leaveOrRemove(spaceId: number, actingUserId: number, targetUserId: number): Promise<void> {
-    const actingMember = await this.spaceMemberRepository.findOne({
-      where: { space_id: spaceId, user_id: actingUserId },
-    });
-
-    if (!actingMember) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_SPACE, HttpStatus.FORBIDDEN);
-    }
+    const actingMember = await this.spaceAccessService.assertMembership(spaceId, actingUserId);
 
     if (targetUserId !== actingUserId) {
       if (actingMember.role !== SpaceRole.OWNER) {

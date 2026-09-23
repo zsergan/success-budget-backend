@@ -151,7 +151,6 @@ export class SpacesController {
     @Param('id', ParseIntPipe) id: number,
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<boolean> {
-    await this.spaceAccessService.assertMembership(id, req.user.id);
     await this.spaceMembersService.leaveOrRemove(id, req.user.id, userId);
 
     return true;

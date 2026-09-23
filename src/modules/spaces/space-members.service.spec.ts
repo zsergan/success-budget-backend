@@ -5,6 +5,7 @@ import { DataSource, Repository } from 'typeorm';
 
 import { SpaceMembersService } from './space-members.service';
 import { SpacesService } from './spaces.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
@@ -14,6 +15,7 @@ describe('SpaceMembersService', () => {
   let spaceMemberRepository: jest.Mocked<Repository<SpaceMember>>;
   let spaceMemberRepositoryInTx: { update: jest.Mock; delete: jest.Mock };
   let dataSource: { transaction: jest.Mock };
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
   let spacesService: jest.Mocked<SpacesService>;
 
   beforeEach(async () => {
@@ -34,28 +36,49 @@ describe('SpaceMembersService', () => {
           useValue: { find: jest.fn(), findOne: jest.fn(), delete: jest.fn() },
         },
         { provide: DataSource, useValue: dataSource },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
         { provide: SpacesService, useValue: { remove: jest.fn() } },
       ],
     }).compile();
 
     service = module.get(SpaceMembersService);
     spaceMemberRepository = module.get(getRepositoryToken(SpaceMember));
+    spaceAccessService = module.get(SpaceAccessService);
     spacesService = module.get(SpacesService);
   });
 
   describe('leaveOrRemove', () => {
+    it('rejects an outsider before touching any membership', async () => {
+      const forbidden = new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden);
+
+      await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(forbidden);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1);
+      expect(spaceMemberRepository.findOne).not.toHaveBeenCalled();
+      expect(spaceMemberRepository.delete).not.toHaveBeenCalled();
+    });
+
     it('lets an owner remove another member', async () => {
-      spaceMemberRepository.findOne
-        .mockResolvedValueOnce({ id: 1, role: SpaceRole.OWNER } as SpaceMember)
-        .mockResolvedValueOnce({ id: 2, role: SpaceRole.MEMBER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceMemberRepository.findOne.mockResolvedValueOnce({ id: 2, role: SpaceRole.MEMBER } as SpaceMember);
 
       await service.leaveOrRemove(10, 1, 2);
 
       expect(spaceMemberRepository.delete).toHaveBeenCalledWith(2);
     });
 
+    it('returns 404 when the member to remove is not in the space', async () => {
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceMemberRepository.findOne.mockResolvedValueOnce(null);
+
+      await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.NOT_FOUND, 404),
+      );
+      expect(spaceMemberRepository.delete).not.toHaveBeenCalled();
+    });
+
     it('rejects a plain member trying to remove someone else', async () => {
-      spaceMemberRepository.findOne.mockResolvedValueOnce({ id: 1, role: SpaceRole.MEMBER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.MEMBER } as SpaceMember);
 
       await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
@@ -64,7 +87,7 @@ describe('SpaceMembersService', () => {
     });
 
     it('lets a plain member leave on their own', async () => {
-      spaceMemberRepository.findOne.mockResolvedValueOnce({ id: 1, role: SpaceRole.MEMBER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.MEMBER } as SpaceMember);
 
       await service.leaveOrRemove(10, 1, 1);
 
@@ -73,9 +96,8 @@ describe('SpaceMembersService', () => {
     });
 
     it('transfers ownership to the next member by created_at when the owner leaves', async () => {
-      spaceMemberRepository.findOne
-        .mockResolvedValueOnce({ id: 1, role: SpaceRole.OWNER } as SpaceMember)
-        .mockResolvedValueOnce({ id: 5 } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceMemberRepository.findOne.mockResolvedValueOnce({ id: 5 } as SpaceMember);
 
       await service.leaveOrRemove(10, 1, 1);
 
@@ -86,9 +108,8 @@ describe('SpaceMembersService', () => {
     });
 
     it('delegates to SpacesService.remove() when the owner is the sole member', async () => {
-      spaceMemberRepository.findOne
-        .mockResolvedValueOnce({ id: 1, role: SpaceRole.OWNER } as SpaceMember)
-        .mockResolvedValueOnce(null);
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceMemberRepository.findOne.mockResolvedValueOnce(null);
 
       await service.leaveOrRemove(10, 1, 1);
 
@@ -97,9 +118,8 @@ describe('SpaceMembersService', () => {
     });
 
     it('propagates the "last remaining space" rejection from SpacesService.remove()', async () => {
-      spaceMemberRepository.findOne
-        .mockResolvedValueOnce({ id: 1, role: SpaceRole.OWNER } as SpaceMember)
-        .mockResolvedValueOnce(null);
+      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceMemberRepository.findOne.mockResolvedValueOnce(null);
       spacesService.remove.mockRejectedValue(new HttpException(ErrorMessages.SPACE_LAST_REMAINING, 400));
 
       await expect(service.leaveOrRemove(10, 1, 1)).rejects.toMatchObject(

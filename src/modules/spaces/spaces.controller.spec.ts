@@ -141,6 +141,15 @@ describe('SpacesController', () => {
     });
   });
 
+  describe('removeMember', () => {
+    it('delegates the membership check to leaveOrRemove', async () => {
+      await expect(controller.removeMember(req, 10, 2)).resolves.toBe(true);
+
+      expect(spaceMembersService.leaveOrRemove).toHaveBeenCalledWith(10, 1, 2);
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+    });
+  });
+
   describe('acceptInvite', () => {
     it('resolves the caller email before accepting', async () => {
       usersService.findById.mockResolvedValue({ id: 1, email: 'me@example.com' } as any);
