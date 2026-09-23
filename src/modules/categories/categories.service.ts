@@ -38,6 +38,14 @@ export class CategoriesService {
     return this.categoryRepository.findOne({ where: { id: categoryId } });
   }
 
+  async getMany(categoryIds: number[]): Promise<Category[]> {
+    if (categoryIds.length === 0) {
+      return [];
+    }
+
+    return this.categoryRepository.find({ where: { id: In(categoryIds) } });
+  }
+
   async getAll(
     spaceId: number,
   ): Promise<{ incomes: CategoryView[]; expenses: CategoryView[]; archived: CategoryView[] }> {

@@ -101,8 +101,18 @@ export class LimitsController {
   }
 
   private async assertCategoriesOwnership(spaceId: number, categoryIds?: number[]): Promise<void> {
-    for (const categoryId of categoryIds ?? []) {
-      const category = await this.categoriesService.getOne(categoryId);
+    const ids = categoryIds ?? [];
+
+    if (ids.length === 0) {
+      return;
+    }
+
+    const categoriesById = new Map(
+      (await this.categoriesService.getMany(ids)).map((category) => [category.id, category]),
+    );
+
+    for (const categoryId of ids) {
+      const category = categoriesById.get(categoryId);
       assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
 
       if (category.is_system) {
