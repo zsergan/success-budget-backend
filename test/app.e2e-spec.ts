@@ -1046,6 +1046,79 @@ describe('App (e2e)', () => {
     expect(rejected.body.message).toBe(ErrorMessages.FORBIDDEN_WALLET);
   });
 
+  it('a plain member sees the roster without remove rights and cannot run owner-only space operations', async () => {
+    const server = app.getHttpServer();
+    const memberAuth = `Bearer ${secondUserToken}`;
+
+    const pendingInvite = await request(server)
+      .post(`/api/v1/spaces/${groupSpaceId}/invites`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'pending-owner-only@example.com' })
+      .expect(201);
+
+    const spaceResponse = await request(server)
+      .get(`/api/v1/spaces/${groupSpaceId}`)
+      .set('Authorization', memberAuth)
+      .expect(200);
+    expect(spaceResponse.body.id).toBe(groupSpaceId);
+
+    const outsiderResponse = await request(server)
+      .get(`/api/v1/spaces/${personalSpaceId}`)
+      .set('Authorization', memberAuth)
+      .expect(403);
+    expect(outsiderResponse.body.message).toBe(ErrorMessages.FORBIDDEN_SPACE);
+
+    const rosterResponse = await request(server)
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', memberAuth)
+      .expect(200);
+    expect(rosterResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'member', user_id: userId, role: 'owner', can_remove: false }),
+        expect.objectContaining({ type: 'member', user_id: secondUserId, role: 'member', can_remove: false }),
+        expect.objectContaining({ type: 'invite', id: pendingInvite.body.id, can_remove: false }),
+      ]),
+    );
+    expect(rosterResponse.body.every((entry) => entry.code === undefined)).toBe(true);
+
+    const ownerOnly = [
+      () => request(server).delete(`/api/v1/spaces/${groupSpaceId}`).set('Authorization', memberAuth),
+      () =>
+        request(server)
+          .post(`/api/v1/spaces/${groupSpaceId}/invites`)
+          .set('Authorization', memberAuth)
+          .send({ email: 'someone-else@example.com' }),
+      () =>
+        request(server)
+          .delete(`/api/v1/spaces/${groupSpaceId}/invites/${pendingInvite.body.id}`)
+          .set('Authorization', memberAuth),
+      () => request(server).delete(`/api/v1/spaces/${groupSpaceId}/members/${userId}`).set('Authorization', memberAuth),
+    ];
+    for (const send of ownerOnly) {
+      const response = await send();
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe(ErrorMessages.FORBIDDEN_SPACE);
+    }
+
+    const ownerRoster = await request(server)
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(ownerRoster.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'member', user_id: userId, can_remove: false }),
+        expect.objectContaining({ type: 'member', user_id: secondUserId, can_remove: true }),
+        expect.objectContaining({ type: 'invite', id: pendingInvite.body.id, can_remove: true }),
+      ]),
+    );
+    expect(ownerRoster.body.filter((entry) => entry.type === 'invite')).toHaveLength(1);
+
+    await request(server)
+      .delete(`/api/v1/spaces/${groupSpaceId}/invites/${pendingInvite.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+  });
+
   it('the owner leaves the group space and ownership transfers to the next member', async () => {
     await request(app.getHttpServer())
       .delete(`/api/v1/spaces/${groupSpaceId}/members/${userId}`)
