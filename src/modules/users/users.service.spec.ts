@@ -13,6 +13,8 @@ import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
+import { MailService } from '@modules/mail/mail.service';
+import { RetryAfterException } from '@shared/retry-after.exception';
 import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType, SpaceRole, SpaceType } from '@shared/enums';
 
@@ -37,6 +39,8 @@ describe('UsersService', () => {
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; findOneOrFail: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
+  let mailService: { sendConfirmationCode: jest.Mock };
+  let inTransaction: boolean;
 
   beforeEach(async () => {
     userRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), update: jest.fn() };
@@ -61,7 +65,18 @@ describe('UsersService', () => {
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     };
-    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    inTransaction = false;
+    dataSource = {
+      transaction: jest.fn(async (callback) => {
+        inTransaction = true;
+        try {
+          return await callback(manager);
+        } finally {
+          inTransaction = false;
+        }
+      }),
+    };
+    mailService = { sendConfirmationCode: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -74,8 +89,16 @@ describe('UsersService', () => {
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue(JWT_SECRET_FOR_TESTS) } },
         {
           provide: ConfirmationCodesService,
-          useValue: { getOne: jest.fn(), expire: jest.fn(), incrementAttempts: jest.fn() },
+          useValue: {
+            getOne: jest.fn(),
+            expire: jest.fn(),
+            incrementAttempts: jest.fn(),
+            reserveSend: jest.fn(),
+            markSent: jest.fn(),
+            markFailed: jest.fn(),
+          },
         },
+        { provide: MailService, useValue: mailService },
       ],
     }).compile();
 
@@ -137,6 +160,80 @@ describe('UsersService', () => {
       expect(repository.update).toHaveBeenCalledWith(7, { email_verified: 1 });
       const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
       expect(decoded.id).toBe(7);
+    });
+  });
+
+  describe('registerAndSendConfirmation', () => {
+    const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+    const reservation = (overrides = {}) => ({
+      id: 9,
+      code: '123456',
+      expiresAt: new Date(),
+      shouldSend: true,
+      attemptId: 3,
+      ...overrides,
+    });
+
+    it('registers a new user, then sends the email outside the DB transaction and marks the code sent', async () => {
+      repository.findOne.mockResolvedValue(null);
+      userRepositoryInTx.save.mockResolvedValue({ id: 2, email: 'a@b.com' });
+      spaceRepositoryInTx.save.mockResolvedValue({ id: 10 });
+      const reserved = reservation();
+      confirmationCodesService.reserveSend.mockResolvedValue(reserved);
+      mailService.sendConfirmationCode.mockImplementation(async () => {
+        expect(inTransaction).toBe(false);
+      });
+
+      const result = await service.registerAndSendConfirmation(dto);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(confirmationCodesService.reserveSend).toHaveBeenCalledWith(2, ConfirmationType.EMAIL);
+      expect(mailService.sendConfirmationCode).toHaveBeenCalledWith('a@b.com', '123456', reserved.expiresAt);
+      expect(confirmationCodesService.markSent).toHaveBeenCalledWith(9, 3);
+      expect(confirmationCodesService.markFailed).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ id: 2, email: 'a@b.com' });
+    });
+
+    it('does not resend an email when the reservation reports it was already sent', async () => {
+      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue({ id: 2, email: 'a@b.com' } as User);
+      confirmationCodesService.reserveSend.mockResolvedValue(reservation({ shouldSend: false, attemptId: 1 }));
+
+      await service.registerAndSendConfirmation(dto);
+
+      expect(mailService.sendConfirmationCode).not.toHaveBeenCalled();
+      expect(confirmationCodesService.markSent).not.toHaveBeenCalled();
+      expect(confirmationCodesService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('stops before reserving a send when the email already belongs to a verified user', async () => {
+      repository.findOne.mockResolvedValue({ id: 1, email_verified: 1 } as User);
+
+      await expect(service.registerAndSendConfirmation(dto)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
+      );
+      expect(confirmationCodesService.reserveSend).not.toHaveBeenCalled();
+    });
+
+    it('propagates a 429 with a retry delay when a send attempt is still in its cooldown', async () => {
+      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue({ id: 2, email: 'a@b.com' } as User);
+      confirmationCodesService.reserveSend.mockRejectedValue(
+        new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, 42),
+      );
+
+      await expect(service.registerAndSendConfirmation(dto)).rejects.toBeInstanceOf(RetryAfterException);
+      expect(mailService.sendConfirmationCode).not.toHaveBeenCalled();
+    });
+
+    it('marks this attempt failed and propagates a controlled error when email delivery fails', async () => {
+      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue({ id: 2, email: 'a@b.com' } as User);
+      confirmationCodesService.reserveSend.mockResolvedValue(reservation({ attemptId: 5 }));
+      mailService.sendConfirmationCode.mockRejectedValue(new HttpException('Could not send', 503));
+
+      await expect(service.registerAndSendConfirmation(dto)).rejects.toMatchObject(
+        new HttpException('Could not send', 503),
+      );
+      expect(confirmationCodesService.markFailed).toHaveBeenCalledWith(9, 5);
+      expect(confirmationCodesService.markSent).not.toHaveBeenCalled();
     });
   });
 

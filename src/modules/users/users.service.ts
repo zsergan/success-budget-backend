@@ -15,6 +15,7 @@ import type { CreateUserDto } from './dto/create-user.dto';
 import type { LoginUserDto } from './dto/login-user.dto';
 import type { VerifyUserDto } from './dto/verify-user.dto';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
+import { MailService } from '@modules/mail/mail.service';
 import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType, AppColor, SpaceRole, SpaceType } from '@shared/enums';
 import { DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
@@ -30,6 +31,7 @@ export class UsersService {
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly confirmationCodesService: ConfirmationCodesService,
+    private readonly mailService: MailService,
   ) {}
 
   private generateAccessToken(user: User): string {
@@ -65,6 +67,28 @@ export class UsersService {
 
       return user;
     });
+  }
+
+  async registerAndSendConfirmation(createUserDto: CreateUserDto): Promise<User> {
+    const user = await this.registerOrRefresh(createUserDto);
+
+    // reserveSend() throws a 429 (RetryAfterException) instead of returning
+    // when a prior attempt is still within its cooldown and unconfirmed -
+    // the user/space/code rows already committed above are safe to retry
+    // against on the next call, never duplicated.
+    const reservation = await this.confirmationCodesService.reserveSend(user.id, ConfirmationType.EMAIL);
+
+    if (reservation.shouldSend) {
+      try {
+        await this.mailService.sendConfirmationCode(user.email, reservation.code, reservation.expiresAt);
+        await this.confirmationCodesService.markSent(reservation.id, reservation.attemptId);
+      } catch (error) {
+        await this.confirmationCodesService.markFailed(reservation.id, reservation.attemptId);
+        throw error;
+      }
+    }
+
+    return user;
   }
 
   async registerOrRefresh(createUserDto: CreateUserDto): Promise<User> {
