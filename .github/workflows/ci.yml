@@ -214,8 +214,18 @@ jobs:
         run: |
           docker stop -t 10 api
           exit_code=$(docker inspect api --format '{{.State.ExitCode}}')
-          if [ "$exit_code" != "0" ]; then
-            echo "Container exited with code $exit_code instead of shutting down cleanly" >&2
+          # NestJS's enableShutdownHooks() (src/main.ts) runs its shutdown
+          # hooks, removes its own signal listener, then re-delivers the
+          # same signal to itself (see listenToShutdownSignals() in
+          # @nestjs/core) rather than calling process.exit() - a graceful
+          # shutdown legitimately self-terminates via that now-unhandled
+          # SIGTERM, which Docker reports as 143 (128+15), not 0. Both are
+          # "shut down within the -t grace period on its own terms"; only a
+          # forced kill (137 = SIGKILL after the grace period, i.e. the app
+          # hung) or any other exit code (a crash during shutdown) is a
+          # real failure here.
+          if [ "$exit_code" != "0" ] && [ "$exit_code" != "143" ]; then
+            echo "Container exited with code $exit_code instead of shutting down cleanly (expected 0 or 143)" >&2
             exit 1
           fi
       - name: Container logs
