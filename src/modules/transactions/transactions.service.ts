@@ -13,10 +13,9 @@ export interface CreateTransactionResult {
   previous_balance: number;
 }
 
-export interface WalletTotals {
-  balance: number;
-  period_income: number;
-  period_spend: number;
+export interface WalletPeriodTotals {
+  income: number;
+  spend: number;
 }
 
 export interface ExpenseTotals {
@@ -96,11 +95,12 @@ export class TransactionsService {
       .getMany();
   }
 
-  // one aggregated query for GET /spaces/:spaceId/wallets - replaces a raw
-  // transaction-row fetch plus a separate all-time-balance query, since both
-  // are the same SUM(...)-by-wallet_id shape and only differ by date filter
-  async getWalletTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletTotals>> {
-    const totals = new Map(walletIds.map((id) => [id, { balance: 0, period_income: 0, period_spend: 0 }]));
+  // one aggregated query for GET /spaces/:spaceId/wallets - the period
+  // income/spend per wallet, grouped in SQL instead of filtering a raw
+  // transaction-row fetch in JS. All-time balance is a separate concern,
+  // still served by getBalances().
+  async getPeriodTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletPeriodTotals>> {
+    const totals = new Map(walletIds.map((id) => [id, { income: 0, spend: 0 }]));
 
     if (walletIds.length === 0) {
       return totals;
@@ -109,33 +109,17 @@ export class TransactionsService {
     const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
       .select('transaction.wallet_id', 'wallet_id')
-      .addSelect(
-        'SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE -transaction.amount END)',
-        'balance',
-      )
-      .addSelect(
-        'SUM(CASE WHEN transaction.transaction_type = :income AND transaction.timestamp >= :from AND transaction.timestamp <= :to THEN transaction.amount ELSE 0 END)',
-        'period_income',
-      )
-      .addSelect(
-        'SUM(CASE WHEN transaction.transaction_type = :expense AND transaction.timestamp >= :from AND transaction.timestamp <= :to THEN transaction.amount ELSE 0 END)',
-        'period_spend',
-      )
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)', 'spend')
       .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
+      .andWhere('transaction.timestamp >= :from', { from })
+      .andWhere('transaction.timestamp <= :to', { to })
       .setParameter('income', TransactionType.INCOME)
       .setParameter('expense', TransactionType.EXPENSE)
-      .setParameter('from', from)
-      .setParameter('to', to)
       .groupBy('transaction.wallet_id')
-      .getRawMany<{ wallet_id: string; balance: string; period_income: string; period_spend: string }>();
+      .getRawMany<{ wallet_id: string; income: string; spend: string }>();
 
-    rows.forEach((row) =>
-      totals.set(Number(row.wallet_id), {
-        balance: Number(row.balance),
-        period_income: Number(row.period_income),
-        period_spend: Number(row.period_spend),
-      }),
-    );
+    rows.forEach((row) => totals.set(Number(row.wallet_id), { income: Number(row.income), spend: Number(row.spend) }));
 
     return totals;
   }

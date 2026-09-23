@@ -138,11 +138,11 @@ describe('WalletsService', () => {
   });
 
   describe('summarize', () => {
-    it('reads period spend and income per wallet from the totals map', () => {
+    it('reads period spend and income per wallet from the period-totals map', () => {
       const wallets = [{ id: 1 }, { id: 2 }] as Wallet[];
-      const totals = new Map([[1, { balance: 70, period_income: 100, period_spend: 30 }]]);
+      const periodTotals = new Map([[1, { income: 100, spend: 30 }]]);
 
-      const result = service.summarize(wallets, totals);
+      const result = service.summarize(wallets, periodTotals);
 
       expect(result[0]).toMatchObject({ total_income: 100, total_spend: 30 });
       expect(result[1]).toMatchObject({ total_income: 0, total_spend: 0 });
@@ -152,15 +152,19 @@ describe('WalletsService', () => {
   describe('buildOverview', () => {
     const baseSpace = { id: 1, currency_id: 1, currency: { id: 1, code: 'USD' } } as any;
 
-    it('sums wallet balances from the totals map and computes the period delta', async () => {
+    it('sums wallet balances from the balances map and the period delta from period totals', async () => {
       spacesService.getOne.mockResolvedValue(baseSpace);
       const wallets = [{ id: 1 }, { id: 2 }] as Wallet[];
-      const totals = new Map([
-        [1, { balance: 1000, period_income: 200, period_spend: 0 }],
-        [2, { balance: 500, period_income: 0, period_spend: 50 }],
+      const periodTotals = new Map([
+        [1, { income: 200, spend: 0 }],
+        [2, { income: 0, spend: 50 }],
+      ]);
+      const balances = new Map([
+        [1, 1000],
+        [2, 500],
       ]);
 
-      const result = await service.buildOverview(9, wallets, totals);
+      const result = await service.buildOverview(9, wallets, periodTotals, balances);
 
       expect(spacesService.getOne).toHaveBeenCalledWith(9);
       // total_balance = 1500, net = 200 - 50 = 150, base = 1500 - 150 = 1350
@@ -173,7 +177,7 @@ describe('WalletsService', () => {
     it('returns a 0% delta when there are no wallets', async () => {
       spacesService.getOne.mockResolvedValue(baseSpace);
 
-      const result = await service.buildOverview(9, [], new Map());
+      const result = await service.buildOverview(9, [], new Map(), new Map());
 
       expect(result.total_balance).toBe(0);
       expect(result.delta_percent).toBe(0);
@@ -182,9 +186,10 @@ describe('WalletsService', () => {
     it('returns a 0% delta when the balance at the start of the period was zero', async () => {
       spacesService.getOne.mockResolvedValue(baseSpace);
       const wallets = [{ id: 1 }] as Wallet[];
-      const totals = new Map([[1, { balance: 200, period_income: 200, period_spend: 0 }]]);
+      const periodTotals = new Map([[1, { income: 200, spend: 0 }]]);
+      const balances = new Map([[1, 200]]);
 
-      const result = await service.buildOverview(9, wallets, totals);
+      const result = await service.buildOverview(9, wallets, periodTotals, balances);
 
       expect(result.total_balance).toBe(200);
       expect(result.delta_percent).toBe(0);

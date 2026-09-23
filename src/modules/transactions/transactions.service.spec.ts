@@ -152,46 +152,46 @@ describe('TransactionsService', () => {
     });
   });
 
-  describe('getWalletTotals', () => {
+  describe('getPeriodTotals', () => {
     it('returns an all-zero map without querying when there are no wallets', async () => {
-      const result = await service.getWalletTotals([], new Date(), new Date());
+      const result = await service.getPeriodTotals([], new Date(), new Date());
 
       expect(result).toEqual(new Map());
       expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
     });
 
     it('defaults every requested wallet to zero totals when none has transactions', async () => {
-      const result = await service.getWalletTotals([1, 2], new Date(), new Date());
+      const result = await service.getPeriodTotals([1, 2], new Date(), new Date());
 
       expect(result).toEqual(
         new Map([
-          [1, { balance: 0, period_income: 0, period_spend: 0 }],
-          [2, { balance: 0, period_income: 0, period_spend: 0 }],
+          [1, { income: 0, spend: 0 }],
+          [2, { income: 0, spend: 0 }],
         ]),
       );
     });
 
-    it('combines the all-time balance and period income/spend in one grouped query', async () => {
+    it('sums income and expense transactions per wallet within the date range in one grouped query', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       queryBuilder.getRawMany.mockResolvedValue([
-        { wallet_id: '1', balance: '1000', period_income: '200', period_spend: '0' },
-        { wallet_id: '2', balance: '500', period_income: '0', period_spend: '50' },
+        { wallet_id: '1', income: '200', spend: '0' },
+        { wallet_id: '2', income: '0', spend: '50' },
       ]);
 
-      const result = await service.getWalletTotals([1, 2, 3], from, to);
+      const result = await service.getPeriodTotals([1, 2, 3], from, to);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
         walletIds: [1, 2, 3],
       });
-      expect(queryBuilder.setParameter).toHaveBeenCalledWith('from', from);
-      expect(queryBuilder.setParameter).toHaveBeenCalledWith('to', to);
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
       expect(result).toEqual(
         new Map([
-          [1, { balance: 1000, period_income: 200, period_spend: 0 }],
-          [2, { balance: 500, period_income: 0, period_spend: 50 }],
-          [3, { balance: 0, period_income: 0, period_spend: 0 }],
+          [1, { income: 200, spend: 0 }],
+          [2, { income: 0, spend: 50 }],
+          [3, { income: 0, spend: 0 }],
         ]),
       );
     });
