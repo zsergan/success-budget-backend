@@ -10,22 +10,33 @@ IP forwarding, cron for backups), that's called out explicitly.
 
 - **local** - a developer's machine. `docker compose up -d` for MySQL +
   MailDev (see the main [README](../README.md#local-setup)), `.env` from
-  `.env.example`, `NODE_ENV=development` (or unset).
-- **staging** - a real deployment, in every way that matters
-  (`NODE_ENV=production`, a built Docker image, migrations run as their own
-  step, real SMTP or a hosted mail catcher), but pointed at its own
-  database and its own secrets, never staging's. Its purpose is to be a
-  safe place to verify a deploy before it touches the real database -
-  running it in "development mode" would defeat that.
+  `.env.example`, `NODE_ENV=development` (or unset - either gets you
+  JSON-safe defaults; `development` additionally gets pretty logs).
+- **staging** - a real deployment, in every way that matters (a built
+  Docker image, migrations run as their own step, real SMTP or a hosted
+  mail catcher), but pointed at its own database and its own secrets,
+  never production's. Its purpose is to be a safe place to verify a deploy
+  before it touches the real database - running it with Swagger exposed or
+  pretty-printed logs would defeat that.
 - **production** - the real deployment. Same image and process as staging,
   different (real) secrets and database.
 
-The only thing that ever changes app *behavior* between these is
-`NODE_ENV` (pretty vs. JSON logs - see `src/config/logger.config.ts` - and
-the Swagger default, see below); everything else is the same code path
-everywhere. Staging and production should run from the same Docker image
-tag/build, promoted rather than rebuilt, so "it worked on staging" actually
-means something.
+**Both staging and production must set `NODE_ENV` to exactly `production`**
+- not left unset, and not some other label like `staging`. Only two literal
+  values change app behavior at all (see `src/config/logger.config.ts` and
+  `src/app.config.ts#isSwaggerEnabled`): `development` (pretty logs) and
+  `production` (Swagger disabled by default). Anything else - unset, or a
+  value like `staging` - is indistinguishable from each other to the app:
+  JSON logs, Swagger *enabled* by default. Leaving `NODE_ENV` unset on a
+  real deployment is therefore not a neutral/safe choice, it silently
+  leaves the API schema exposed at `/docs`. If staging specifically needs
+  an interactive Swagger UI, set `NODE_ENV=production` *and*
+  `SWAGGER_ENABLED=true` explicitly, rather than leaving `NODE_ENV` unset
+  to get Swagger's non-production default.
+
+Staging and production should run from the same Docker image tag/build,
+promoted rather than rebuilt, so "it worked on staging" actually means
+something.
 
 ## Required environment variables
 
@@ -42,10 +53,10 @@ manager, etc.), never in a committed file.
 | `DB_SSL_REJECT_UNAUTHORIZED` | No | Defaults to `true`; only set `false` as a last resort when the provider's CA genuinely can't be obtained - this disables certificate validation entirely, it does not fix a self-signed cert (use `DB_SSL_CA` for that). |
 | `JWT_SECRET` | Yes | At least 16 characters. Rotating it invalidates every issued token. |
 | `PORT` | No | Defaults to `3000`. Most hosting platforms inject their own value here. |
-| `NODE_ENV` | No | `development`/`test`/`staging`/`production`. Only `development` changes behavior (pretty logs) - **leave unset in production rather than guessing**, since unset already gets the safe JSON-logging behavior; set it explicitly to `production` for the Swagger default below and for clarity in the logs/dashboards. |
+| `NODE_ENV` | **Yes, on staging/production** | Only two literal values change behavior: `development` (pretty logs) and `production` (disables Swagger by default - see below). **Set it to exactly `production` on both staging and production** - leaving it unset, or using a label like `staging`, is indistinguishable from each other to the app and leaves Swagger exposed by default (see "Environments" above). |
 | `LOG_LEVEL` | No | pino level (`fatal`/`error`/`warn`/`info`/`debug`/`trace`/`silent`). Defaults to `info`. |
 | `TRUST_PROXY` | No | Express's `trust proxy` setting - see "Reverse proxy / client IP" below. Defaults to trusting nothing. |
-| `SWAGGER_ENABLED` | No | Defaults to enabled everywhere except `NODE_ENV=production`. Set explicitly to override either way (e.g. enable it on staging - already the default - or production, for temporary debugging). |
+| `SWAGGER_ENABLED` | No | Defaults to enabled everywhere except `NODE_ENV=production`. Since staging also runs with `NODE_ENV=production`, it is off there by default too - set `SWAGGER_ENABLED=true` explicitly if staging needs an interactive Swagger UI, or set it explicitly on production for temporary debugging. |
 | `SMTP_HOST`, `SMTP_PORT`, `MAIL_FROM` | Yes | Confirmation-code email delivery. |
 | `SMTP_SECURE` | No | `true` if the provider requires implicit TLS (usually port 465). Defaults to `false`. |
 | `SMTP_USER`, `SMTP_PASSWORD` | No | Omit for a provider/catcher that needs no auth. |
@@ -62,6 +73,37 @@ platform's setup (usually `1` for a typical single-reverse-proxy PaaS host
 - check its docs). Leaving it unset is safe (no header is trusted, so a
 client can't spoof its rate-limit identity) but means `req.ip` is the
 proxy's own address, not the real client's.
+
+### Confirmation email: resend limits and delivery failures
+
+There is no separate "resend" endpoint - calling `POST /api/v1/users/register`
+again with the same, still-unverified email re-sends the confirmation code
+instead of creating a second account. Two limits apply on top of each other:
+
+- **Per-IP rate limiting** (`@nestjs/throttler`): `register`/`verify-email`/
+  `login` are capped at 5 requests/60s per client IP (see "Reverse proxy /
+  client IP" above for how that IP is determined behind a proxy); a 6th
+  request in the window gets a `429` from the guard itself before any
+  application logic runs.
+- **Per-account resend cooldown** (1 minute, `CONFIRMATION_CODE_RESEND_COOLDOWN_MS`
+  in `src/shared/constants.ts`): a second `register` call for the same
+  unverified account within a minute of the *previous send attempt* is
+  handled one of two ways -
+  - if that previous attempt was confirmed **delivered**, the call quietly
+    succeeds without sending another email (the client already has a valid,
+    unexpired code - a resend keeps its original expiry, it does not grant a
+    fresh 10 minutes);
+  - if that previous attempt was still pending or had **failed**, the call
+    is rejected with `429` and a `Retry-After` header naming the exact
+    number of seconds left, rather than silently pretending to resend.
+
+A send failure at the SMTP layer itself (provider down, bad credentials,
+etc.) surfaces as a `503` from `POST /register`, never a silent drop -
+`MailService.sendConfirmationCode` logs the failure (never the code or SMTP
+credentials) and rethrows, so the caller's request fails loudly. Retrying is
+always safe: the user, space, and confirmation code created by the first
+call are reused, never duplicated, on any subsequent `register` call for
+the same email.
 
 ## Deploy procedure
 
@@ -84,7 +126,11 @@ proxy's own address, not the real client's.
    if it isn't a real file on disk.) The app itself never runs migrations
    on boot (`migrationsRun: false`, unconditionally) - if this step is
    skipped, the app starts against a stale schema instead of failing
-   loudly, so don't skip it.
+   loudly, so don't skip it. Running this command again against an
+   already-migrated database is safe and a no-op - it prints
+   `No migrations are pending` rather than reapplying anything; CI's
+   `docker` job (`.github/workflows/ci.yml`) asserts this on every push/PR
+   by running it twice.
 
 3. **Verify reference data** landed (currencies are seeded by a migration's
    own `INSERT`, not a schema change, so a partially-applied migration
@@ -111,17 +157,29 @@ proxy's own address, not the real client's.
    ```
 
 6. **Smoke-test registration** end to end - the one flow that touches the
-   database, email delivery, and JWT issuance all at once:
+   database, email delivery, and JWT issuance all at once. The code must
+   come from the confirmation email as actually delivered (its inbox, or a
+   catcher's own API/UI) - reading it out of the database instead only
+   proves the app *generated* a code, not that `MailService` handed it to
+   SMTP and it reached anyone:
 
    ```bash
    curl -X POST http://<host>:3000/api/v1/users/register \
      -H 'Content-Type: application/json' \
      -d '{"name":"Smoke Test","email":"smoke-test@example.com","password":"...","base_currency_id":1}'
-   # confirm the email actually arrived wherever SMTP_HOST points, then:
+   # confirm the email actually arrived wherever SMTP_HOST points, and read
+   # the code from its body, then:
    curl -X POST http://<host>:3000/api/v1/users/verify-email \
      -H 'Content-Type: application/json' \
      -d '{"email":"smoke-test@example.com","code":"<code from the email>"}'
    ```
+
+   This exact sequence (build → migrate → re-migrate idempotency check →
+   verify reference data → start on a non-default `PORT` → health check →
+   Swagger-disabled check → this registration smoke test, reading the code
+   from a real MailDev message → clean SIGTERM shutdown) runs automatically
+   against a freshly built image on every push/PR, in CI's `docker` job -
+   see `.github/workflows/ci.yml` for the exact steps and current status.
 
    Delete the smoke-test account afterward if this was run against
    production (there's no self-service delete endpoint yet - do it directly
@@ -172,6 +230,21 @@ against local or managed MySQL. They read the same `DB_SSL`/`DB_SSL_CA`/
 same encrypted, verified connection for backup/restore as it does for the
 app itself - set them the same way for both.
 
+`db-backup.sh` is written to fail safely rather than produce something that
+looks like a backup but isn't:
+
+- `DB_PASSWORD` is passed to the `mysqldump` container via the `MYSQL_PWD`
+  environment variable, never as a `--password=...` command-line argument -
+  the latter is visible to any other process on the host via `ps`.
+- The dump is written to a private temp file (`chmod 600`) in the backup
+  directory and only renamed to its final name once `mysqldump` *and*
+  `gzip` have both fully succeeded - a reader can never see a partial or
+  truncated dump under the real filename, whether the script fails
+  normally or is killed mid-run.
+- An existing file at the target path is never overwritten - a second
+  backup started in the same second fails loudly instead of silently
+  clobbering the first one.
+
 ```bash
 # Backup (writes a timestamped, gzipped dump to ./backups by default)
 DB_HOST=... DB_PORT=... DB_USERNAME=... DB_PASSWORD=... DB_DATABASE=... \
@@ -196,12 +269,24 @@ backup. Once a hosting provider is chosen, add here:
 
 ### Verifying a restore works
 
-Verified locally as part of this change: `db-backup.sh` against a real
-database, `db-restore.sh` of that dump into a completely empty MySQL
-container, confirmed matching row/migration counts, and the app boots
-successfully against the restored database. Also verified against a MySQL
-container with TLS required and a self-signed CA: backup/restore succeed
-with the correct `DB_SSL_CA` (both as a file path and as raw PEM content)
-and are rejected before touching the database with the wrong one. Repeat
-this same drill periodically against whatever hosting is chosen - a backup
-nobody has ever restored is a hope, not a plan.
+Backup/restore is **not** part of automated CI - unlike the migrate →
+verify → start → smoke-test → shutdown sequence above, which CI's `docker`
+job re-runs on every push/PR (see `.github/workflows/ci.yml`), nothing
+today automatically re-proves that a backup can be restored. Treat that gap
+as a standing, manual periodic task, not a one-time checkbox:
+
+1. Create real budget data (a wallet, a transaction) against a running app.
+2. `db-backup.sh` it, then `db-restore.sh` the dump into a second, empty
+   database.
+3. Start the app against that restored database and confirm login and the
+   created data are both present, and (separately, if `DB_SSL` is in use)
+   that a correct `DB_SSL_CA` restores successfully while a wrong one is
+   rejected before touching the database.
+
+This exact drill has been run manually against a real MySQL instance (both
+with and without TLS/a self-signed CA) each time this backup/restore
+tooling or the deploy pipeline around it changed - see `git log` for
+`scripts/db-backup.sh`/`scripts/db-restore.sh` for when. Repeat it again
+whenever either script changes, and periodically once a real hosting
+provider is chosen - a backup nobody has ever restored is a hope, not a
+plan.

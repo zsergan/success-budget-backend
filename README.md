@@ -73,10 +73,13 @@ them from the UI directly.
    npm install
    ```
 
-2. **Start a local MySQL database**
+2. **Start a local MySQL database and mail catcher**
 
    Easiest: use the provided docker-compose file, which already matches
-   `.env.example`'s credentials -
+   `.env.example`'s credentials - it starts both MySQL and
+   [MailDev](https://github.com/maildev/maildev) (a local SMTP catcher for
+   confirmation-code emails; nothing sent through it leaves this machine).
+   MailDev's web UI is at `http://localhost:1080`.
 
    ```bash
    docker compose up -d
@@ -203,9 +206,12 @@ npm run test
 # unit tests with coverage
 npm run test:cov
 
-# e2e tests - needs a real, running, *migrated* MySQL (see Local setup
-# above - `npm run migration:run`) and a .env with valid credentials;
-# boots the full app and hits it over HTTP
+# e2e tests - needs a real, running, *migrated* MySQL and a real MailDev
+# instance (see Local setup above - `docker compose up -d` +
+# `npm run migration:run`) and a .env with valid credentials; boots the
+# full app and hits it over HTTP. Runs serially (--runInBand) - the specs
+# each boot their own app/DB pool against one shared MySQL instance, and
+# running them in parallel can trip real InnoDB lock contention.
 npm run test:e2e
 ```
 
@@ -214,13 +220,20 @@ database is required to run them. `npm run test:cov` enforces a coverage
 floor (see `coverageThreshold` in `package.json`) so it does not silently
 regress.
 
-e2e tests (`test/app.e2e-spec.ts`) boot the real `AppModule` against a real
-database and exercise it over HTTP with `supertest` - registration, mass
-assignment rejection, the full register/verify/login/profile flow, and a
-protected route. They clean up the test user they create afterward (which,
-thanks to `onDelete: CASCADE` on the relevant foreign keys, also removes the
-wallet/categories/confirmation code created for it). CI runs them against a
-MySQL service container on every push/PR.
+e2e tests (`test/*.e2e-spec.ts`) boot the real `AppModule` against a real
+database and exercise it over HTTP with `supertest`: `app.e2e-spec.ts`
+covers registration, mass assignment rejection, the full
+register/verify/login/profile flow, and a protected route;
+`confirmation-resend.e2e-spec.ts` covers the resend-after-SMTP-failure
+behavior with `MailService` mocked out; `registration-email-delivery.e2e-spec.ts`
+runs the real, un-mocked `MailService` and reads the confirmation code back
+out of an actually-delivered message via MailDev's REST API
+(`http://127.0.0.1:1080/api/email` by default, overridable with
+`MAILDEV_API_URL`) rather than the database - proving delivery, not just
+code generation. Every spec cleans up the test users/spaces it creates
+afterward (which, thanks to `onDelete: CASCADE` on the relevant foreign
+keys, also removes their wallets/categories/confirmation codes). CI runs
+them against MySQL and MailDev service containers on every push/PR.
 
 ## Linting
 
