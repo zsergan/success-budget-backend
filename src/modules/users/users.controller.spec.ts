@@ -55,14 +55,20 @@ describe('UsersController', () => {
       const user = { id: 2, email: 'a@b.com' } as any;
       const expiresAt = new Date();
       usersService.registerOrRefresh.mockResolvedValue(user);
-      confirmationCodesService.reserveSend.mockResolvedValue({ id: 9, code: '123456', expiresAt, shouldSend: true });
+      confirmationCodesService.reserveSend.mockResolvedValue({
+        id: 9,
+        code: '123456',
+        expiresAt,
+        shouldSend: true,
+        attemptId: 3,
+      });
 
       const result = await controller.register(dto);
 
       expect(usersService.registerOrRefresh).toHaveBeenCalledWith(dto);
       expect(confirmationCodesService.reserveSend).toHaveBeenCalledWith(2, ConfirmationType.EMAIL);
       expect(mailService.sendConfirmationCode).toHaveBeenCalledWith('a@b.com', '123456', expiresAt);
-      expect(confirmationCodesService.markSent).toHaveBeenCalledWith(9);
+      expect(confirmationCodesService.markSent).toHaveBeenCalledWith(9, 3);
       expect(confirmationCodesService.markFailed).not.toHaveBeenCalled();
       expect(result).toBe(user);
     });
@@ -76,6 +82,7 @@ describe('UsersController', () => {
         code: '123456',
         expiresAt: new Date(),
         shouldSend: false,
+        attemptId: 1,
       });
 
       await controller.register(dto);
@@ -110,11 +117,17 @@ describe('UsersController', () => {
       const user = { id: 2, email: 'a@b.com' } as any;
       const expiresAt = new Date();
       usersService.registerOrRefresh.mockResolvedValue(user);
-      confirmationCodesService.reserveSend.mockResolvedValue({ id: 9, code: '123456', expiresAt, shouldSend: true });
+      confirmationCodesService.reserveSend.mockResolvedValue({
+        id: 9,
+        code: '123456',
+        expiresAt,
+        shouldSend: true,
+        attemptId: 5,
+      });
       mailService.sendConfirmationCode.mockRejectedValue(new HttpException('Could not send', 503));
 
       await expect(controller.register(dto)).rejects.toMatchObject(new HttpException('Could not send', 503));
-      expect(confirmationCodesService.markFailed).toHaveBeenCalledWith(9);
+      expect(confirmationCodesService.markFailed).toHaveBeenCalledWith(9, 5);
       expect(confirmationCodesService.markSent).not.toHaveBeenCalled();
     });
   });

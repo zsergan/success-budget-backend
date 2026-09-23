@@ -40,6 +40,14 @@ export class ConfirmationCode {
   @Column({ type: 'enum', enum: ConfirmationCodeSendStatus, default: ConfirmationCodeSendStatus.PENDING })
   send_status: ConfirmationCodeSendStatus;
 
+  // Bumped every time reserveSend() reserves a send attempt. markSent()/
+  // markFailed() only apply if this still matches the attempt they were
+  // given - otherwise a slow, stale attempt (e.g. one SMTP call that hangs
+  // past a newer, faster resend) can no longer overwrite a status a later
+  // attempt already settled. See ConfirmationCodesService.reserveSend().
+  @Column({ type: 'int', default: 0 })
+  send_attempt_id: number;
+
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   user: User;

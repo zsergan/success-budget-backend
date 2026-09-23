@@ -37,9 +37,9 @@ export class UsersController {
     if (reservation.shouldSend) {
       try {
         await this.mailService.sendConfirmationCode(user.email, reservation.code, reservation.expiresAt);
-        await this.confirmationCodesService.markSent(reservation.id);
+        await this.confirmationCodesService.markSent(reservation.id, reservation.attemptId);
       } catch (error) {
-        await this.confirmationCodesService.markFailed(reservation.id);
+        await this.confirmationCodesService.markFailed(reservation.id, reservation.attemptId);
         throw error;
       }
     }

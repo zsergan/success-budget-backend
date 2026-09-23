@@ -125,7 +125,8 @@
       "/node_modules/(?!(@nestjs/passport|@nestjs/config|@nestjs/terminus)/)"
     ],
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.(t|j)s",
+      "!migrations/**"
     ],
     "coverageDirectory": "../coverage",
     "coverageThreshold": {

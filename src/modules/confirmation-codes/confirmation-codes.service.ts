@@ -18,6 +18,10 @@ export interface ReservedConfirmationCode {
   // enough (see CONFIRMATION_CODE_RESEND_COOLDOWN_MS) - the caller should
   // not attempt to send another email for it.
   shouldSend: boolean;
+  // Identifies *this* reservation - pass it back to markSent()/markFailed()
+  // unchanged so they only apply if it's still the current attempt (see
+  // send_attempt_id on the entity).
+  attemptId: number;
 }
 
 type ExistingCodeSendState = Pick<ConfirmationCode, 'send_status' | 'last_attempted_at'>;
@@ -101,7 +105,13 @@ export class ConfirmationCodesService {
       }
 
       if (decision.action === 'skip') {
-        return { id: existing.id, code: existing.confirmation_code, expiresAt: existing.expired_at, shouldSend: false };
+        return {
+          id: existing.id,
+          code: existing.confirmation_code,
+          expiresAt: existing.expired_at,
+          shouldSend: false,
+          attemptId: existing.send_attempt_id,
+        };
       }
 
       const now = new Date();
@@ -117,30 +127,55 @@ export class ConfirmationCodesService {
             expired_at: new Date(now.getTime() + CONFIRMATION_CODE_TTL_MS),
             last_attempted_at: now,
             send_status: ConfirmationCodeSendStatus.PENDING,
+            send_attempt_id: 1,
           }),
         );
 
-        return { id: created.id, code: created.confirmation_code, expiresAt: created.expired_at, shouldSend: true };
+        return {
+          id: created.id,
+          code: created.confirmation_code,
+          expiresAt: created.expired_at,
+          shouldSend: true,
+          attemptId: created.send_attempt_id,
+        };
       }
 
       // decision.action === 'send': reuse the existing code (an active code
       // keeps the same 10-minute expiry across resends), just reserve a
-      // fresh attempt for it.
-      await repository.update(existing.id, { last_attempted_at: now, send_status: ConfirmationCodeSendStatus.PENDING });
+      // fresh, uniquely-identified attempt for it.
+      const attemptId = existing.send_attempt_id + 1;
+      await repository.update(existing.id, {
+        last_attempted_at: now,
+        send_status: ConfirmationCodeSendStatus.PENDING,
+        send_attempt_id: attemptId,
+      });
 
-      return { id: existing.id, code: existing.confirmation_code, expiresAt: existing.expired_at, shouldSend: true };
+      return {
+        id: existing.id,
+        code: existing.confirmation_code,
+        expiresAt: existing.expired_at,
+        shouldSend: true,
+        attemptId,
+      };
     });
   }
 
-  async markSent(id: number): Promise<void> {
-    await this.confirmationCodeRepository.update(id, {
-      send_status: ConfirmationCodeSendStatus.SENT,
-      last_sent_at: new Date(),
-    });
+  // Only takes effect if attemptId is still the code's current send attempt
+  // - a stale attempt that finishes after a newer one has already been
+  // reserved (or settled) is a silent no-op instead of overwriting a status
+  // it no longer has authority over.
+  async markSent(id: number, attemptId: number): Promise<void> {
+    await this.confirmationCodeRepository.update(
+      { id, send_attempt_id: attemptId },
+      { send_status: ConfirmationCodeSendStatus.SENT, last_sent_at: new Date() },
+    );
   }
 
-  async markFailed(id: number): Promise<void> {
-    await this.confirmationCodeRepository.update(id, { send_status: ConfirmationCodeSendStatus.FAILED });
+  async markFailed(id: number, attemptId: number): Promise<void> {
+    await this.confirmationCodeRepository.update(
+      { id, send_attempt_id: attemptId },
+      { send_status: ConfirmationCodeSendStatus.FAILED },
+    );
   }
 
   async incrementAttempts(id: number): Promise<void> {
