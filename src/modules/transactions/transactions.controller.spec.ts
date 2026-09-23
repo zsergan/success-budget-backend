@@ -3,6 +3,7 @@ import { HttpException } from '@nestjs/common';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -12,6 +13,7 @@ import { TransactionType } from '@shared/enums';
 describe('TransactionsController', () => {
   let controller: TransactionsController;
   let transactionsService: jest.Mocked<TransactionsService>;
+  let transactionQueriesService: jest.Mocked<TransactionQueriesService>;
   let walletsService: jest.Mocked<WalletsService>;
   let categoriesService: jest.Mocked<CategoriesService>;
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
@@ -22,13 +24,11 @@ describe('TransactionsController', () => {
       providers: [
         {
           provide: TransactionsService,
-          useValue: {
-            create: jest.fn(),
-            getForAllWallets: jest.fn(),
-            getOneWithWallet: jest.fn(),
-            remove: jest.fn(),
-            getLatest: jest.fn(),
-          },
+          useValue: { create: jest.fn(), remove: jest.fn() },
+        },
+        {
+          provide: TransactionQueriesService,
+          useValue: { getForAllWallets: jest.fn(), getOneWithWallet: jest.fn(), getLatest: jest.fn() },
         },
         { provide: WalletsService, useValue: { getOne: jest.fn() } },
         { provide: CategoriesService, useValue: { getOne: jest.fn() } },
@@ -38,6 +38,7 @@ describe('TransactionsController', () => {
 
     controller = module.get(TransactionsController);
     transactionsService = module.get(TransactionsService);
+    transactionQueriesService = module.get(TransactionQueriesService);
     walletsService = module.get(WalletsService);
     categoriesService = module.get(CategoriesService);
     spaceAccessService = module.get(SpaceAccessService);
@@ -140,7 +141,7 @@ describe('TransactionsController', () => {
 
   describe('getAll', () => {
     it('nulls out the wallet on transactions whose wallet was soft-deleted', async () => {
-      transactionsService.getForAllWallets.mockResolvedValue([
+      transactionQueriesService.getForAllWallets.mockResolvedValue([
         { id: 1, wallet: { id: 1, is_deleted: 0 } },
         { id: 2, wallet: { id: 2, is_deleted: 1 } },
       ] as any);
@@ -148,7 +149,11 @@ describe('TransactionsController', () => {
       const result = await controller.getAll(req, spaceId);
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(transactionsService.getForAllWallets).toHaveBeenCalledWith(spaceId, expect.any(Date), expect.any(Date));
+      expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(
+        spaceId,
+        expect.any(Date),
+        expect.any(Date),
+      );
       expect(result[0].wallet).toEqual({ id: 1, is_deleted: 0 });
       expect(result[1].wallet).toBeNull();
     });
@@ -156,17 +161,17 @@ describe('TransactionsController', () => {
 
   describe('getLatest', () => {
     it('returns null when the space has no transactions', async () => {
-      transactionsService.getLatest.mockResolvedValue(null);
+      transactionQueriesService.getLatest.mockResolvedValue(null);
 
       const result = await controller.getLatest(req, spaceId);
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(transactionsService.getLatest).toHaveBeenCalledWith(spaceId);
+      expect(transactionQueriesService.getLatest).toHaveBeenCalledWith(spaceId);
       expect(result).toBeNull();
     });
 
     it('nulls out the wallet when it was soft-deleted', async () => {
-      transactionsService.getLatest.mockResolvedValue({ id: 1, wallet: { id: 1, is_deleted: 1 } } as any);
+      transactionQueriesService.getLatest.mockResolvedValue({ id: 1, wallet: { id: 1, is_deleted: 1 } } as any);
 
       const result = await controller.getLatest(req, spaceId);
 
@@ -176,7 +181,7 @@ describe('TransactionsController', () => {
 
   describe('remove', () => {
     it('rejects when the transaction does not exist', async () => {
-      transactionsService.getOneWithWallet.mockResolvedValue(null);
+      transactionQueriesService.getOneWithWallet.mockResolvedValue(null);
 
       await expect(controller.remove(req, spaceId, 'tx-1')).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
@@ -185,7 +190,10 @@ describe('TransactionsController', () => {
     });
 
     it('rejects when the transaction belongs to a different space', async () => {
-      transactionsService.getOneWithWallet.mockResolvedValue({ id: 'tx-1', wallet: { id: 1, space_id: 20 } } as any);
+      transactionQueriesService.getOneWithWallet.mockResolvedValue({
+        id: 'tx-1',
+        wallet: { id: 1, space_id: 20 },
+      } as any);
 
       await expect(controller.remove(req, spaceId, 'tx-1')).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
@@ -195,7 +203,7 @@ describe('TransactionsController', () => {
 
     it('removes the transaction when its wallet belongs to the space', async () => {
       const transaction = { id: 'tx-1', wallet: { id: 1, space_id: spaceId } };
-      transactionsService.getOneWithWallet.mockResolvedValue(transaction as any);
+      transactionQueriesService.getOneWithWallet.mockResolvedValue(transaction as any);
 
       const result = await controller.remove(req, spaceId, 'tx-1');
 

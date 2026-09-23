@@ -16,6 +16,7 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -30,6 +31,7 @@ import { ErrorMessages } from '@shared/error-messages';
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
+    private readonly transactionQueriesService: TransactionQueriesService,
     private readonly walletsService: WalletsService,
     private readonly categoriesService: CategoriesService,
     private readonly spaceAccessService: SpaceAccessService,
@@ -66,7 +68,7 @@ export class TransactionsController {
   async getLatest(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
     await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
-    const transaction = await this.transactionsService.getLatest(spaceId);
+    const transaction = await this.transactionQueriesService.getLatest(spaceId);
 
     if (!transaction) {
       return null;
@@ -89,7 +91,7 @@ export class TransactionsController {
   ) {
     await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
-    const transactions = await this.transactionsService.getForAllWallets(spaceId, from, to);
+    const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to);
 
     transactions.forEach((transaction) => {
       if (transaction.wallet.is_deleted) {
@@ -108,7 +110,7 @@ export class TransactionsController {
   ): Promise<boolean> {
     await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
-    const transaction = await this.transactionsService.getOneWithWallet(transactionId);
+    const transaction = await this.transactionQueriesService.getOneWithWallet(transactionId);
     assertBelongsToSpace(transaction?.wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
 
     await this.transactionsService.remove(transaction);

@@ -3,7 +3,7 @@ import { HttpException } from '@nestjs/common';
 
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
-import { TransactionsService } from '@modules/transactions/transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
@@ -11,7 +11,7 @@ import { ErrorMessages } from '@shared/error-messages';
 describe('LimitsController', () => {
   let controller: LimitsController;
   let limitsService: jest.Mocked<LimitsService>;
-  let transactionsService: jest.Mocked<TransactionsService>;
+  let transactionQueriesService: jest.Mocked<TransactionQueriesService>;
   let categoriesService: jest.Mocked<CategoriesService>;
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
 
@@ -30,7 +30,7 @@ describe('LimitsController', () => {
             calculateSpending: jest.fn(),
           },
         },
-        { provide: TransactionsService, useValue: { getExpensesByCategory: jest.fn() } },
+        { provide: TransactionQueriesService, useValue: { getExpensesByCategory: jest.fn() } },
         { provide: CategoriesService, useValue: { getMany: jest.fn() } },
         { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
@@ -38,7 +38,7 @@ describe('LimitsController', () => {
 
     controller = module.get(LimitsController);
     limitsService = module.get(LimitsService);
-    transactionsService = module.get(TransactionsService);
+    transactionQueriesService = module.get(TransactionQueriesService);
     categoriesService = module.get(CategoriesService);
     spaceAccessService = module.get(SpaceAccessService);
   });
@@ -50,7 +50,7 @@ describe('LimitsController', () => {
     it('fetches limits and category expense totals, then delegates the spending calculation to the service', async () => {
       const categoryTotals = new Map([[10, 100]]);
       limitsService.getAll.mockResolvedValue([{ id: 1 }] as any);
-      transactionsService.getExpensesByCategory.mockResolvedValue(categoryTotals);
+      transactionQueriesService.getExpensesByCategory.mockResolvedValue(categoryTotals);
       limitsService.calculateSpending.mockReturnValue({ total: null, categories: [], over_allocation: null } as any);
 
       const result = await controller.getAll(req, spaceId);

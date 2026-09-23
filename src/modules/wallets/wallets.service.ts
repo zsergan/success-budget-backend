@@ -9,7 +9,7 @@ import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
 import { SpacesService } from '@modules/spaces/spaces.service';
-import type { WalletPeriodTotals } from '@modules/transactions/transactions.service';
+import type { WalletPeriodTotals } from '@modules/transaction-queries/transaction-queries.service';
 
 export interface WalletSummary {
   wallet: Wallet;

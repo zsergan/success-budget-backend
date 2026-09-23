@@ -19,7 +19,7 @@ import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '@shared/types';
 import { getEndOfMonth, getStartOfMonth, assertBelongsToSpace } from '@shared/utils';
-import { TransactionsService } from '@modules/transactions/transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
 
@@ -29,7 +29,7 @@ import { ErrorMessages } from '@shared/error-messages';
 export class WalletsController {
   constructor(
     private readonly walletsService: WalletsService,
-    private readonly transactionsService: TransactionsService,
+    private readonly transactionQueriesService: TransactionQueriesService,
     private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
@@ -74,8 +74,8 @@ export class WalletsController {
     const wallets = await this.walletsService.getAll(spaceId);
     const walletIds = wallets.map((wallet) => wallet.id);
     const [periodTotals, balances] = await Promise.all([
-      this.transactionsService.getPeriodTotals(walletIds, from, to),
-      this.transactionsService.getBalances(walletIds),
+      this.transactionQueriesService.getPeriodTotals(walletIds, from, to),
+      this.transactionQueriesService.getBalances(walletIds),
     ]);
 
     return this.walletsService.buildOverview(spaceId, wallets, periodTotals, balances);

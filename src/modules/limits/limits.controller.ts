@@ -17,7 +17,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import type { AuthedRequest } from '@shared/types';
 import { LimitsService } from './limits.service';
-import { TransactionsService } from '@modules/transactions/transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
@@ -31,7 +31,7 @@ import { ErrorMessages } from '@shared/error-messages';
 export class LimitsController {
   constructor(
     private readonly limitsService: LimitsService,
-    private readonly transactionsService: TransactionsService,
+    private readonly transactionQueriesService: TransactionQueriesService,
     private readonly categoriesService: CategoriesService,
     private readonly spaceAccessService: SpaceAccessService,
   ) {}
@@ -42,7 +42,7 @@ export class LimitsController {
     await this.spaceAccessService.assertMembership(spaceId, req.user.id);
 
     const limits = await this.limitsService.getAll(spaceId);
-    const categoryTotals = await this.transactionsService.getExpensesByCategory(
+    const categoryTotals = await this.transactionQueriesService.getExpensesByCategory(
       spaceId,
       getStartOfMonth(new Date()),
       getEndOfMonth(new Date()),

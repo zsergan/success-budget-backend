@@ -3,14 +3,14 @@ import { HttpException } from '@nestjs/common';
 
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
-import { TransactionsService } from '@modules/transactions/transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { ErrorMessages } from '@shared/error-messages';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
   let walletsService: jest.Mocked<WalletsService>;
-  let transactionsService: jest.Mocked<TransactionsService>;
+  let transactionQueriesService: jest.Mocked<TransactionQueriesService>;
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
 
   beforeEach(async () => {
@@ -29,14 +29,14 @@ describe('WalletsController', () => {
             buildOverview: jest.fn(),
           },
         },
-        { provide: TransactionsService, useValue: { getPeriodTotals: jest.fn(), getBalances: jest.fn() } },
+        { provide: TransactionQueriesService, useValue: { getPeriodTotals: jest.fn(), getBalances: jest.fn() } },
         { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
     controller = module.get(WalletsController);
     walletsService = module.get(WalletsService);
-    transactionsService = module.get(TransactionsService);
+    transactionQueriesService = module.get(TransactionQueriesService);
     spaceAccessService = module.get(SpaceAccessService);
   });
 
@@ -113,8 +113,8 @@ describe('WalletsController', () => {
         wallets: [{ wallet: { id: 1 }, total_spend: 30, total_income: 100 }],
       };
       walletsService.getAll.mockResolvedValue(wallets);
-      transactionsService.getPeriodTotals.mockResolvedValue(periodTotals);
-      transactionsService.getBalances.mockResolvedValue(balances);
+      transactionQueriesService.getPeriodTotals.mockResolvedValue(periodTotals);
+      transactionQueriesService.getBalances.mockResolvedValue(balances);
       walletsService.buildOverview.mockResolvedValue(overview as any);
 
       const from = new Date('2026-01-01');
@@ -122,8 +122,8 @@ describe('WalletsController', () => {
       const result = await controller.getAll(req, spaceId, from, to);
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, 1);
-      expect(transactionsService.getPeriodTotals).toHaveBeenCalledWith([1, 2], from, to);
-      expect(transactionsService.getBalances).toHaveBeenCalledWith([1, 2]);
+      expect(transactionQueriesService.getPeriodTotals).toHaveBeenCalledWith([1, 2], from, to);
+      expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1, 2]);
       expect(walletsService.buildOverview).toHaveBeenCalledWith(spaceId, wallets, periodTotals, balances);
       expect(result).toEqual(overview);
     });

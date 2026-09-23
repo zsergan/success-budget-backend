@@ -14,7 +14,7 @@ import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
 
-import { TransactionsService } from '@modules/transactions/transactions.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { LimitsService } from '@modules/limits/limits.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
@@ -25,7 +25,7 @@ import { ErrorMessages } from '@shared/error-messages';
 import type { AuthedRequest } from '@shared/types';
 
 // These exercise the SQL aggregation queries added in Stages 2-4
-// (TransactionsService.getPeriodTotals/getExpensesByCategory,
+// (TransactionQueriesService.getPeriodTotals/getExpensesByCategory,
 // CategoriesService.getMany) against a real MySQL instance, at the service
 // layer - the unit specs mock QueryBuilder and can't catch a query that is
 // syntactically valid but returns the wrong rows.
@@ -33,7 +33,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
 
-  let transactionsService: TransactionsService;
+  let transactionQueriesService: TransactionQueriesService;
   let categoriesService: CategoriesService;
   let limitsService: LimitsService;
   let walletsService: WalletsService;
@@ -61,7 +61,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
     await app.init();
 
     dataSource = moduleFixture.get(DataSource);
-    transactionsService = moduleFixture.get(TransactionsService);
+    transactionQueriesService = moduleFixture.get(TransactionQueriesService);
     categoriesService = moduleFixture.get(CategoriesService);
     limitsService = moduleFixture.get(LimitsService);
     walletsService = moduleFixture.get(WalletsService);
@@ -191,12 +191,12 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
 
       const walletIds = [w1.id, w2.id, w3.id];
 
-      const balances = await transactionsService.getBalances(walletIds);
+      const balances = await transactionQueriesService.getBalances(walletIds);
       expect(balances.get(w1.id)).toBe(1000 + 500 - 120.5 - 50 + 200);
       expect(balances.get(w2.id)).toBe(-30);
       expect(balances.get(w3.id)).toBe(0);
 
-      const periodTotals = await transactionsService.getPeriodTotals(walletIds, from, to);
+      const periodTotals = await transactionQueriesService.getPeriodTotals(walletIds, from, to);
       expect(periodTotals.get(w1.id)).toEqual({ income: 500, spend: 170.5 });
       expect(periodTotals.get(w2.id)).toEqual({ income: 0, spend: 30 });
       expect(periodTotals.get(w3.id)).toEqual({ income: 0, spend: 0 });
@@ -212,8 +212,8 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const wallets = await walletsService.getAll(spaceId);
       const walletIds = wallets.map((w) => w.id);
       const [periodTotals, balances] = await Promise.all([
-        transactionsService.getPeriodTotals(walletIds, new Date(2000, 0, 1), new Date(2100, 0, 1)),
-        transactionsService.getBalances(walletIds),
+        transactionQueriesService.getPeriodTotals(walletIds, new Date(2000, 0, 1), new Date(2100, 0, 1)),
+        transactionQueriesService.getBalances(walletIds),
       ]);
 
       const overview = await walletsService.buildOverview(spaceId, wallets, periodTotals, balances);
@@ -239,8 +239,8 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const walletB = await createWallet(spaceB, 'B');
       await createTransaction(walletB.id, catB.id, TransactionType.EXPENSE, 999, new Date(2026, 1, 10));
 
-      const totalsA = await transactionsService.getExpensesByCategory(spaceA, from, to);
-      const totalsB = await transactionsService.getExpensesByCategory(spaceB, from, to);
+      const totalsA = await transactionQueriesService.getExpensesByCategory(spaceA, from, to);
+      const totalsB = await transactionQueriesService.getExpensesByCategory(spaceB, from, to);
 
       expect(totalsA.get(catA.id)).toBe(70);
       expect(totalsA.has(catB.id)).toBe(false);
@@ -275,11 +275,11 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const visibleWallets = await walletsService.getAll(spaceId);
       expect(visibleWallets.map((w) => w.id)).toEqual([kept.id]);
 
-      const balances = await transactionsService.getBalances(visibleWallets.map((w) => w.id));
+      const balances = await transactionQueriesService.getBalances(visibleWallets.map((w) => w.id));
       expect(balances.get(kept.id)).toBe(500 - 100.25 - 40 - 15 - 5 - 7);
       expect(balances.has(deleted.id)).toBe(false);
 
-      const periodTotals = await transactionsService.getPeriodTotals(
+      const periodTotals = await transactionQueriesService.getPeriodTotals(
         visibleWallets.map((w) => w.id),
         from,
         to,
@@ -288,7 +288,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
 
       // limits scope by space, not by wallet visibility - the deleted
       // wallet's history still counts against a category limit
-      const categoryTotals = await transactionsService.getExpensesByCategory(spaceId, from, to);
+      const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
       expect(categoryTotals.get(catA.id)).toBe(100.25 + 15 + 60);
       expect(categoryTotals.get(catB.id)).toBe(40);
       expect(categoryTotals.has(catIncome.id)).toBe(false);
@@ -318,7 +318,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
         amount: 100,
       } as any);
 
-      const categoryTotals = await transactionsService.getExpensesByCategory(spaceId, from, to);
+      const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
       const limits = await limitsService.getAll(spaceId);
       const result = limitsService.calculateSpending(limits, categoryTotals);
 
