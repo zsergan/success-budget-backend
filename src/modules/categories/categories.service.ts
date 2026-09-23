@@ -10,6 +10,7 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { assertBelongsToSpace } from '@shared/utils';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 export interface CategoryView {
   id: number;
@@ -32,6 +33,7 @@ export class CategoriesService {
     private readonly transactionRepository: Repository<Transaction>,
     @InjectRepository(Limit)
     private readonly limitRepository: Repository<Limit>,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
   async getOne(categoryId: number): Promise<Category> {
@@ -51,8 +53,11 @@ export class CategoriesService {
   }
 
   async getAll(
+    userId: number,
     spaceId: number,
   ): Promise<{ incomes: CategoryView[]; expenses: CategoryView[]; archived: CategoryView[] }> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
     const categories = await this.categoryRepository
       .createQueryBuilder('category')
       .where('category.space_id = :spaceId', { spaceId })
@@ -75,8 +80,15 @@ export class CategoriesService {
     };
   }
 
-  async update(categoryId: number, updateCategory: UpdateCategoryDto): Promise<Category> {
-    const category = await this.getOne(categoryId);
+  async update(
+    userId: number,
+    spaceId: number,
+    categoryId: number,
+    updateCategory: UpdateCategoryDto,
+  ): Promise<Category> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    const category = await this.getEditableCategory(spaceId, categoryId);
     const activeChanged = updateCategory.is_active !== undefined && updateCategory.is_active !== category.is_active;
 
     // mutate in place, not a spread copy - a copy loses @Exclude() on serialize
@@ -94,12 +106,17 @@ export class CategoriesService {
     return this.categoryRepository.save(category);
   }
 
-  async create(spaceId: number, category: CreateCategoryDto): Promise<Category> {
+  async create(userId: number, spaceId: number, category: CreateCategoryDto): Promise<Category> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
     const entity = this.categoryRepository.create({ ...category, space_id: spaceId });
     return this.categoryRepository.save(entity);
   }
 
-  async deleteOrArchive(categoryId: number): Promise<{ archived: boolean }> {
+  async deleteOrArchive(userId: number, spaceId: number, categoryId: number): Promise<{ archived: boolean }> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+    await this.getEditableCategory(spaceId, categoryId);
+
     const counts = await this.getTransactionCounts([categoryId]);
     const count = counts.get(categoryId) ?? 0;
 
@@ -114,7 +131,9 @@ export class CategoriesService {
     return { archived: true };
   }
 
-  async reorder(spaceId: number, categoryIds: number[]): Promise<void> {
+  async reorder(userId: number, spaceId: number, categoryIds: number[]): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
     if (categoryIds.length === 0) {
       return;
     }
@@ -145,6 +164,17 @@ export class CategoriesService {
     const reordered = categoryIds.map((id, index) => ({ id, sort: prefix + index + 1 }));
 
     await this.categoryRepository.save(reordered);
+  }
+
+  private async getEditableCategory(spaceId: number, categoryId: number): Promise<Category> {
+    const category = await this.getOne(categoryId);
+    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+
+    if (category.is_system) {
+      throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+    }
+
+    return category;
   }
 
   private async getTransactionCounts(categoryIds: number[]): Promise<Map<number, number>> {
