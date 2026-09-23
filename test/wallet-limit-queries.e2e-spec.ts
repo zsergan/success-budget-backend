@@ -306,8 +306,9 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       await createTransaction(wallet.id, catY.id, TransactionType.EXPENSE, 45.65, new Date(2026, 3, 7));
       await createTransaction(wallet.id, catZ.id, TransactionType.EXPENSE, 100, new Date(2026, 3, 8));
 
-      await limitsService.create(spaceId, { amount: 50 } as any); // monthly total, less than the group's own amount
-      await limitsService.create(spaceId, {
+      const userId = await createUserWithMembership(spaceId);
+      await limitsService.create(userId, spaceId, { amount: 50 } as any); // monthly total, less than the group's own amount
+      await limitsService.create(userId, spaceId, {
         category_ids: [catX.id, catY.id],
         name: 'Fun',
         amount: 100,

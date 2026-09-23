@@ -7,12 +7,19 @@ import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { assertBelongsToSpace, getEndOfMonth, getStartOfMonth } from '@shared/utils';
+import { CategoriesService } from '@modules/categories/categories.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 
 @Injectable()
 export class LimitsService {
   constructor(
     @InjectRepository(Limit)
     private readonly limitRepository: Repository<Limit>,
+    private readonly categoriesService: CategoriesService,
+    private readonly spaceAccessService: SpaceAccessService,
+    private readonly transactionQueriesService: TransactionQueriesService,
   ) {}
 
   async getOne(limitId: number) {
@@ -27,7 +34,23 @@ export class LimitsService {
       .getMany();
   }
 
-  async create(spaceId: number, createLimit: CreateLimitDto) {
+  async getSummary(userId: number, spaceId: number) {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    const limits = await this.getAll(spaceId);
+    const categoryTotals = await this.transactionQueriesService.getExpensesByCategory(
+      spaceId,
+      getStartOfMonth(new Date()),
+      getEndOfMonth(new Date()),
+    );
+
+    return this.calculateSpending(limits, categoryTotals);
+  }
+
+  async create(userId: number, spaceId: number, createLimit: CreateLimitDto) {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+    await this.assertCategoriesOwnership(spaceId, createLimit.category_ids);
+
     const categoryIds = createLimit.category_ids ?? [];
     this.assertHasNameIfGroup(categoryIds, createLimit.name);
 
@@ -52,7 +75,12 @@ export class LimitsService {
     return this.getOne(saved.id);
   }
 
-  async update(limitId: number, spaceId: number, currentLimit: Limit, updateLimit: UpdateLimitDto): Promise<void> {
+  async update(userId: number, spaceId: number, limitId: number, updateLimit: UpdateLimitDto) {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    const currentLimit = await this.getSpaceLimit(spaceId, limitId);
+    await this.assertCategoriesOwnership(spaceId, updateLimit.category_ids);
+
     const categoryIds = updateLimit.category_ids;
     const currentCategoryIds = currentLimit.categories.map((category) => category.id);
     const resultingCategoryIds = categoryIds ?? currentCategoryIds;
@@ -93,9 +121,14 @@ export class LimitsService {
         await relation.add(toAdd);
       }
     }
+
+    return this.getOne(limitId);
   }
 
-  async remove(limitId: number): Promise<void> {
+  async remove(userId: number, spaceId: number, limitId: number): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+    await this.getSpaceLimit(spaceId, limitId);
+
     // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
     await this.limitRepository.delete(limitId);
   }
@@ -145,6 +178,34 @@ export class LimitsService {
         color: category.color,
       })),
     };
+  }
+
+  private async getSpaceLimit(spaceId: number, limitId: number): Promise<Limit> {
+    const limit = await this.getOne(limitId);
+    assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
+
+    return limit;
+  }
+
+  private async assertCategoriesOwnership(spaceId: number, categoryIds?: number[]): Promise<void> {
+    const ids = categoryIds ?? [];
+
+    if (ids.length === 0) {
+      return;
+    }
+
+    const categoriesById = new Map(
+      (await this.categoriesService.getMany(ids)).map((category) => [category.id, category]),
+    );
+
+    for (const categoryId of ids) {
+      const category = categoriesById.get(categoryId);
+      assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+
+      if (category.is_system) {
+        throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+      }
+    }
   }
 
   private assertHasNameIfGroup(categoryIds: number[], name?: string | null): void {
