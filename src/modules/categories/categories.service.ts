@@ -39,11 +39,15 @@ export class CategoriesService {
   }
 
   async getMany(categoryIds: number[]): Promise<Category[]> {
-    if (categoryIds.length === 0) {
+    // dedup is safe here - this is a read, and the caller's original id
+    // list (order, duplicates) is never touched, only what we query with
+    const uniqueIds = [...new Set(categoryIds)];
+
+    if (uniqueIds.length === 0) {
       return [];
     }
 
-    return this.categoryRepository.find({ where: { id: In(categoryIds) } });
+    return this.categoryRepository.find({ where: { id: In(uniqueIds) } });
   }
 
   async getAll(

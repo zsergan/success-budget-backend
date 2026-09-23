@@ -86,6 +86,16 @@ describe('LimitsController', () => {
       expect(categoriesService.getMany).toHaveBeenCalledWith([5, 6]);
     });
 
+    it('passes a duplicate category id through unchanged - dedup is the service read, not a data change', async () => {
+      categoriesService.getMany.mockResolvedValue([{ id: 5, space_id: spaceId }] as any);
+      limitsService.create.mockResolvedValue({ id: 1 } as any);
+
+      await controller.create(req, spaceId, { category_ids: [5, 5], amount: 10 } as any);
+
+      expect(categoriesService.getMany).toHaveBeenCalledWith([5, 5]);
+      expect(limitsService.create).toHaveBeenCalledWith(spaceId, { category_ids: [5, 5], amount: 10 });
+    });
+
     it('allows creating a monthly total limit with no categories', async () => {
       limitsService.create.mockResolvedValue({ id: 1 } as any);
 

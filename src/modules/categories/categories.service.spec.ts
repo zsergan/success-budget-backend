@@ -134,6 +134,14 @@ describe('CategoriesService', () => {
       expect(result).toEqual([]);
       expect(categoryRepository.find).not.toHaveBeenCalled();
     });
+
+    it('deduplicates repeated ids before querying', async () => {
+      categoryRepository.find.mockResolvedValue([{ id: 5 }] as Category[]);
+
+      await service.getMany([5, 5, 5]);
+
+      expect(categoryRepository.find).toHaveBeenCalledWith({ where: { id: In([5]) } });
+    });
   });
 
   describe('update', () => {
