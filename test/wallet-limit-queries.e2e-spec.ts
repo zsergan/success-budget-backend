@@ -204,19 +204,13 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
 
     it('builds the full wallets overview from the aggregated maps, including total_balance and delta_percent', async () => {
       const spaceId = await createSpace();
+      const userId = await createUserWithMembership(spaceId);
       const income = await createCategory(spaceId, TransactionType.INCOME, { name: 'Salary' });
       const wallet = await createWallet(spaceId, 'Main');
 
       await createTransaction(wallet.id, income.id, TransactionType.INCOME, 400, new Date());
 
-      const wallets = await walletsService.getAll(spaceId);
-      const walletIds = wallets.map((w) => w.id);
-      const [periodTotals, balances] = await Promise.all([
-        transactionQueriesService.getPeriodTotals(walletIds, new Date(2000, 0, 1), new Date(2100, 0, 1)),
-        transactionQueriesService.getBalances(walletIds),
-      ]);
-
-      const overview = await walletsService.buildOverview(spaceId, wallets, periodTotals, balances);
+      const overview = await walletsService.getOverview(userId, spaceId, new Date(2000, 0, 1), new Date(2100, 0, 1));
 
       expect(overview.total_balance).toBe(400);
       expect(overview.wallets).toHaveLength(1);
@@ -252,6 +246,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
   describe('deleted wallets: excluded from wallet summaries, still counted by limits', () => {
     it('keeps a soft-deleted wallet history in the category aggregate used by limits, but out of getAll/getBalances', async () => {
       const spaceId = await createSpace();
+      const userId = await createUserWithMembership(spaceId);
       const catA = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'A' });
       const catB = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'B' });
       const catIncome = await createCategory(spaceId, TransactionType.INCOME, { name: 'Income' });
@@ -270,7 +265,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, 7, new Date(to.getTime() + 1)); // outside
       await createTransaction(deleted.id, catA.id, TransactionType.EXPENSE, 60, new Date(2026, 2, 11));
 
-      await walletsService.delete(deleted.id);
+      await walletsService.delete(userId, spaceId, deleted.id);
 
       const visibleWallets = await walletsService.getAll(spaceId);
       expect(visibleWallets.map((w) => w.id)).toEqual([kept.id]);
