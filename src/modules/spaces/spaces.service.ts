@@ -11,6 +11,7 @@ import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS, DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
 import { generateRandomNumberString } from '@shared/utils';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 export interface SpaceListItem {
   id: number;
@@ -30,6 +31,7 @@ export class SpacesService {
     @InjectRepository(SpaceMember)
     private readonly spaceMemberRepository: Repository<SpaceMember>,
     private readonly dataSource: DataSource,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
   async create(userId: number, dto: CreateSpaceDto): Promise<Space> {
@@ -123,7 +125,19 @@ export class SpacesService {
     return this.spaceRepository.findOne({ where: { id: spaceId }, relations: { currency: true } });
   }
 
-  async remove(spaceId: number, userId: number): Promise<void> {
+  async getForMember(userId: number, spaceId: number): Promise<Space> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    return this.getOne(spaceId);
+  }
+
+  async remove(userId: number, spaceId: number): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
+    await this.removeOwned(userId, spaceId);
+  }
+
+  // the caller must already have verified that userId owns spaceId
+  async removeOwned(userId: number, spaceId: number): Promise<void> {
     const spaceCount = await this.spaceMemberRepository.count({ where: { user_id: userId } });
 
     if (spaceCount <= 1) {

@@ -9,6 +9,16 @@ import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
 import { generateRandomNumberString } from '@shared/utils';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { UsersService } from '@modules/users/users.service';
+import { SpacesService } from './spaces.service';
+
+export interface CreatedSpaceInvite {
+  id: number;
+  email: string;
+  expires_at: Date;
+  code: string;
+}
 
 @Injectable()
 export class SpaceInvitesService {
@@ -18,9 +28,15 @@ export class SpaceInvitesService {
     @InjectRepository(SpaceMember)
     private readonly spaceMemberRepository: Repository<SpaceMember>,
     private readonly dataSource: DataSource,
+    private readonly spaceAccessService: SpaceAccessService,
+    private readonly spacesService: SpacesService,
+    private readonly usersService: UsersService,
   ) {}
 
-  async create(space: Space, email: string): Promise<SpaceInvite> {
+  async create(userId: number, spaceId: number, email: string): Promise<CreatedSpaceInvite> {
+    await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
+    const space = await this.spacesService.getOne(spaceId);
+
     if (space.type === SpaceType.PERSONAL) {
       throw new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, HttpStatus.BAD_REQUEST);
     }
@@ -39,7 +55,11 @@ export class SpaceInvitesService {
       expires_at: new Date(Date.now() + SPACE_INVITE_TTL_MS),
     });
 
-    return this.spaceInviteRepository.save(invite);
+    const saved = await this.spaceInviteRepository.save(invite);
+
+    // the only response that ever exposes the raw code - every other view
+    // (GET :id/members) only shows pending invites by email, never the code
+    return { id: saved.id, email: saved.email, expires_at: saved.expires_at, code: saved.code };
   }
 
   async getActive(spaceId: number): Promise<SpaceInvite[]> {
@@ -49,7 +69,9 @@ export class SpaceInvitesService {
     });
   }
 
-  async revoke(inviteId: number, spaceId: number): Promise<void> {
+  async revoke(userId: number, spaceId: number, inviteId: number): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
+
     const invite = await this.spaceInviteRepository.findOne({
       where: { id: inviteId, space_id: spaceId, accepted_at: IsNull(), revoked_at: IsNull() },
     });
@@ -61,10 +83,12 @@ export class SpaceInvitesService {
     await this.spaceInviteRepository.update(invite.id, { revoked_at: new Date() });
   }
 
-  async accept(userId: number, userEmail: string, code: string): Promise<Space> {
+  async accept(userId: number, code: string): Promise<Space> {
+    const user = await this.usersService.findById(userId);
+
     const invite = await this.spaceInviteRepository.findOne({
       where: {
-        email: userEmail,
+        email: user.email,
         code,
         accepted_at: IsNull(),
         revoked_at: IsNull(),
