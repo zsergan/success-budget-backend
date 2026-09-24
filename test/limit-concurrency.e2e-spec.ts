@@ -1,86 +1,50 @@
-import { HttpException, INestApplication } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { DataSource } from 'typeorm';
+import request from 'supertest';
+import { RelationQueryBuilder } from 'typeorm';
 
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/app.config';
-
-import { Space } from '@entities/space.entity';
-import { SpaceMember } from '@entities/space-member.entity';
-import { User } from '@entities/user.entity';
-import { Currency } from '@entities/currency.entity';
 import { Category } from '@entities/category.entity';
-import { LimitsService } from '@modules/limits/limits.service';
-import { AppColor, CategoryIcon, LimitType, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { AppColor, CategoryIcon, LimitType, TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { createTestApp, createVerifiedMember, deleteUsers, Member, TestApp } from './support/app';
+import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
 
-const ROUNDS = 5;
-
-describe('Concurrent limit writes (e2e)', () => {
-  let app: INestApplication;
-  let dataSource: DataSource;
-  let limitsService: LimitsService;
-  let currencyId: number;
-  const spaceIds: number[] = [];
+describe('Limit writes (e2e)', () => {
+  let testApp: TestApp;
   const userIds: number[] = [];
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
+    testApp = await createTestApp();
+  });
 
-    app = moduleFixture.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    dataSource = moduleFixture.get(DataSource);
-    limitsService = moduleFixture.get(LimitsService);
-
-    const [currency] = await dataSource.getRepository(Currency).find({ take: 1 });
-    currencyId = currency.id;
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   afterAll(async () => {
     try {
-      if (spaceIds.length) {
-        await dataSource.query(
-          'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.space_id IN (?)',
-          [spaceIds],
-        );
-        await dataSource.query('DELETE FROM limits WHERE space_id IN (?)', [spaceIds]);
-        await dataSource.query('DELETE FROM space_members WHERE space_id IN (?)', [spaceIds]);
-        await dataSource.query('DELETE FROM spaces WHERE id IN (?)', [spaceIds]);
-      }
-      if (userIds.length) {
-        await dataSource.query('DELETE FROM users WHERE id IN (?)', [userIds]);
-      }
+      await deleteUsers(testApp.dataSource, userIds);
     } finally {
-      await app.close();
+      await testApp.app.close();
     }
   });
 
-  async function createSpaceWithOwner(): Promise<{ spaceId: number; userId: number }> {
-    const space = await dataSource.getRepository(Space).save({
-      name: `e2e-limit-race-${Date.now()}-${Math.random()}`,
-      type: SpaceType.PERSONAL,
-      currency_id: currencyId,
-    });
-    spaceIds.push(space.id);
+  async function member(): Promise<Member> {
+    const created = await createVerifiedMember(testApp, 'limits');
+    userIds.push(created.userId);
+    return created;
+  }
 
-    const user = await dataSource.getRepository(User).save({
-      email: `e2e-limit-race-${Date.now()}-${Math.random()}@example.com`,
-      name: 'E2E limit race',
-      password: 'DevTest#2026',
-    });
-    userIds.push(user.id);
-
-    await dataSource.getRepository(SpaceMember).save({ space_id: space.id, user_id: user.id, role: SpaceRole.OWNER });
-
-    return { spaceId: space.id, userId: user.id };
+  function api(token: string) {
+    const server = testApp.app.getHttpServer();
+    return {
+      post: (path: string, body: object) =>
+        request(server).post(path).set('Authorization', `Bearer ${token}`).send(body),
+      put: (path: string, body: object) => request(server).put(path).set('Authorization', `Bearer ${token}`).send(body),
+    };
   }
 
   async function createCategory(spaceId: number): Promise<number> {
-    const category = await dataSource.getRepository(Category).save({
+    const category = await testApp.dataSource.getRepository(Category).save({
       space_id: spaceId,
       name: 'Race',
       transaction_type: TransactionType.EXPENSE,
@@ -89,113 +53,152 @@ describe('Concurrent limit writes (e2e)', () => {
       is_active: 1,
       is_system: 0,
     });
-
     return category.id;
   }
 
-  function expectOneWinner(results: PromiseSettledResult<unknown>[]): void {
-    const rejected = results.filter((result) => result.status === 'rejected');
-
-    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0].reason).toMatchObject(new HttpException(ErrorMessages.LIMIT_EXISTS, 400));
+  async function limitRows(spaceId: number): Promise<{ id: number; limit_type: string; amount: string }[]> {
+    return testApp.dataSource.query('SELECT id, limit_type, amount FROM limits WHERE space_id = ? ORDER BY id', [
+      spaceId,
+    ]);
   }
 
   async function linkedLimitIds(categoryId: number): Promise<number[]> {
-    const rows: { limit_id: number }[] = await dataSource.query(
+    const rows: { limit_id: number }[] = await testApp.dataSource.query(
       'SELECT limit_id FROM limit_categories WHERE category_id = ?',
       [categoryId],
     );
-
     return rows.map((row) => row.limit_id);
   }
 
-  it('creates only one monthly total limit per space', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
+  async function linkedCategoryIds(limitId: number): Promise<number[]> {
+    const rows: { category_id: number }[] = await testApp.dataSource.query(
+      'SELECT category_id FROM limit_categories WHERE limit_id = ? ORDER BY category_id',
+      [limitId],
+    );
+    return rows.map((row) => row.category_id);
+  }
 
-      const results = await Promise.allSettled([
-        limitsService.create(userId, spaceId, { amount: '100' }),
-        limitsService.create(userId, spaceId, { amount: '200' }),
-      ]);
+  function overlapOnSpaceLock<A, B>(first: () => PromiseLike<A>, second: () => PromiseLike<B>): Promise<[A, B]> {
+    const checkpoint = pauseAfterFirstCall(testApp.app.get(SpaceAccessService), 'lockSpace');
+    return overlap(testApp.dataSource, checkpoint, LOCK_SPACE, first, second);
+  }
 
-      expectOneWinner(results);
-      const totals = await dataSource.query('SELECT id FROM limits WHERE space_id = ? AND limit_type = ?', [
-        spaceId,
-        LimitType.OTHERS,
-      ]);
-      expect(totals).toHaveLength(1);
-    }
-  });
+  describe('concurrent creates', () => {
+    it('creates only one monthly total limit', async () => {
+      const { spaceId, token } = await member();
+      const path = `/api/v1/spaces/${spaceId}/limits`;
 
-  it('assigns a category to only one newly created limit', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
+      const [first, second] = await overlapOnSpaceLock(
+        () => api(token).post(path, { amount: '100' }),
+        () => api(token).post(path, { amount: '200' }),
+      );
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(400);
+      expect(second.body.message).toBe(ErrorMessages.LIMIT_EXISTS);
+      expect(await limitRows(spaceId)).toEqual([{ id: first.body.id, limit_type: LimitType.OTHERS, amount: '100.00' }]);
+    });
+
+    it('assigns a category to only one new limit', async () => {
+      const { spaceId, token } = await member();
       const categoryId = await createCategory(spaceId);
+      const path = `/api/v1/spaces/${spaceId}/limits`;
 
-      const results = await Promise.allSettled([
-        limitsService.create(userId, spaceId, { category_ids: [categoryId], amount: '100' }),
-        limitsService.create(userId, spaceId, { category_ids: [categoryId], amount: '200' }),
+      const [first, second] = await overlapOnSpaceLock(
+        () => api(token).post(path, { category_ids: [categoryId], amount: '100' }),
+        () => api(token).post(path, { category_ids: [categoryId], amount: '200' }),
+      );
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(400);
+      expect(second.body.message).toBe(ErrorMessages.LIMIT_EXISTS);
+      expect(await limitRows(spaceId)).toEqual([
+        { id: first.body.id, limit_type: LimitType.CATEGORY, amount: '100.00' },
       ]);
-
-      expectOneWinner(results);
-      expect(await linkedLimitIds(categoryId)).toHaveLength(1);
-      const limits = await dataSource.query('SELECT id FROM limits WHERE space_id = ?', [spaceId]);
-      expect(limits).toHaveLength(1);
-    }
+      expect(await linkedLimitIds(categoryId)).toEqual([first.body.id]);
+    });
   });
 
-  it('moves a category to only one of two limits updated at once, leaving the loser unchanged', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
+  describe('concurrent updates', () => {
+    it('moves a category to only one of two limits and leaves the other unchanged', async () => {
+      const { spaceId, token } = await member();
       const [first, second, contested] = [
         await createCategory(spaceId),
         await createCategory(spaceId),
         await createCategory(spaceId),
       ];
-      const firstLimit = await limitsService.create(userId, spaceId, { category_ids: [first], amount: '100' });
-      const secondLimit = await limitsService.create(userId, spaceId, { category_ids: [second], amount: '100' });
+      const base = `/api/v1/spaces/${spaceId}/limits`;
+      const firstLimit = (await api(token).post(base, { category_ids: [first], amount: '100' })).body;
+      const secondLimit = (await api(token).post(base, { category_ids: [second], amount: '100' })).body;
 
-      const results = await Promise.allSettled([
-        limitsService.update(userId, spaceId, firstLimit.id, { category_ids: [contested], amount: '300' }),
-        limitsService.update(userId, spaceId, secondLimit.id, { category_ids: [contested], amount: '300' }),
-      ]);
+      const [winner, loser] = await overlapOnSpaceLock(
+        () => api(token).put(`${base}/${firstLimit.id}`, { category_ids: [contested], amount: '300' }),
+        () => api(token).put(`${base}/${secondLimit.id}`, { category_ids: [contested], amount: '300' }),
+      );
 
-      expectOneWinner(results);
-      const [winner] = await linkedLimitIds(contested);
-      expect(await linkedLimitIds(contested)).toHaveLength(1);
+      expect(winner.status).toBe(200);
+      expect(loser.status).toBe(400);
+      expect(loser.body.message).toBe(ErrorMessages.LIMIT_EXISTS);
+      expect(await linkedLimitIds(contested)).toEqual([firstLimit.id]);
+      expect(await linkedCategoryIds(secondLimit.id)).toEqual([second]);
+      const rows = await limitRows(spaceId);
+      expect(rows.find((row) => row.id === secondLimit.id)?.amount).toBe('100.00');
+    });
 
-      const loser = winner === firstLimit.id ? secondLimit : firstLimit;
-      const loserCategory = winner === firstLimit.id ? second : first;
-      expect(await linkedLimitIds(loserCategory)).toEqual([loser.id]);
-      const [loserRow] = await dataSource.query('SELECT amount FROM limits WHERE id = ?', [loser.id]);
-      expect(loserRow.amount).toBe('100.00');
-    }
+    it('turns only one of two category limits into the monthly total', async () => {
+      const { spaceId, token } = await member();
+      const base = `/api/v1/spaces/${spaceId}/limits`;
+      const firstLimit = (await api(token).post(base, { category_ids: [await createCategory(spaceId)], amount: '100' }))
+        .body;
+      const secondCategory = await createCategory(spaceId);
+      const secondLimit = (await api(token).post(base, { category_ids: [secondCategory], amount: '100' })).body;
+
+      const [winner, loser] = await overlapOnSpaceLock(
+        () => api(token).put(`${base}/${firstLimit.id}`, { category_ids: [] }),
+        () => api(token).put(`${base}/${secondLimit.id}`, { category_ids: [] }),
+      );
+
+      expect(winner.status).toBe(200);
+      expect(loser.status).toBe(400);
+      expect(loser.body.message).toBe(ErrorMessages.LIMIT_EXISTS);
+      const totals = (await limitRows(spaceId)).filter((row) => row.limit_type === LimitType.OTHERS);
+      expect(totals.map((row) => row.id)).toEqual([firstLimit.id]);
+      expect(await linkedCategoryIds(secondLimit.id)).toEqual([secondCategory]);
+    });
   });
 
-  it('turns only one of two category limits into the monthly total', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
-      const firstLimit = await limitsService.create(userId, spaceId, {
-        category_ids: [await createCategory(spaceId)],
-        amount: '100',
-      });
-      const secondLimit = await limitsService.create(userId, spaceId, {
-        category_ids: [await createCategory(spaceId)],
-        amount: '100',
-      });
-
-      const results = await Promise.allSettled([
-        limitsService.update(userId, spaceId, firstLimit.id, { category_ids: [] }),
-        limitsService.update(userId, spaceId, secondLimit.id, { category_ids: [] }),
-      ]);
-
-      expectOneWinner(results);
-      const totals = await dataSource.query('SELECT id FROM limits WHERE space_id = ? AND limit_type = ?', [
-        spaceId,
-        LimitType.OTHERS,
-      ]);
-      expect(totals).toHaveLength(1);
+  describe('a failure between the field write and the category links', () => {
+    function failCategoryLinks(): void {
+      jest.spyOn(RelationQueryBuilder.prototype, 'add').mockRejectedValue(new Error('injected link failure'));
     }
+
+    it('leaves no limit behind when creating', async () => {
+      const { spaceId, token } = await member();
+      const categoryId = await createCategory(spaceId);
+      failCategoryLinks();
+
+      const response = await api(token).post(`/api/v1/spaces/${spaceId}/limits`, {
+        category_ids: [categoryId],
+        amount: '100',
+      });
+
+      expect(response.status).toBe(500);
+      expect(await limitRows(spaceId)).toEqual([]);
+      expect(await linkedLimitIds(categoryId)).toEqual([]);
+    });
+
+    it('rolls back the new amount and the removed link when updating', async () => {
+      const { spaceId, token } = await member();
+      const [kept, added] = [await createCategory(spaceId), await createCategory(spaceId)];
+      const base = `/api/v1/spaces/${spaceId}/limits`;
+      const limit = (await api(token).post(base, { category_ids: [kept], amount: '100' })).body;
+      failCategoryLinks();
+
+      const response = await api(token).put(`${base}/${limit.id}`, { category_ids: [added], amount: '999' });
+
+      expect(response.status).toBe(500);
+      expect(await limitRows(spaceId)).toEqual([{ id: limit.id, limit_type: LimitType.CATEGORY, amount: '100.00' }]);
+      expect(await linkedCategoryIds(limit.id)).toEqual([kept]);
+    });
   });
 });
