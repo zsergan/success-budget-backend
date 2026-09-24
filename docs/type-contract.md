@@ -35,7 +35,7 @@ compact and epoch forms are rejected.
 
 | Where                                                     | Declared | Actual                                                                                                                                                                                         |
 | --------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Request `timestamp` (`@IsIsoDate`)                        | `string` | ISO string; converted with `toDate` before it is saved                                                                                                                                         |
+| Request `timestamp` (`@IsIsoDate`, `@IsInTimestampRange`) | `string` | ISO string within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z); converted with `toDate` before it is saved                                                       |
 | Query `from`/`to` on `GET /transactions`, `GET /wallets`  | `Date`   | `ParseOptionalDatePipe`: absent → handler default (current month, inclusive to 23:59:59.999 local); present → `Date`; invalid, empty or repeated → 400 `<field> must be a valid ISO 8601 date` |
 | `TIMESTAMP` columns read                                  | `Date`   | `Date`; serialized as ISO-8601 UTC string                                                                                                                                                      |
 | `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`) | `Date`   | read in the Node process's local time zone, so shifted when it differs from the MySQL session zone; app-written values round-trip. Out of scope for typing.                                    |
@@ -46,17 +46,38 @@ rows. `Z`/offset values select the same rows when the app runs in UTC (the
 container default); on a non-UTC host they are now compared as the instant
 they denote instead of being shifted by the MySQL session zone.
 
-## Nullable columns
+## Nullable columns and relations
 
-| Column                                                                            | Declared      | Actual                                      |
-| --------------------------------------------------------------------------------- | ------------- | ------------------------------------------- |
-| `Transaction.description`                                                         | `string`      | `string \| null`                            |
-| `Wallet.deleted_at`                                                               | `Date`        | `Date \| null`                              |
-| `Limit.name`, `Category.archived_at`, invite/code `*_at`                          | `T \| null`   | `T \| null`                                 |
-| `GET /transactions` → `wallet`                                                    | `Wallet`      | `Wallet \| null` (hidden when soft-deleted) |
-| `GET /transactions/latest`                                                        | `Transaction` | `Transaction \| null` (empty body)          |
-| `findOne()`-based helpers (`getOne`, `findById`, ...)                             | `T`           | `T \| null`                                 |
-| Boolean-like `tinyint` (`is_active`, `is_system`, `is_deleted`, `email_verified`) | `number`      | `0 \| 1`                                    |
+| Field                                                                                                    | Declared    | Actual                            |
+| -------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------- |
+| `Transaction.description`, `Wallet.deleted_at`, `Limit.name`, `Category.archived_at`, invite/code `*_at` | `T \| null` | `T \| null`                       |
+| `findOne()`-based helpers (`getOne`, `findById`, ...)                                                    | `T`         | `T \| null` (**gap**, next stage) |
+| Boolean-like `tinyint` (`is_active`, `is_system`, `is_deleted`, `email_verified`)                        | `number`    | `0 \| 1`                          |
+
+Relation properties on entities are optional (`wallet?: Wallet`): TypeORM
+sets them only when a query loads them, and an unloaded relation is absent
+from the JSON, never `null`. Queries that join a relation return
+`WithRelations<T, K>` (`@shared/types`), checked at runtime by
+`withRelations()`: `LoadedTransaction` (wallet + category),
+`LimitWithCategories`, `SpaceWithCurrency`, members with `user`.
+
+`Wallet.balance` is not a column and not an entity property. Only responses
+that compute it carry it, typed `WalletWithBalance`.
+
+## Response types that differ from the entity
+
+Views keep the entity instance (mutated, not spread) so `@Exclude()` still
+removes internal fields such as `space_id`, `wallet_id`, `category_id`,
+`is_deleted`, `deleted_at`, `sort`, `is_system`, `currency_id`, `password`
+and `email_verified`. Exact key sets are pinned in the e2e contract spec.
+
+| Response                                        | Type                      | Difference                                                                                           |
+| ----------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `GET /transactions`, `GET /transactions/latest` | `TransactionView`         | `wallet` is `null` when the wallet was soft-deleted; `category` always present                       |
+| `POST /transactions`                            | `CreateTransactionResult` | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                     |
+| `POST /wallets`                                 | `CreateWalletResult`      | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)     |
+| `GET /wallets`                                  | `WalletsOverview`         | `wallets[].wallet: WalletWithBalance`                                                                |
+| `POST /categories`                              | `Category`                | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior) |
 
 ## Absent vs `null` vs empty
 
