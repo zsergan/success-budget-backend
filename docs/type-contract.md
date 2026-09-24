@@ -48,11 +48,11 @@ they denote instead of being shifted by the MySQL session zone.
 
 ## Nullable columns and relations
 
-| Field                                                                                                    | Declared    | Actual                            |
-| -------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------- |
-| `Transaction.description`, `Wallet.deleted_at`, `Limit.name`, `Category.archived_at`, invite/code `*_at` | `T \| null` | `T \| null`                       |
-| `findOne()`-based helpers (`getOne`, `findById`, ...)                                                    | `T`         | `T \| null` (**gap**, next stage) |
-| Boolean-like `tinyint` (`is_active`, `is_system`, `is_deleted`, `email_verified`)                        | `number`    | `0 \| 1`                          |
+| Field                                                                                                    | Declared    | Actual      |
+| -------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
+| `Transaction.description`, `Wallet.deleted_at`, `Limit.name`, `Category.archived_at`, invite/code `*_at` | `T \| null` | `T \| null` |
+| `findOne()`-based helpers (`getOne`, `findById`, ...)                                                    | `T \| null` | `T \| null` |
+| Boolean-like `tinyint` (`is_active`, `is_system`, `is_deleted`, `email_verified`)                        | `number`    | `0 \| 1`    |
 
 Relation properties on entities are optional (`wallet?: Wallet`): TypeORM
 sets them only when a query loads them, and an unloaded relation is absent
@@ -60,6 +60,12 @@ from the JSON, never `null`. Queries that join a relation return
 `WithRelations<T, K>` (`@shared/types`), checked at runtime by
 `withRelations()`: `LoadedTransaction` (wallet + category),
 `LimitWithCategories`, `SpaceWithCurrency`, members with `user`.
+
+A missing resource keeps its existing response: `assertBelongsToSpace()`
+turns a missing wallet, category, limit or transaction into the same 403 as
+a foreign one, and invites, members and confirmation codes stay 404. A row
+that disappears between the access check and the read (a concurrent delete)
+is a 404 via `assertFound()` instead of an empty 200 or a 500.
 
 `Wallet.balance` is not a column and not an entity property. Only responses
 that compute it carry it, typed `WalletWithBalance`.
