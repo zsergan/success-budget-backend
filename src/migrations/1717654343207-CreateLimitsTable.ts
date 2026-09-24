@@ -1,5 +1,7 @@
 import { MigrationInterface, QueryRunner, Table, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 export class CreateLimitsTable1717654343207 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // create limits table
@@ -66,15 +68,11 @@ export class CreateLimitsTable1717654343207 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    const table = await queryRunner.getTable('limits');
-
     // drop foreign key for user_id in limits table
-    const userForeignKey = table.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
-    await queryRunner.dropForeignKey('limits', userForeignKey);
+    await dropForeignKeyOn(queryRunner, 'limits', 'user_id');
 
     // drop foreign key for category_id in limits table
-    const categoryForeignKey = table.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
-    await queryRunner.dropForeignKey('limits', categoryForeignKey);
+    await dropForeignKeyOn(queryRunner, 'limits', 'category_id');
 
     // drop limits table
     await queryRunner.dropTable('limits');
