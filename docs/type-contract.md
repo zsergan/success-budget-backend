@@ -47,17 +47,23 @@ input string, or a normalized DECIMAL string depending on the endpoint
 
 ## Absent vs `null` vs empty
 
-`@IsOptional()` skips all validators for both `undefined` and `null`, so
-today both reach the service.
+`@IsOptional()` skips all validators for both `undefined` and `null`, so it
+is used only where `null` is meaningful. Fields that may be omitted but not
+nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
+`undefined`.
 
-| Case                                                                                                                              | Current behavior               | Rule for the following stages            |
-| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------- |
-| Field absent in an update DTO                                                                                                     | left unchanged                 | unchanged                                |
-| `null` for a nullable column (`Limit.name`, `description`)                                                                        | stored as `null`               | clears the value                         |
-| `null` for a NOT NULL column (`wallet_name`, `design`, category `name`/`icon`/`color`/`is_active`, limit `amount`/`category_ids`) | reaches SQL: 500 (**gap**)     | 400 validation error                     |
-| `null` for an optional create-only list (`invites`)                                                                               | treated as absent              | treated as absent                        |
-| `""` for a field required non-empty on create (`wallet_name`, category `name`)                                                    | accepted on update (**gap**)   | 400 validation error                     |
-| `""` for `description`                                                                                                            | stored as `""`                 | stored as `""`, not normalized to `null` |
-| Query param absent                                                                                                                | controller default applies     | default applies                          |
-| Query param `""`                                                                                                                  | passed through (500 for dates) | 400 validation error                     |
-| Response for a `void` handler (`PUT /wallets/:id`)                                                                                | 200, empty body                | unchanged                                |
+| Case                                                                                                              | Behavior                                                                       |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Field absent in an update DTO                                                                                     | left unchanged                                                                 |
+| `null` for a nullable field (`Limit.name`, transaction `description`)                                             | stored as `null` (typed `string \| null`)                                      |
+| `null` for a NOT NULL field (`wallet_name`, `design`, category `name`/`icon`/`color`/`is_active`, limit `amount`) | 400 `<field> must not be null`                                                 |
+| `category_ids` (limit create/update)                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400 |
+| `invites` (space create)                                                                                          | absent or `[]`: no invites; `null`: 400                                        |
+| `""` for a field required non-empty on create (`wallet_name`, category `name`)                                    | accepted on update (**gap**, target 400)                                       |
+| `""` for `description`                                                                                            | stored as `""`, not normalized to `null`                                       |
+| Query param absent                                                                                                | controller default applies                                                     |
+| Query param `""`                                                                                                  | passed through, 500 for dates (**gap**, target 400)                            |
+| Response for a `void` handler (`PUT /wallets/:id`)                                                                | 200, empty body                                                                |
+
+Validation errors keep the `message: [{ field, error }]` shape; nested errors
+are reported under a dotted `field` path.

@@ -21,6 +21,7 @@ describe('Boundary type contract (e2e)', () => {
   let spaceId: number;
   let expenseCategoryId: number;
   let walletId: number;
+  let currencyId: number;
 
   const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -38,6 +39,7 @@ describe('Boundary type contract (e2e)', () => {
     const usersService = moduleFixture.get(UsersService);
 
     const [currency] = await dataSource.query('SELECT id FROM currencies LIMIT 1');
+    currencyId = currency.id;
     const user = await usersService.register({
       name: 'Contract',
       email: `e2e-contract-${Date.now()}@example.com`,
@@ -115,6 +117,35 @@ describe('Boundary type contract (e2e)', () => {
       });
   }
 
+  async function readWallet(id: number) {
+    const res = await api().get(`${base()}/wallets`).expect(200);
+
+    return res.body.wallets.find((summary: { wallet: { id: number } }) => summary.wallet.id === id).wallet;
+  }
+
+  async function readCategory(id: number) {
+    const res = await api().get(`${base()}/categories`).expect(200);
+    const { incomes, expenses, archived } = res.body;
+
+    return [...incomes, ...expenses, ...archived].find((category: { id: number }) => category.id === id);
+  }
+
+  async function readLimit(id: number) {
+    const res = await api().get(`${base()}/limits`).expect(200);
+
+    return [res.body.total, ...res.body.categories].find((limit: { id: number } | null) => limit?.id === id);
+  }
+
+  async function countRows(sql: string, params: unknown[]): Promise<number> {
+    const [row] = await dataSource.query(sql, params);
+
+    return Number(row.count);
+  }
+
+  function expectFieldError(res: request.Response, field: string): void {
+    expect(res.body.message).toEqual(expect.arrayContaining([{ field, error: expect.any(String) }]));
+  }
+
   async function readTransaction(id: string) {
     const res = await api().get(`${base()}/transactions?from=2000-01-01&to=2100-01-01`).expect(200);
 
@@ -166,6 +197,8 @@ describe('Boundary type contract (e2e)', () => {
       const summary = await api().get(`${base()}/limits`).expect(200);
       expect(summary.body.total).toMatchObject({ amount: '300.50', spent: expect.any(Number) });
       expect(typeof summary.body.total.in_percent).toBe('number');
+
+      await api().delete(`${base()}/limits/${created.body.id}`).expect(200);
     });
   });
 
@@ -232,12 +265,138 @@ describe('Boundary type contract (e2e)', () => {
       await api().delete(`${base()}/limits/${created.body.id}`).expect(200);
     });
 
-    it.failing('rejects null for a non-nullable update field with a 400', async () => {
-      await api().put(`${base()}/wallets/${walletId}`).send({ wallet_name: null }).expect(400);
-    });
-
     it.failing('rejects an empty string for a field that is required on create with a 400', async () => {
       await api().put(`${base()}/wallets/${walletId}`).send({ wallet_name: '' }).expect(400);
+    });
+  });
+
+  describe('null in input DTOs', () => {
+    it('rejects null and wrong types in a wallet update without changing it, and applies a valid one', async () => {
+      const created = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Before', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const id = created.body.wallet.id;
+
+      for (const body of [{ wallet_name: null }, { design: null }, { wallet_name: 5 }, { design: 'plaid' }]) {
+        const res = await api().put(`${base()}/wallets/${id}`).send(body).expect(400);
+        expectFieldError(res, Object.keys(body)[0]);
+      }
+
+      const nullRes = await api().put(`${base()}/wallets/${id}`).send({ wallet_name: null }).expect(400);
+      expect(nullRes.body.message[0].error).toContain('wallet_name must not be null');
+      expect(await readWallet(id)).toMatchObject({ wallet_name: 'Before', design: 'slate' });
+
+      await api().put(`${base()}/wallets/${id}`).send({}).expect(200);
+      await api().put(`${base()}/wallets/${id}`).send({ wallet_name: 'After', design: 'amber' }).expect(200);
+      expect(await readWallet(id)).toMatchObject({ wallet_name: 'After', design: 'amber' });
+    });
+
+    it('rejects null and wrong types in a category update without changing it, and applies a valid one', async () => {
+      const created = await api()
+        .post(`${base()}/categories`)
+        .send({ name: 'Before', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+        .expect(201);
+      const id = created.body.id;
+
+      for (const body of [
+        { name: null },
+        { icon: null },
+        { color: null },
+        { is_active: null },
+        { name: 5 },
+        { is_active: '0' },
+      ]) {
+        const res = await api().put(`${base()}/categories/${id}`).send(body).expect(400);
+        expectFieldError(res, Object.keys(body)[0]);
+      }
+
+      expect(await readCategory(id)).toMatchObject({ name: 'Before', icon: 'Other', color: 'slate', is_active: 1 });
+
+      const updated = await api().put(`${base()}/categories/${id}`).send({ name: 'After' }).expect(200);
+      expect(updated.body).toMatchObject({ name: 'After', icon: 'Other', is_active: 1 });
+    });
+
+    it('keeps limit categories when category_ids is absent, rejects null, and makes [] the total limit', async () => {
+      const category = await api()
+        .post(`${base()}/categories`)
+        .send({ name: 'Limited', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+        .expect(201);
+      const created = await api()
+        .post(`${base()}/limits`)
+        .send({ amount: '50', category_ids: [category.body.id] })
+        .expect(201);
+      const id = created.body.id;
+      const unchanged = { amount: '50.00', categories: [expect.objectContaining({ id: category.body.id })] };
+
+      await api().put(`${base()}/limits/${id}`).send({}).expect(200);
+      expect(await readLimit(id)).toMatchObject(unchanged);
+
+      for (const body of [
+        { category_ids: null },
+        { category_ids: 'x' },
+        { category_ids: ['x'] },
+        { amount: null },
+        { amount: 75 },
+        { amount: '75', category_ids: null },
+      ]) {
+        const res = await api().put(`${base()}/limits/${id}`).send(body).expect(400);
+        expectFieldError(res, body.amount === '75' ? 'category_ids' : Object.keys(body)[0]);
+      }
+
+      expect(await readLimit(id)).toMatchObject(unchanged);
+
+      await api().put(`${base()}/limits/${id}`).send({ amount: '75' }).expect(200);
+      expect(await readLimit(id)).toMatchObject({ ...unchanged, amount: '75.00' });
+
+      const total = await api().put(`${base()}/limits/${id}`).send({ category_ids: [] }).expect(200);
+      expect(total.body).toMatchObject({ limit_type: 'others', categories: [] });
+
+      await api().delete(`${base()}/limits/${id}`).expect(200);
+    });
+
+    it('rejects null category_ids on limit creation without creating a limit, and makes [] the total limit', async () => {
+      const countLimits = () => countRows('SELECT COUNT(*) AS count FROM limits WHERE space_id = ?', [spaceId]);
+      const before = await countLimits();
+
+      const res = await api().post(`${base()}/limits`).send({ amount: '10', category_ids: null }).expect(400);
+      expectFieldError(res, 'category_ids');
+      expect(await countLimits()).toBe(before);
+
+      const total = await api().post(`${base()}/limits`).send({ amount: '10', category_ids: [] }).expect(201);
+      expect(total.body).toMatchObject({ limit_type: 'others', categories: [] });
+
+      await api().delete(`${base()}/limits/${total.body.id}`).expect(200);
+    });
+
+    it('rejects null or a non-array invites list without creating a space, and accepts an empty one', async () => {
+      const countSpaces = () => countRows('SELECT COUNT(*) AS count FROM space_members WHERE user_id = ?', [userId]);
+      const before = await countSpaces();
+      const space = { name: 'Group', currency_id: currencyId, type: 'group' };
+
+      for (const invites of [null, 'a@example.com']) {
+        const res = await api()
+          .post('/api/v1/spaces')
+          .send({ ...space, invites })
+          .expect(400);
+        expectFieldError(res, 'invites');
+      }
+
+      expect(await countSpaces()).toBe(before);
+
+      const created = await api()
+        .post('/api/v1/spaces')
+        .send({ ...space, invites: [] })
+        .expect(201);
+      await api().delete(`/api/v1/spaces/${created.body.id}`).expect(200);
+    });
+
+    it('rejects a non-string description but keeps null as "no description"', async () => {
+      const res = await createTransaction({ description: 5 }).expect(400);
+      expectFieldError(res, 'description');
+
+      const created = await createTransaction({ description: null }).expect(201);
+      expect(created.body.transaction.description).toBeNull();
     });
   });
 });
