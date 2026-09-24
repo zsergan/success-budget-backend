@@ -35,9 +35,9 @@ export class Transaction {
 
   @ManyToOne(() => Wallet, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'wallet_id' })
-  wallet: Wallet;
+  wallet?: Wallet;
 
   @ManyToOne(() => Category, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'category_id' })
-  category: Category;
+  category?: Category;
 }

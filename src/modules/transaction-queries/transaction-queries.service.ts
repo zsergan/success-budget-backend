@@ -4,6 +4,10 @@ import { Repository } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { TransactionType } from '@shared/enums';
+import type { WithRelations } from '@shared/types';
+import { withRelations } from '@shared/utils';
+
+export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
 export interface WalletPeriodTotals {
   income: number;
@@ -45,12 +49,14 @@ export class TransactionQueriesService {
     return balances;
   }
 
-  async getOneWithWallet(transactionId: string): Promise<Transaction | null> {
-    return this.transactionRepository
+  async getOneWithWallet(transactionId: string): Promise<WithRelations<Transaction, 'wallet'> | null> {
+    const transaction = await this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .where('transaction.id = :transactionId', { transactionId })
       .getOne();
+
+    return transaction && withRelations(transaction, 'wallet');
   }
 
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
@@ -102,8 +108,8 @@ export class TransactionQueriesService {
     return new Map(rows.map((row) => [Number(row.category_id), Number(row.spent)]));
   }
 
-  async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<Transaction[]> {
-    return this.transactionRepository
+  async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<LoadedTransaction[]> {
+    const transactions = await this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
@@ -112,23 +118,25 @@ export class TransactionQueriesService {
       .andWhere('transaction.timestamp <= :to', { to })
       .orderBy('transaction.timestamp', 'DESC')
       .getMany();
+
+    return transactions.map((transaction) => withRelations(transaction, 'wallet', 'category'));
   }
 
-  async getLatest(spaceId: number): Promise<Transaction | null> {
-    return (
-      this.transactionRepository
-        .createQueryBuilder('transaction')
-        .innerJoinAndSelect('transaction.wallet', 'wallet')
-        .innerJoinAndSelect('transaction.category', 'category')
-        .where('wallet.space_id = :spaceId', { spaceId })
-        .orderBy('transaction.timestamp', 'DESC')
-        // Deterministic tie-break for the (now rare, since timestamp is
-        // millisecond-precision) case of two transactions landing on the
-        // exact same value - a single "latest" result can't be left to
-        // depend on MySQL's unspecified tie order.
-        .addOrderBy('transaction.id', 'DESC')
-        .limit(1)
-        .getOne()
-    );
+  async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
+    const transaction = await this.transactionRepository
+      .createQueryBuilder('transaction')
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
+      .where('wallet.space_id = :spaceId', { spaceId })
+      .orderBy('transaction.timestamp', 'DESC')
+      // Deterministic tie-break for the (now rare, since timestamp is
+      // millisecond-precision) case of two transactions landing on the
+      // exact same value - a single "latest" result can't be left to
+      // depend on MySQL's unspecified tie order.
+      .addOrderBy('transaction.id', 'DESC')
+      .limit(1)
+      .getOne();
+
+    return transaction && withRelations(transaction, 'wallet', 'category');
   }
 }
