@@ -178,6 +178,16 @@ describe('TransactionsService', () => {
       expect(result.wallet.balance).toBe(balance);
     });
 
+    it.each([
+      ['previous', 9007199254740991n, '0.01'],
+      ['new', 9007199254740981n, '0.10'],
+    ])('saves nothing when the %s balance cannot be returned to the cent', async (_, balance, amount) => {
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, balance]]));
+
+      await expect(service.create(userId, spaceId, dto({ amount }))).rejects.toThrow(RangeError);
+      expect(transactionRepository.save).not.toHaveBeenCalled();
+    });
+
     it('starts from a balance of 0 when the wallet has no transactions yet', async () => {
       const input = dto({ amount: '50' });
       transactionRepository.save.mockResolvedValue(buildTransaction({ amount: '50' }));

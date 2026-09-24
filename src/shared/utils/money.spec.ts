@@ -87,15 +87,17 @@ describe('moneyToNumber', () => {
   });
 
   it.each([
-    ['0', 0],
-    ['99999999.99', 99999999.99],
-    ['-99999999.99', -99999999.99],
-    ['90071992547409.91', 90071992547409.91],
-  ])('keeps every cent of %p', (value, expected) => {
-    expect(moneyToNumber(parseMoney(value))).toBe(expected);
+    ['0.00', '0'],
+    ['-0.90', '-0.9'],
+    ['99999999.99', '99999999.99'],
+    ['-99999999.99', '-99999999.99'],
+    ['199999999.98', '199999999.98'],
+    ['9007199254740.99', '9007199254740.99'],
+  ])('keeps every cent of %p in the serialized response', (value, serialized) => {
+    expect(JSON.stringify({ amount: moneyToNumber(parseMoney(value)) })).toBe(`{"amount":${serialized}}`);
   });
 
-  it.each(['90071992547409.93', '9007199254740993.00', '123456789012345678.99'])(
+  it.each(['90071992547409.91', '90071992547409.93', '9007199254740993.00', '123456789012345678.99'])(
     'throws when %p would lose cents',
     (value) => {
       expect(() => moneyToNumber(parseMoney(value))).toThrow(RangeError);
