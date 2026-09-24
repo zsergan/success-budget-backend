@@ -4,19 +4,19 @@ export class CreateUserDto {
   @IsNotEmpty()
   @IsString()
   @MaxLength(255)
-  name: string;
+  name!: string;
 
   @IsNotEmpty()
   @IsEmail()
   @MaxLength(255)
-  email: string;
+  email!: string;
 
   @IsNotEmpty()
   @IsString()
   @MinLength(6)
-  password: string;
+  password!: string;
 
   @IsNotEmpty()
   @IsInt()
-  base_currency_id: number;
+  base_currency_id!: number;
 }

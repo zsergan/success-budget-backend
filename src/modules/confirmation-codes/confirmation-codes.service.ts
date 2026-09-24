@@ -26,20 +26,11 @@ export interface ReservedConfirmationCode {
 
 type ExistingCodeSendState = Pick<ConfirmationCode, 'send_status' | 'last_attempted_at'>;
 
-type SendDecision =
-  { action: 'create' } | { action: 'send' } | { action: 'skip' } | { action: 'deny'; retryAfterSeconds: number };
+type ResendDecision = { action: 'send' } | { action: 'skip' } | { action: 'deny'; retryAfterSeconds: number };
 
-// Pure so it can be unit-tested without touching TypeORM. `existing` is null
-// when no active (non-expired) code exists yet for this user/type.
-export function decideSendAction(
-  existing: ExistingCodeSendState | null,
-  now: number,
-  cooldownMs: number,
-): SendDecision {
-  if (!existing) {
-    return { action: 'create' };
-  }
-
+// Pure so it can be unit-tested without touching TypeORM. Only decides for an
+// active (non-expired) code - with none, a new one is always created.
+export function decideSendAction(existing: ExistingCodeSendState, now: number, cooldownMs: number): ResendDecision {
   const elapsed = existing.last_attempted_at ? now - existing.last_attempted_at.getTime() : Infinity;
 
   if (elapsed >= cooldownMs) {
@@ -64,7 +55,7 @@ export class ConfirmationCodesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async getOne(userId: number, confirmationType: ConfirmationType): Promise<ConfirmationCode> {
+  async getOne(userId: number, confirmationType: ConfirmationType): Promise<ConfirmationCode | null> {
     return this.confirmationCodeRepository
       .createQueryBuilder('confirmation_code')
       .where({ user_id: userId, confirmation_type: confirmationType })
@@ -98,26 +89,10 @@ export class ConfirmationCodesService {
         .andWhere('confirmation_code.expired_at >= :now', { now: new Date() })
         .getOne();
 
-      const decision = decideSendAction(existing, Date.now(), CONFIRMATION_CODE_RESEND_COOLDOWN_MS);
-
-      if (decision.action === 'deny') {
-        throw new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, decision.retryAfterSeconds);
-      }
-
-      if (decision.action === 'skip') {
-        return {
-          id: existing.id,
-          code: existing.confirmation_code,
-          expiresAt: existing.expired_at,
-          shouldSend: false,
-          attemptId: existing.send_attempt_id,
-        };
-      }
-
       const now = new Date();
       const repository = manager.getRepository(ConfirmationCode);
 
-      if (decision.action === 'create') {
+      if (!existing) {
         const created = await repository.save(
           repository.create({
             user_id: userId,
@@ -137,6 +112,22 @@ export class ConfirmationCodesService {
           expiresAt: created.expired_at,
           shouldSend: true,
           attemptId: created.send_attempt_id,
+        };
+      }
+
+      const decision = decideSendAction(existing, now.getTime(), CONFIRMATION_CODE_RESEND_COOLDOWN_MS);
+
+      if (decision.action === 'deny') {
+        throw new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, decision.retryAfterSeconds);
+      }
+
+      if (decision.action === 'skip') {
+        return {
+          id: existing.id,
+          code: existing.confirmation_code,
+          expiresAt: existing.expired_at,
+          shouldSend: false,
+          attemptId: existing.send_attempt_id,
         };
       }
 

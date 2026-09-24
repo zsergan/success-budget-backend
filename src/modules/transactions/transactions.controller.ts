@@ -17,6 +17,7 @@ import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '@shared/types';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
+import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
 
 @ApiTags('transactions')
 @ApiBearerAuth()
@@ -45,8 +46,8 @@ export class TransactionsController {
   async getAll(
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
-    @Query('from') from: Date = getStartOfMonth(new Date()),
-    @Query('to') to: Date = getEndOfMonth(new Date()),
+    @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
+    @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
   ) {
     return this.transactionsService.getAll(req.user.id, spaceId, from, to);
   }

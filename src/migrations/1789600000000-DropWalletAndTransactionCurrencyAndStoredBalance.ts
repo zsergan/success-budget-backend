@@ -1,19 +1,15 @@
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { TableColumn, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 export class DropWalletAndTransactionCurrencyAndStoredBalance1789600000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    const walletsTable = await queryRunner.getTable('wallets');
-    const walletCurrencyFk = walletsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('currency_id') !== -1);
-    await queryRunner.dropForeignKey('wallets', walletCurrencyFk);
+    await dropForeignKeyOn(queryRunner, 'wallets', 'currency_id');
     await queryRunner.dropColumn('wallets', 'currency_id');
     await queryRunner.dropColumn('wallets', 'balance');
 
-    const transactionsTable = await queryRunner.getTable('transactions');
-    const transactionCurrencyFk = transactionsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('transactions', transactionCurrencyFk);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'currency_id');
     await queryRunner.dropColumn('transactions', 'currency_id');
   }
 

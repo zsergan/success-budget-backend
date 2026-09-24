@@ -1,6 +1,8 @@
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { Table, TableForeignKey, TableIndex } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 export class CreateSpacesTables1789412793658 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.createTable(
@@ -116,16 +118,11 @@ export class CreateSpacesTables1789412793658 implements MigrationInterface {
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.dropTable('space_invites');
 
-    const spaceMembersTable = await queryRunner.getTable('space_members');
-    const userForeignKey = spaceMembersTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
-    await queryRunner.dropForeignKey('space_members', userForeignKey);
-    const spaceForeignKey = spaceMembersTable.foreignKeys.find((fk) => fk.columnNames.indexOf('space_id') !== -1);
-    await queryRunner.dropForeignKey('space_members', spaceForeignKey);
+    await dropForeignKeyOn(queryRunner, 'space_members', 'user_id');
+    await dropForeignKeyOn(queryRunner, 'space_members', 'space_id');
     await queryRunner.dropTable('space_members');
 
-    const spacesTable = await queryRunner.getTable('spaces');
-    const currencyForeignKey = spacesTable.foreignKeys.find((fk) => fk.columnNames.indexOf('currency_id') !== -1);
-    await queryRunner.dropForeignKey('spaces', currencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'spaces', 'currency_id');
     await queryRunner.dropTable('spaces');
   }
 }

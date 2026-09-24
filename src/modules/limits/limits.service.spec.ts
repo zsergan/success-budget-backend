@@ -5,7 +5,10 @@ import { Repository } from 'typeorm';
 
 import { LimitsService } from './limits.service';
 import { Limit } from '@entities/limit.entity';
+import type { Category } from '@entities/category.entity';
 import { LimitType } from '@shared/enums';
+import { withRelations } from '@shared/utils';
+import { buildCategory, buildLimit, buildSpaceMember } from '@testing';
 import { ErrorMessages } from '@shared/error-messages';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -16,11 +19,17 @@ describe('LimitsService', () => {
   let repository: jest.Mocked<Repository<Limit>>;
   let queryBuilder: Record<string, jest.Mock>;
   let relationBuilder: Record<string, jest.Mock>;
-  let categoriesService: { getMany: jest.Mock };
-  let spaceAccessService: { assertMembership: jest.Mock };
-  let transactionQueriesService: { getExpensesByCategory: jest.Mock };
+  let categoriesService: jest.Mocked<Pick<CategoriesService, 'getMany'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
+  let transactionQueriesService: jest.Mocked<Pick<TransactionQueriesService, 'getExpensesByCategory'>>;
 
   const userId = 7;
+
+  const limitWith = (overrides: Partial<Limit>, categoryIds: number[] = []): Limit =>
+    buildLimit({ ...overrides, categories: categoryIds.map((id) => buildCategory({ id })) });
+  const loadedLimit = (overrides: Partial<Limit>, categoryIds: number[] = []) =>
+    withRelations(limitWith(overrides, categoryIds), 'categories');
+  const spaceCategories = (...categories: Partial<Category>[]) => categories.map((c) => buildCategory(c));
 
   beforeEach(async () => {
     relationBuilder = {
@@ -39,9 +48,9 @@ describe('LimitsService', () => {
     };
 
     categoriesService = {
-      getMany: jest.fn(async (ids: number[]) => [...new Set(ids)].map((id) => ({ id, space_id: 1, is_system: 0 }))),
+      getMany: jest.fn(async (ids: number[]) => [...new Set(ids)].map((id) => buildCategory({ id, space_id: 1 }))),
     };
-    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue({}) };
+    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })) };
     transactionQueriesService = { getExpensesByCategory: jest.fn().mockResolvedValue(new Map()) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -70,11 +79,11 @@ describe('LimitsService', () => {
 
   describe('create', () => {
     it('creates a total (monthly) limit when no categories are given', async () => {
-      repository.create.mockImplementation((v) => v as Limit);
-      repository.save.mockResolvedValue({ id: 1 } as Limit);
-      repository.findOne.mockResolvedValue({ id: 1, categories: [] } as any);
+      repository.create.mockImplementation((entityLike) => Object.assign(new Limit(), entityLike));
+      repository.save.mockResolvedValue(buildLimit({ id: 1 }));
+      repository.findOne.mockResolvedValue(limitWith({ id: 1 }));
 
-      await service.create(userId, 1, { amount: 2000 } as any);
+      await service.create(userId, 1, { amount: '2000' });
 
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 1, limit_type: LimitType.OTHERS, name: null }),
@@ -83,11 +92,11 @@ describe('LimitsService', () => {
     });
 
     it('creates a single-category limit and links it', async () => {
-      repository.create.mockImplementation((v) => v as Limit);
-      repository.save.mockResolvedValue({ id: 1 } as Limit);
-      repository.findOne.mockResolvedValue({ id: 1, categories: [{ id: 4 }] } as any);
+      repository.create.mockImplementation((entityLike) => Object.assign(new Limit(), entityLike));
+      repository.save.mockResolvedValue(buildLimit({ id: 1 }));
+      repository.findOne.mockResolvedValue(limitWith({ id: 1 }, [4]));
 
-      await service.create(userId, 1, { category_ids: [4], amount: 100 } as any);
+      await service.create(userId, 1, { category_ids: [4], amount: '100' });
 
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 1, limit_type: LimitType.CATEGORY, name: null }),
@@ -96,11 +105,11 @@ describe('LimitsService', () => {
     });
 
     it('creates a named group limit covering multiple categories', async () => {
-      repository.create.mockImplementation((v) => v as Limit);
-      repository.save.mockResolvedValue({ id: 1 } as Limit);
-      repository.findOne.mockResolvedValue({ id: 1, categories: [{ id: 4 }, { id: 5 }] } as any);
+      repository.create.mockImplementation((entityLike) => Object.assign(new Limit(), entityLike));
+      repository.save.mockResolvedValue(buildLimit({ id: 1 }));
+      repository.findOne.mockResolvedValue(limitWith({ id: 1 }, [4, 5]));
 
-      await service.create(userId, 1, { category_ids: [4, 5], name: 'Fun', amount: 220 } as any);
+      await service.create(userId, 1, { category_ids: [4, 5], name: 'Fun', amount: '220' });
 
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({ limit_type: LimitType.CATEGORY, name: 'Fun' }),
@@ -109,7 +118,7 @@ describe('LimitsService', () => {
     });
 
     it('rejects a group with more than one category and no name', async () => {
-      await expect(service.create(userId, 1, { category_ids: [4, 5], amount: 220 } as any)).rejects.toMatchObject(
+      await expect(service.create(userId, 1, { category_ids: [4, 5], amount: '220' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.LIMIT_NAME_REQUIRED, 400),
       );
       expect(repository.save).not.toHaveBeenCalled();
@@ -118,7 +127,7 @@ describe('LimitsService', () => {
     it('rejects a category already claimed by another limit', async () => {
       queryBuilder.getCount.mockResolvedValue(1);
 
-      await expect(service.create(userId, 1, { category_ids: [4], amount: 100 } as any)).rejects.toMatchObject(
+      await expect(service.create(userId, 1, { category_ids: [4], amount: '100' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
       );
       expect(repository.save).not.toHaveBeenCalled();
@@ -127,7 +136,7 @@ describe('LimitsService', () => {
     it('rejects a second monthly total limit', async () => {
       queryBuilder.getCount.mockResolvedValue(1);
 
-      await expect(service.create(userId, 1, { amount: 2000 } as any)).rejects.toMatchObject(
+      await expect(service.create(userId, 1, { amount: '2000' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
       );
       expect(repository.save).not.toHaveBeenCalled();
@@ -136,21 +145,21 @@ describe('LimitsService', () => {
 
   describe('update', () => {
     it('updates only the amount when categories are not touched', async () => {
-      const current = { id: 1, space_id: 1, name: null, categories: [{ id: 4 }] } as Limit;
+      const current = limitWith({ id: 1, space_id: 1, name: null }, [4]);
       repository.findOne.mockResolvedValue(current);
 
-      await service.update(userId, 1, 1, { amount: 200 } as any);
+      await service.update(userId, 1, 1, { amount: '200' });
 
-      expect(repository.update).toHaveBeenCalledWith({ id: 1 }, { amount: 200 });
+      expect(repository.update).toHaveBeenCalledWith({ id: 1 }, { amount: '200' });
       expect(relationBuilder.add).not.toHaveBeenCalled();
       expect(relationBuilder.remove).not.toHaveBeenCalled();
     });
 
     it('switches a category limit to a monthly total limit', async () => {
-      const current = { id: 1, space_id: 1, name: null, categories: [{ id: 4 }] } as Limit;
+      const current = limitWith({ id: 1, space_id: 1, name: null }, [4]);
       repository.findOne.mockResolvedValue(current);
 
-      await service.update(userId, 1, 1, { category_ids: [] } as any);
+      await service.update(userId, 1, 1, { category_ids: [] });
 
       expect(repository.update).toHaveBeenCalledWith(
         { id: 1 },
@@ -161,10 +170,10 @@ describe('LimitsService', () => {
     });
 
     it('switches a total limit to a single-category limit', async () => {
-      const current = { id: 1, space_id: 1, name: null, categories: [] } as Limit;
+      const current = limitWith({ id: 1, space_id: 1, name: null });
       repository.findOne.mockResolvedValue(current);
 
-      await service.update(userId, 1, 1, { category_ids: [7] } as any);
+      await service.update(userId, 1, 1, { category_ids: [7] });
 
       expect(repository.update).toHaveBeenCalledWith(
         { id: 1 },
@@ -175,20 +184,20 @@ describe('LimitsService', () => {
     });
 
     it('rejects turning a limit into an unnamed group', async () => {
-      const current = { id: 1, space_id: 1, name: null, categories: [{ id: 4 }] } as Limit;
+      const current = limitWith({ id: 1, space_id: 1, name: null }, [4]);
       repository.findOne.mockResolvedValue(current);
 
-      await expect(service.update(userId, 1, 1, { category_ids: [4, 5] } as any)).rejects.toMatchObject(
+      await expect(service.update(userId, 1, 1, { category_ids: [4, 5] })).rejects.toMatchObject(
         new HttpException(ErrorMessages.LIMIT_NAME_REQUIRED, 400),
       );
       expect(repository.update).not.toHaveBeenCalled();
     });
 
     it('keeps the existing name when growing an already-named group', async () => {
-      const current = { id: 1, space_id: 1, name: 'Fun', categories: [{ id: 4 }, { id: 5 }] } as Limit;
+      const current = limitWith({ id: 1, space_id: 1, name: 'Fun' }, [4, 5]);
       repository.findOne.mockResolvedValue(current);
 
-      await service.update(userId, 1, 1, { category_ids: [4, 5, 6] } as any);
+      await service.update(userId, 1, 1, { category_ids: [4, 5, 6] });
 
       expect(repository.update).toHaveBeenCalledWith({ id: 1 }, expect.objectContaining({ name: 'Fun' }));
       expect(relationBuilder.add).toHaveBeenCalledWith([6]);
@@ -196,10 +205,10 @@ describe('LimitsService', () => {
 
     it('rejects switching to a category already claimed by another limit', async () => {
       queryBuilder.getCount.mockResolvedValue(1);
-      const current = { id: 1, space_id: 1, name: null, categories: [{ id: 4 }] } as Limit;
+      const current = limitWith({ id: 1, space_id: 1, name: null }, [4]);
       repository.findOne.mockResolvedValue(current);
 
-      await expect(service.update(userId, 1, 1, { category_ids: [9] } as any)).rejects.toMatchObject(
+      await expect(service.update(userId, 1, 1, { category_ids: [9] })).rejects.toMatchObject(
         new HttpException(ErrorMessages.LIMIT_EXISTS, 400),
       );
       expect(repository.update).not.toHaveBeenCalled();
@@ -208,7 +217,7 @@ describe('LimitsService', () => {
 
   describe('remove', () => {
     it('deletes the limit by id', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, space_id: 1 } as Limit);
+      repository.findOne.mockResolvedValue(limitWith({ id: 1, space_id: 1 }));
 
       await service.remove(userId, 1, 1);
 
@@ -221,14 +230,14 @@ describe('LimitsService', () => {
     const forbiddenSpace = () => new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
     beforeEach(() => {
-      repository.create.mockImplementation((v) => v as Limit);
-      repository.save.mockResolvedValue({ id: 1 } as Limit);
+      repository.create.mockImplementation((entityLike) => Object.assign(new Limit(), entityLike));
+      repository.save.mockResolvedValue(buildLimit({ id: 1 }));
     });
 
     it.each([
       ['getSummary', () => service.getSummary(userId, spaceId)],
-      ['create', () => service.create(userId, spaceId, { category_ids: [5], amount: 10 } as any)],
-      ['update', () => service.update(userId, spaceId, 1, { category_ids: [5] } as any)],
+      ['create', () => service.create(userId, spaceId, { category_ids: [5], amount: '10' })],
+      ['update', () => service.update(userId, spaceId, 1, { category_ids: [5] })],
       ['remove', () => service.remove(userId, spaceId, 1)],
     ])('%s rejects a non-member before touching limits or categories', async (_, run) => {
       spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace());
@@ -241,7 +250,7 @@ describe('LimitsService', () => {
     });
 
     it('getSummary checks membership once and calculates spending from the current month totals', async () => {
-      const limits = [{ id: 1, limit_type: LimitType.OTHERS, amount: '100.00', categories: [] }];
+      const limits = [limitWith({ id: 1, limit_type: LimitType.OTHERS, amount: '100.00' })];
       queryBuilder.getMany.mockResolvedValue(limits);
       transactionQueriesService.getExpensesByCategory.mockResolvedValue(new Map([[5, 30]]));
 
@@ -258,9 +267,9 @@ describe('LimitsService', () => {
     });
 
     it('create checks every category in a single batched call, passing the ids through unchanged', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, categories: [] } as any);
+      repository.findOne.mockResolvedValue(limitWith({ id: 1 }));
 
-      await service.create(userId, spaceId, { category_ids: [5, 6, 5], name: 'Fun', amount: 10 } as any);
+      await service.create(userId, spaceId, { category_ids: [5, 6, 5], name: 'Fun', amount: '10' });
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledTimes(1);
@@ -268,35 +277,35 @@ describe('LimitsService', () => {
     });
 
     it('create skips the category lookup for a monthly total limit', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, categories: [] } as any);
+      repository.findOne.mockResolvedValue(limitWith({ id: 1 }));
 
-      await service.create(userId, spaceId, { amount: 2000 } as any);
+      await service.create(userId, spaceId, { amount: '2000' });
 
       expect(categoriesService.getMany).not.toHaveBeenCalled();
       expect(repository.save).toHaveBeenCalled();
     });
 
     it.each([
-      ['missing', [], ErrorMessages.FORBIDDEN_CATEGORY, 403],
-      ['foreign-space', [{ id: 5, space_id: 20, is_system: 0 }], ErrorMessages.FORBIDDEN_CATEGORY, 403],
-      ['system', [{ id: 5, space_id: spaceId, is_system: 1 }], ErrorMessages.CATEGORY_IS_SYSTEM, 400],
+      ['missing', spaceCategories(), ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['foreign-space', spaceCategories({ id: 5, space_id: 20 }), ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['system', spaceCategories({ id: 5, space_id: spaceId, is_system: 1 }), ErrorMessages.CATEGORY_IS_SYSTEM, 400],
     ])('create rejects a %s category before any limit rule runs', async (_, categories, message, status) => {
       categoriesService.getMany.mockResolvedValue(categories);
 
-      await expect(service.create(userId, spaceId, { category_ids: [5], amount: 10 } as any)).rejects.toMatchObject(
+      await expect(service.create(userId, spaceId, { category_ids: [5], amount: '10' })).rejects.toMatchObject(
         new HttpException(message, status),
       );
       expect(repository.createQueryBuilder).not.toHaveBeenCalled();
       expect(repository.save).not.toHaveBeenCalled();
     });
 
-    it.each([
+    it.each<[string, Limit | null]>([
       ['missing', null],
-      ['foreign-space', { id: 1, space_id: 20, categories: [] }],
+      ['foreign-space', limitWith({ id: 1, space_id: 20 })],
     ])('update rejects a %s limit before loading categories', async (_, limit) => {
-      repository.findOne.mockResolvedValue(limit as any);
+      repository.findOne.mockResolvedValue(limit);
 
-      await expect(service.update(userId, spaceId, 1, { category_ids: [5] } as any)).rejects.toMatchObject(
+      await expect(service.update(userId, spaceId, 1, { category_ids: [5] })).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_LIMIT, 403),
       );
       expect(categoriesService.getMany).not.toHaveBeenCalled();
@@ -304,24 +313,24 @@ describe('LimitsService', () => {
     });
 
     it.each([
-      ['foreign-space', [{ id: 6, space_id: 20, is_system: 0 }], ErrorMessages.FORBIDDEN_CATEGORY, 403],
-      ['system', [{ id: 6, space_id: spaceId, is_system: 1 }], ErrorMessages.CATEGORY_IS_SYSTEM, 400],
+      ['foreign-space', spaceCategories({ id: 6, space_id: 20 }), ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['system', spaceCategories({ id: 6, space_id: spaceId, is_system: 1 }), ErrorMessages.CATEGORY_IS_SYSTEM, 400],
     ])('update rejects switching to a %s category', async (_, categories, message, status) => {
-      repository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, categories: [{ id: 5 }] } as any);
+      repository.findOne.mockResolvedValue(limitWith({ id: 1, space_id: spaceId }, [5]));
       categoriesService.getMany.mockResolvedValue(categories);
 
-      await expect(service.update(userId, spaceId, 1, { category_ids: [6] } as any)).rejects.toMatchObject(
+      await expect(service.update(userId, spaceId, 1, { category_ids: [6] })).rejects.toMatchObject(
         new HttpException(message, status),
       );
       expect(repository.update).not.toHaveBeenCalled();
     });
 
     it('update checks membership once and returns the refreshed limit', async () => {
-      const current = { id: 1, space_id: spaceId, name: null, categories: [{ id: 5 }] };
-      const refreshed = { id: 1, space_id: spaceId, name: null, amount: 20, categories: [{ id: 6 }] };
-      repository.findOne.mockResolvedValueOnce(current as any).mockResolvedValueOnce(refreshed as any);
+      const current = limitWith({ id: 1, space_id: spaceId, name: null }, [5]);
+      const refreshed = limitWith({ id: 1, space_id: spaceId, name: null, amount: '20.00' }, [6]);
+      repository.findOne.mockResolvedValueOnce(current).mockResolvedValueOnce(refreshed);
 
-      const result = await service.update(userId, spaceId, 1, { category_ids: [6], amount: 20 } as any);
+      const result = await service.update(userId, spaceId, 1, { category_ids: [6], amount: '20' });
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledWith([6]);
@@ -330,11 +339,11 @@ describe('LimitsService', () => {
       expect(result).toBe(refreshed);
     });
 
-    it.each([
+    it.each<[string, Limit | null]>([
       ['missing', null],
-      ['foreign-space', { id: 1, space_id: 20 }],
+      ['foreign-space', limitWith({ id: 1, space_id: 20 })],
     ])('remove rejects a %s limit', async (_, limit) => {
-      repository.findOne.mockResolvedValue(limit as any);
+      repository.findOne.mockResolvedValue(limit);
 
       await expect(service.remove(userId, spaceId, 1)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_LIMIT, 403),
@@ -357,9 +366,9 @@ describe('LimitsService', () => {
   describe('calculateSpending', () => {
     it('tracks the monthly total independently of category limits', () => {
       const limits = [
-        { id: 1, limit_type: LimitType.OTHERS, amount: 2000, name: null, categories: [] },
-        { id: 2, limit_type: LimitType.CATEGORY, amount: 400, name: null, categories: [{ id: 10 }] },
-      ] as any;
+        loadedLimit({ id: 1, limit_type: LimitType.OTHERS, amount: '2000', name: null }),
+        loadedLimit({ id: 2, limit_type: LimitType.CATEGORY, amount: '400', name: null }, [10]),
+      ];
       // total = ALL expenses (350 + 50), not just the unclaimed 50 -
       // income never enters this aggregate in the first place
       const categoryTotals = new Map([
@@ -375,9 +384,7 @@ describe('LimitsService', () => {
     });
 
     it('sums spend across every category in a group limit', () => {
-      const limits = [
-        { id: 1, limit_type: LimitType.CATEGORY, amount: 220, name: 'Fun', categories: [{ id: 1 }, { id: 2 }] },
-      ] as any;
+      const limits = [loadedLimit({ id: 1, limit_type: LimitType.CATEGORY, amount: '220', name: 'Fun' }, [1, 2])];
       const categoryTotals = new Map([
         [1, 80],
         [2, 40],
@@ -390,10 +397,10 @@ describe('LimitsService', () => {
 
     it('flags when category limits sum above the monthly total, as a note not an error', () => {
       const limits = [
-        { id: 1, limit_type: LimitType.OTHERS, amount: 2000, name: null, categories: [] },
-        { id: 2, limit_type: LimitType.CATEGORY, amount: 900, name: null, categories: [{ id: 1 }] },
-        { id: 3, limit_type: LimitType.CATEGORY, amount: 1250, name: null, categories: [{ id: 2 }] },
-      ] as any;
+        loadedLimit({ id: 1, limit_type: LimitType.OTHERS, amount: '2000', name: null }),
+        loadedLimit({ id: 2, limit_type: LimitType.CATEGORY, amount: '900', name: null }, [1]),
+        loadedLimit({ id: 3, limit_type: LimitType.CATEGORY, amount: '1250', name: null }, [2]),
+      ];
 
       const result = service.calculateSpending(limits, new Map());
 
@@ -401,7 +408,7 @@ describe('LimitsService', () => {
     });
 
     it('returns 0 percent instead of Infinity/NaN when a limit amount is 0', () => {
-      const limits = [{ id: 1, limit_type: LimitType.CATEGORY, amount: 0, name: null, categories: [{ id: 1 }] }] as any;
+      const limits = [loadedLimit({ id: 1, limit_type: LimitType.CATEGORY, amount: '0', name: null }, [1])];
       const categoryTotals = new Map([[1, 40]]);
 
       const result = service.calculateSpending(limits, categoryTotals);
@@ -410,9 +417,7 @@ describe('LimitsService', () => {
     });
 
     it('treats a category with no expenses in the period as zero spend', () => {
-      const limits = [
-        { id: 1, limit_type: LimitType.CATEGORY, amount: 100, name: null, categories: [{ id: 1 }] },
-      ] as any;
+      const limits = [loadedLimit({ id: 1, limit_type: LimitType.CATEGORY, amount: '100', name: null }, [1])];
 
       const result = service.calculateSpending(limits, new Map());
 

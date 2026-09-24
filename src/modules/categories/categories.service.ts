@@ -36,7 +36,7 @@ export class CategoriesService {
     private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
-  async getOne(categoryId: number): Promise<Category> {
+  async getOne(categoryId: number): Promise<Category | null> {
     return this.categoryRepository.findOne({ where: { id: categoryId } });
   }
 

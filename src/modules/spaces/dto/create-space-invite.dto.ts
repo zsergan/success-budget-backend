@@ -4,5 +4,5 @@ export class CreateSpaceInviteDto {
   @IsNotEmpty()
   @IsEmail()
   @MaxLength(255)
-  email: string;
+  email!: string;
 }

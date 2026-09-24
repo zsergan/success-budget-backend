@@ -1,6 +1,8 @@
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 /**
  * Currency and Category are shared/reference data, not per-user data owned
  * by a single account - deleting either one should never be able to
@@ -11,11 +13,7 @@ import { TableForeignKey } from 'typeorm';
  */
 export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    const usersTable = await queryRunner.getTable('users');
-    const baseCurrencyForeignKey = usersTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('base_currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('users', baseCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'users', 'base_currency_id');
     await queryRunner.createForeignKey(
       'users',
       new TableForeignKey({
@@ -26,11 +24,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const walletsTable = await queryRunner.getTable('wallets');
-    const walletCurrencyForeignKey = walletsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('wallets', walletCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'wallets', 'currency_id');
     await queryRunner.createForeignKey(
       'wallets',
       new TableForeignKey({
@@ -41,11 +35,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const transactionsTable = await queryRunner.getTable('transactions');
-    const transactionCurrencyForeignKey = transactionsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('transactions', transactionCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'currency_id');
     await queryRunner.createForeignKey(
       'transactions',
       new TableForeignKey({
@@ -56,10 +46,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const transactionCategoryForeignKey = transactionsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('category_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('transactions', transactionCategoryForeignKey);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'category_id');
     await queryRunner.createForeignKey(
       'transactions',
       new TableForeignKey({
@@ -70,9 +57,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const limitsTable = await queryRunner.getTable('limits');
-    const limitCategoryForeignKey = limitsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
-    await queryRunner.dropForeignKey('limits', limitCategoryForeignKey);
+    await dropForeignKeyOn(queryRunner, 'limits', 'category_id');
     await queryRunner.createForeignKey(
       'limits',
       new TableForeignKey({
@@ -85,9 +70,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    const limitsTable = await queryRunner.getTable('limits');
-    const limitCategoryForeignKey = limitsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
-    await queryRunner.dropForeignKey('limits', limitCategoryForeignKey);
+    await dropForeignKeyOn(queryRunner, 'limits', 'category_id');
     await queryRunner.createForeignKey(
       'limits',
       new TableForeignKey({
@@ -98,11 +81,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const transactionsTable = await queryRunner.getTable('transactions');
-    const transactionCategoryForeignKey = transactionsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('category_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('transactions', transactionCategoryForeignKey);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'category_id');
     await queryRunner.createForeignKey(
       'transactions',
       new TableForeignKey({
@@ -113,10 +92,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const transactionCurrencyForeignKey = transactionsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('transactions', transactionCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'currency_id');
     await queryRunner.createForeignKey(
       'transactions',
       new TableForeignKey({
@@ -127,11 +103,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const walletsTable = await queryRunner.getTable('wallets');
-    const walletCurrencyForeignKey = walletsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('wallets', walletCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'wallets', 'currency_id');
     await queryRunner.createForeignKey(
       'wallets',
       new TableForeignKey({
@@ -142,11 +114,7 @@ export class RestrictCurrencyCategoryCascade1788311197732 implements MigrationIn
       }),
     );
 
-    const usersTable = await queryRunner.getTable('users');
-    const baseCurrencyForeignKey = usersTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('base_currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('users', baseCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'users', 'base_currency_id');
     await queryRunner.createForeignKey(
       'users',
       new TableForeignKey({

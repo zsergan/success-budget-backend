@@ -2,6 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { CategoriesController } from './categories.controller';
 import { CategoriesService } from './categories.service';
+import type { CreateCategoryDto } from './dto/create-category.dto';
+import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
+import type { AuthedRequest } from '@shared/types';
+import { buildCategory } from '@testing';
 
 describe('CategoriesController', () => {
   let controller: CategoriesController;
@@ -28,7 +32,7 @@ describe('CategoriesController', () => {
     categoriesService = module.get(CategoriesService);
   });
 
-  const req = { user: { id: 1 } } as any;
+  const req: AuthedRequest = { user: { id: 1 } };
   const spaceId = 10;
 
   it('getAll delegates with the caller and space', async () => {
@@ -48,21 +52,29 @@ describe('CategoriesController', () => {
   });
 
   it('update delegates with the caller, space and category id', async () => {
-    categoriesService.update.mockResolvedValue({ id: 5 } as any);
+    const category = buildCategory({ id: 5, name: 'New' });
+    categoriesService.update.mockResolvedValue(category);
 
-    const result = await controller.update(req, spaceId, 5, { name: 'New' } as any);
+    const result = await controller.update(req, spaceId, 5, { name: 'New' });
 
     expect(categoriesService.update).toHaveBeenCalledWith(1, spaceId, 5, { name: 'New' });
-    expect(result).toEqual({ id: 5 });
+    expect(result).toBe(category);
   });
 
   it('create delegates with the caller and space', async () => {
-    categoriesService.create.mockResolvedValue({ id: 5 } as any);
+    const dto: CreateCategoryDto = {
+      name: 'Food',
+      transaction_type: TransactionType.EXPENSE,
+      icon: CategoryIcon.GROCERY,
+      color: AppColor.EVERGREEN,
+    };
+    const category = buildCategory({ id: 5, ...dto });
+    categoriesService.create.mockResolvedValue(category);
 
-    const result = await controller.create(req, spaceId, { name: 'Food' } as any);
+    const result = await controller.create(req, spaceId, dto);
 
-    expect(categoriesService.create).toHaveBeenCalledWith(1, spaceId, { name: 'Food' });
-    expect(result).toEqual({ id: 5 });
+    expect(categoriesService.create).toHaveBeenCalledWith(1, spaceId, dto);
+    expect(result).toBe(category);
   });
 
   it('remove delegates to deleteOrArchive', async () => {

@@ -1,5 +1,7 @@
 import { MigrationInterface, QueryRunner, Table, TableColumn, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 export class CreateCheckCodesTable1717052838822 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // add email_verified column to users table
@@ -76,9 +78,7 @@ export class CreateCheckCodesTable1717052838822 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     // drop foreign key for user_id in confirmation_codes table
-    const confirmationCodesTable = await queryRunner.getTable('confirmation_codes');
-    const foreignKey = confirmationCodesTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
-    await queryRunner.dropForeignKey('confirmation_codes', foreignKey);
+    await dropForeignKeyOn(queryRunner, 'confirmation_codes', 'user_id');
 
     // drop confirmation_codes table
     await queryRunner.dropTable('confirmation_codes');

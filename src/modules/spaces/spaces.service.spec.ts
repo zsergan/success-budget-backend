@@ -12,6 +12,8 @@ import { Category } from '@entities/category.entity';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
+import type { CreateSpaceDto } from './dto/create-space.dto';
+import { buildCurrency, buildSpace, buildSpaceMember } from '@testing';
 
 describe('SpacesService', () => {
   let service: SpacesService;
@@ -22,7 +24,7 @@ describe('SpacesService', () => {
   let spaceInviteRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
-  let spaceAccessService: { assertMembership: jest.Mock };
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
   let memberQueryBuilder: {
     select: jest.Mock;
     addSelect: jest.Mock;
@@ -54,7 +56,7 @@ describe('SpacesService', () => {
       }),
     };
     dataSource = { transaction: jest.fn((callback) => callback(manager)) };
-    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue({}) };
+    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember()) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -86,9 +88,15 @@ describe('SpacesService', () => {
 
   describe('create', () => {
     it('creates a personal space with no invites', async () => {
-      const dto = { name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 } as any;
-      spaceRepositoryInTx.save.mockResolvedValue({ id: 10 });
-      spaceRepository.findOne.mockResolvedValue({ id: 10, name: 'Personal' } as Space);
+      const dto: CreateSpaceDto = { name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 };
+      spaceRepositoryInTx.save.mockResolvedValue(buildSpace({ id: 10 }));
+      spaceRepository.findOne.mockResolvedValue(
+        buildSpace({
+          id: 10,
+          name: 'Personal',
+          currency: buildCurrency({ id: 1, code: 'USD', name: 'US Dollar' }),
+        }),
+      );
 
       const result = await service.create(1, dto);
 
@@ -104,18 +112,24 @@ describe('SpacesService', () => {
       );
       expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(16);
       expect(spaceInviteRepositoryInTx.save).not.toHaveBeenCalled();
-      expect(result).toEqual({ id: 10, name: 'Personal' });
+      expect(result).toMatchObject({ id: 10, name: 'Personal' });
     });
 
     it('creates a group space and its inline invites', async () => {
-      const dto = {
+      const dto: CreateSpaceDto = {
         name: 'Family',
         type: SpaceType.GROUP,
         currency_id: 1,
         invites: ['a@example.com', 'b@example.com'],
-      } as any;
-      spaceRepositoryInTx.save.mockResolvedValue({ id: 11 });
-      spaceRepository.findOne.mockResolvedValue({ id: 11, name: 'Family' } as Space);
+      };
+      spaceRepositoryInTx.save.mockResolvedValue(buildSpace({ id: 11, name: 'Family', type: SpaceType.GROUP }));
+      spaceRepository.findOne.mockResolvedValue(
+        buildSpace({
+          id: 11,
+          name: 'Family',
+          currency: buildCurrency({ id: 1, code: 'USD', name: 'US Dollar' }),
+        }),
+      );
 
       await service.create(1, dto);
 
@@ -129,7 +143,12 @@ describe('SpacesService', () => {
     });
 
     it('rejects invites on a personal space', async () => {
-      const dto = { name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1, invites: ['a@example.com'] } as any;
+      const dto: CreateSpaceDto = {
+        name: 'Personal',
+        type: SpaceType.PERSONAL,
+        currency_id: 1,
+        invites: ['a@example.com'],
+      };
 
       await expect(service.create(1, dto)).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, 400),
@@ -138,12 +157,12 @@ describe('SpacesService', () => {
     });
 
     it('rejects more invites than the pending-invite cap', async () => {
-      const dto = {
+      const dto: CreateSpaceDto = {
         name: 'Family',
         type: SpaceType.GROUP,
         currency_id: 1,
         invites: Array.from({ length: SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE + 1 }, (_, i) => `u${i}@example.com`),
-      } as any;
+      };
 
       await expect(service.create(1, dto)).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_INVITE_LIMIT_REACHED, 400),
@@ -152,7 +171,7 @@ describe('SpacesService', () => {
     });
 
     it('propagates a failure from inside the transaction', async () => {
-      const dto = { name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 } as any;
+      const dto: CreateSpaceDto = { name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 };
       spaceRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
 
       await expect(service.create(1, dto)).rejects.toThrow('db unavailable');
@@ -171,24 +190,24 @@ describe('SpacesService', () => {
 
     it('composes role, currency, and member_count for each space', async () => {
       spaceMemberRepository.find.mockResolvedValue([
-        { space_id: 10, role: SpaceRole.OWNER } as SpaceMember,
-        { space_id: 11, role: SpaceRole.MEMBER } as SpaceMember,
+        buildSpaceMember({ space_id: 10, role: SpaceRole.OWNER }),
+        buildSpaceMember({ space_id: 11, role: SpaceRole.MEMBER }),
       ]);
       spaceRepository.find.mockResolvedValue([
-        {
+        buildSpace({
           id: 10,
           name: 'Personal',
           type: SpaceType.PERSONAL,
-          currency: { id: 1, code: 'USD', name: 'US dollar' },
+          currency: buildCurrency({ id: 1, code: 'USD', name: 'US dollar' }),
           created_at: new Date('2026-01-01'),
-        } as Space,
-        {
+        }),
+        buildSpace({
           id: 11,
           name: 'Family',
           type: SpaceType.GROUP,
-          currency: { id: 1, code: 'USD', name: 'US dollar' },
+          currency: buildCurrency({ id: 1, code: 'USD', name: 'US dollar' }),
           created_at: new Date('2026-01-02'),
-        } as Space,
+        }),
       ]);
       memberQueryBuilder.getRawMany.mockResolvedValue([
         { space_id: 10, count: '1' },
@@ -215,12 +234,18 @@ describe('SpacesService', () => {
     });
 
     it('returns the space with its currency for a member', async () => {
-      const space = { id: 10 } as Space;
+      const space = buildSpace({ id: 10, currency: buildCurrency({ id: 1, code: 'USD', name: 'US Dollar' }) });
       spaceRepository.findOne.mockResolvedValue(space);
 
       await expect(service.getForMember(1, 10)).resolves.toBe(space);
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1);
       expect(spaceRepository.findOne).toHaveBeenCalledWith({ where: { id: 10 }, relations: { currency: true } });
+    });
+
+    it('returns 404 when the space is gone after the membership check', async () => {
+      spaceRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.getForMember(1, 10)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
     });
   });
 

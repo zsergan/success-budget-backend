@@ -15,25 +15,25 @@ import { SpaceType } from '@shared/enums';
 @Entity('spaces')
 export class Space {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Column({ type: 'varchar', length: 255 })
-  name: string;
+  name!: string;
 
   @Column({ type: 'enum', enum: SpaceType })
-  type: SpaceType;
+  type!: SpaceType;
 
   @Exclude()
   @Column({ type: 'int' })
-  currency_id: number;
+  currency_id!: number;
 
   @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'currency_id' })
-  currency: Currency;
+  currency?: Currency;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'timestamp' })
-  updated_at: Date;
+  updated_at!: Date;
 }

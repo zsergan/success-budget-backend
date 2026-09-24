@@ -1,20 +1,15 @@
-import { ConfigService } from '@nestjs/config';
-
 import { getOrmConfig } from './ormconfig';
+import { buildConfigService } from '@testing';
 
 describe('getOrmConfig', () => {
   it('builds mysql DataSourceOptions from validated config values', () => {
-    const values: Record<string, unknown> = {
+    const configService = buildConfigService({
       DB_HOST: 'db-host',
       DB_PORT: 3306,
       DB_USERNAME: 'user',
       DB_PASSWORD: 'pass',
       DB_DATABASE: 'success_budget',
-    };
-    const configService = {
-      getOrThrow: jest.fn((key: string) => values[key]),
-      get: jest.fn((key: string) => values[key]),
-    } as unknown as ConfigService;
+    });
 
     const config = getOrmConfig(configService);
 

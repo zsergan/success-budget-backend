@@ -3,21 +3,27 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { Wallet } from '@entities/wallet.entity';
+import type { Wallet, WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace } from '@shared/utils';
-import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+import { assertBelongsToSpace, toDate } from '@shared/utils';
+import {
+  TransactionQueriesService,
+  type LoadedTransaction,
+} from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 export interface CreateTransactionResult {
   transaction: Transaction;
-  wallet: Wallet;
+  wallet: WalletWithBalance;
   previous_balance: number;
 }
+
+// GET reads: the wallet is always joined, but hidden (null) once soft-deleted
+export type TransactionView = Omit<LoadedTransaction, 'wallet'> & { wallet: Wallet | null };
 
 @Injectable()
 export class TransactionsService {
@@ -54,37 +60,37 @@ export class TransactionsService {
     const balances = await this.transactionQueriesService.getBalances([wallet.id]);
     const previousBalance = balances.get(wallet.id) ?? 0;
 
-    const transaction = this.transactionRepository.create(createTransactionDto);
+    const transaction = this.transactionRepository.create({
+      wallet_id: createTransactionDto.wallet_id,
+      category_id: createTransactionDto.category_id,
+      transaction_type: createTransactionDto.transaction_type,
+      amount: createTransactionDto.amount,
+      timestamp: toDate(createTransactionDto.timestamp),
+      description: createTransactionDto.description ?? null,
+    });
     const savedTransaction = await this.transactionRepository.save(transaction);
 
     const amount = Number(createTransactionDto.amount);
     const balanceChange = createTransactionDto.transaction_type === TransactionType.INCOME ? amount : -amount;
-    wallet.balance = previousBalance + balanceChange;
+    const walletWithBalance = Object.assign(wallet, { balance: previousBalance + balanceChange });
 
-    return { transaction: savedTransaction, wallet, previous_balance: previousBalance };
+    return { transaction: savedTransaction, wallet: walletWithBalance, previous_balance: previousBalance };
   }
 
-  async getAll(userId: number, spaceId: number, from: Date, to: Date): Promise<Transaction[]> {
+  async getAll(userId: number, spaceId: number, from: Date, to: Date): Promise<TransactionView[]> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
     const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to);
-    transactions.forEach((transaction) => this.hideDeletedWallet(transaction));
 
-    return transactions;
+    return transactions.map((transaction) => this.toView(transaction));
   }
 
-  async getLatest(userId: number, spaceId: number): Promise<Transaction | null> {
+  async getLatest(userId: number, spaceId: number): Promise<TransactionView | null> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
     const transaction = await this.transactionQueriesService.getLatest(spaceId);
 
-    if (!transaction) {
-      return null;
-    }
-
-    this.hideDeletedWallet(transaction);
-
-    return transaction;
+    return transaction ? this.toView(transaction) : null;
   }
 
   async remove(userId: number, spaceId: number, transactionId: string): Promise<void> {
@@ -96,9 +102,14 @@ export class TransactionsService {
     await this.transactionRepository.delete(transaction.id);
   }
 
-  private hideDeletedWallet(transaction: Transaction): void {
+  // mutates the entity instead of copying it, so @Exclude() still applies
+  private toView(transaction: LoadedTransaction): TransactionView {
+    const view: TransactionView = transaction;
+
     if (transaction.wallet.is_deleted) {
-      transaction.wallet = null;
+      view.wallet = null;
     }
+
+    return view;
   }
 }

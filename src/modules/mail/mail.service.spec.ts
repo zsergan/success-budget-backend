@@ -1,28 +1,22 @@
-import { ConfigService } from '@nestjs/config';
 import { ServiceUnavailableException } from '@nestjs/common';
 
 // @swc/jest wraps `import * as x from 'y'` per-file (see CLAUDE.md's
 // @swc/jest gotcha) - jest.mock is the only form that actually replaces
 // what MailService itself sees when it imports { createTransport }.
 const sendMail = jest.fn();
-const createTransport = jest.fn(() => ({ sendMail }));
+const createTransport = jest.fn<{ sendMail: jest.Mock }, unknown[]>(() => ({ sendMail }));
 jest.mock('nodemailer', () => ({ createTransport: (...args: unknown[]) => createTransport(...args) }));
 
 import { MailService } from './mail.service';
+import { buildConfigService } from '@testing';
 
 describe('MailService', () => {
   let service: MailService;
 
-  const buildConfigService = (values: Record<string, string>) =>
-    ({
-      getOrThrow: jest.fn((key: string) => values[key]),
-      get: jest.fn((key: string) => values[key]),
-    }) as unknown as ConfigService;
-
   const baseEnv = {
     MAIL_FROM: 'Success Budget <no-reply@success-budget.local>',
     SMTP_HOST: 'localhost',
-    SMTP_PORT: '1025',
+    SMTP_PORT: 1025,
   };
 
   beforeEach(() => {
@@ -33,7 +27,7 @@ describe('MailService', () => {
     service = new MailService(buildConfigService(baseEnv));
 
     expect(createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ host: 'localhost', port: '1025', secure: false, auth: undefined }),
+      expect.objectContaining({ host: 'localhost', port: 1025, secure: false, auth: undefined }),
     );
   });
 

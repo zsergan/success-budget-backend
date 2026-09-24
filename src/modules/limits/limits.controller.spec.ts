@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
+import type { AuthedRequest } from '@shared/types';
+import { withRelations } from '@shared/utils';
+import { buildCategory, buildLimit } from '@testing';
 
 describe('LimitsController', () => {
   let controller: LimitsController;
@@ -22,12 +25,12 @@ describe('LimitsController', () => {
     limitsService = module.get(LimitsService);
   });
 
-  const req = { user: { id: 1 } } as any;
+  const req: AuthedRequest = { user: { id: 1 } };
   const spaceId = 10;
 
   it('getAll delegates to LimitsService.getSummary', async () => {
     const summary = { total: null, categories: [], over_allocation: null };
-    limitsService.getSummary.mockResolvedValue(summary as any);
+    limitsService.getSummary.mockResolvedValue(summary);
 
     const result = await controller.getAll(req, spaceId);
 
@@ -36,21 +39,23 @@ describe('LimitsController', () => {
   });
 
   it('create delegates to LimitsService.create', async () => {
-    limitsService.create.mockResolvedValue({ id: 1 } as any);
+    const limit = withRelations(buildLimit({ categories: [buildCategory({ id: 5 })] }), 'categories');
+    limitsService.create.mockResolvedValue(limit);
 
-    const result = await controller.create(req, spaceId, { category_ids: [5], amount: 10 } as any);
+    const result = await controller.create(req, spaceId, { category_ids: [5], amount: '10' });
 
-    expect(limitsService.create).toHaveBeenCalledWith(1, spaceId, { category_ids: [5], amount: 10 });
-    expect(result).toEqual({ id: 1 });
+    expect(limitsService.create).toHaveBeenCalledWith(1, spaceId, { category_ids: [5], amount: '10' });
+    expect(result).toBe(limit);
   });
 
   it('update delegates to LimitsService.update and returns the refreshed limit', async () => {
-    limitsService.update.mockResolvedValue({ id: 3, amount: 20 } as any);
+    const limit = withRelations(buildLimit({ id: 3, amount: '20.00', categories: [] }), 'categories');
+    limitsService.update.mockResolvedValue(limit);
 
-    const result = await controller.update(req, spaceId, 3, { amount: 20 } as any);
+    const result = await controller.update(req, spaceId, 3, { amount: '20' });
 
-    expect(limitsService.update).toHaveBeenCalledWith(1, spaceId, 3, { amount: 20 });
-    expect(result).toEqual({ id: 3, amount: 20 });
+    expect(limitsService.update).toHaveBeenCalledWith(1, spaceId, 3, { amount: '20' });
+    expect(result).toBe(limit);
   });
 
   it('remove delegates to LimitsService.remove and returns true', async () => {

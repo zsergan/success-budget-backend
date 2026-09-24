@@ -19,6 +19,7 @@ import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '@shared/types';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
+import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
 
 @ApiTags('wallets')
 @ApiBearerAuth()
@@ -52,8 +53,8 @@ export class WalletsController {
   async getAll(
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
-    @Query('from') from: Date = getStartOfMonth(new Date()),
-    @Query('to') to: Date = getEndOfMonth(new Date()),
+    @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
+    @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
   ): Promise<WalletsOverview> {
     return this.walletsService.getOverview(req.user.id, spaceId, from, to);
   }

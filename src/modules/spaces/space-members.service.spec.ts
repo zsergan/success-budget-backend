@@ -8,9 +8,9 @@ import { SpacesService } from './spaces.service';
 import { SpaceInvitesService } from './space-invites.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpaceMember } from '@entities/space-member.entity';
-import { SpaceInvite } from '@entities/space-invite.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { buildSpaceInvite, buildSpaceMember, buildUser } from '@testing';
 
 describe('SpaceMembersService', () => {
   let service: SpaceMembersService;
@@ -66,17 +66,22 @@ describe('SpaceMembersService', () => {
       // Membership ids (id) deliberately differ from user ids (user_id) --
       // a fixture where they coincide would hide a regression that
       // confuses the two.
-      spaceAccessService.assertMembership.mockResolvedValue({ role: SpaceRole.OWNER, user_id: 101 } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ role: SpaceRole.OWNER, user_id: 101 }));
       spaceMemberRepository.find.mockResolvedValue([
-        { id: 51, user_id: 101, role: SpaceRole.OWNER, user: { name: 'Me', email: 'me@example.com' } } as SpaceMember,
-        {
+        buildSpaceMember({
+          id: 51,
+          user_id: 101,
+          role: SpaceRole.OWNER,
+          user: buildUser({ name: 'Me', email: 'me@example.com' }),
+        }),
+        buildSpaceMember({
           id: 52,
           user_id: 102,
           role: SpaceRole.MEMBER,
-          user: { name: 'Them', email: 'them@example.com' },
-        } as SpaceMember,
+          user: buildUser({ name: 'Them', email: 'them@example.com' }),
+        }),
       ]);
-      spaceInvitesService.getActive.mockResolvedValue([{ id: 3, email: 'pending@example.com' } as SpaceInvite]);
+      spaceInvitesService.getActive.mockResolvedValue([buildSpaceInvite({ id: 3, email: 'pending@example.com' })]);
 
       const result = await service.getMembersWithInvites(101, 10);
 
@@ -115,11 +120,16 @@ describe('SpaceMembersService', () => {
     });
 
     it('sets can_remove false everywhere for a plain member caller', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ role: SpaceRole.MEMBER, user_id: 2 } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ role: SpaceRole.MEMBER, user_id: 2 }));
       spaceMemberRepository.find.mockResolvedValue([
-        { id: 1, user_id: 1, role: SpaceRole.OWNER, user: { name: 'Me', email: 'me@example.com' } } as SpaceMember,
+        buildSpaceMember({
+          id: 1,
+          user_id: 1,
+          role: SpaceRole.OWNER,
+          user: buildUser({ name: 'Me', email: 'me@example.com' }),
+        }),
       ]);
-      spaceInvitesService.getActive.mockResolvedValue([{ id: 3, email: 'pending@example.com' } as SpaceInvite]);
+      spaceInvitesService.getActive.mockResolvedValue([buildSpaceInvite({ id: 3, email: 'pending@example.com' })]);
 
       const result = await service.getMembersWithInvites(2, 10);
 
@@ -140,8 +150,8 @@ describe('SpaceMembersService', () => {
     });
 
     it('lets an owner remove another member', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
-      spaceMemberRepository.findOne.mockResolvedValueOnce({ id: 2, role: SpaceRole.MEMBER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
+      spaceMemberRepository.findOne.mockResolvedValueOnce(buildSpaceMember({ id: 2, role: SpaceRole.MEMBER }));
 
       await service.leaveOrRemove(10, 1, 2);
 
@@ -149,7 +159,7 @@ describe('SpaceMembersService', () => {
     });
 
     it('returns 404 when the member to remove is not in the space', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
       spaceMemberRepository.findOne.mockResolvedValueOnce(null);
 
       await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(
@@ -159,7 +169,7 @@ describe('SpaceMembersService', () => {
     });
 
     it('rejects a plain member trying to remove someone else', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.MEMBER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.MEMBER }));
 
       await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
@@ -168,7 +178,7 @@ describe('SpaceMembersService', () => {
     });
 
     it('lets a plain member leave on their own', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.MEMBER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.MEMBER }));
 
       await service.leaveOrRemove(10, 1, 1);
 
@@ -177,8 +187,8 @@ describe('SpaceMembersService', () => {
     });
 
     it('transfers ownership to the next member by created_at when the owner leaves', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
-      spaceMemberRepository.findOne.mockResolvedValueOnce({ id: 5 } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
+      spaceMemberRepository.findOne.mockResolvedValueOnce(buildSpaceMember({ id: 5 }));
 
       await service.leaveOrRemove(10, 1, 1);
 
@@ -189,7 +199,7 @@ describe('SpaceMembersService', () => {
     });
 
     it('delegates to SpacesService.removeOwned() without re-checking membership when the owner is the sole member', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
       spaceMemberRepository.findOne.mockResolvedValueOnce(null);
 
       await service.leaveOrRemove(10, 1, 1);
@@ -200,7 +210,7 @@ describe('SpaceMembersService', () => {
     });
 
     it('propagates the "last remaining space" rejection from SpacesService.removeOwned()', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue({ id: 1, role: SpaceRole.OWNER } as SpaceMember);
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
       spaceMemberRepository.findOne.mockResolvedValueOnce(null);
       spacesService.removeOwned.mockRejectedValue(new HttpException(ErrorMessages.SPACE_LAST_REMAINING, 400));
 

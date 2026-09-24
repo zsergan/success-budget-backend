@@ -40,6 +40,6 @@ export class UsersController {
   @UseInterceptors(ClassSerializerInterceptor)
   @Get('profile')
   async getProfile(@Request() req: AuthedRequest) {
-    return this.usersService.findById(req.user.id);
+    return this.usersService.getProfile(req.user.id);
   }
 }

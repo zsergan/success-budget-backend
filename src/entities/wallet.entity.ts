@@ -15,37 +15,37 @@ import { AppColor } from '@shared/enums';
 @Entity('wallets')
 export class Wallet {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  space_id: number;
+  space_id!: number;
 
   @Column({ type: 'varchar', length: 255 })
-  wallet_name: string;
-
-  // derived from the wallet's own transactions, not a stored column -
-  // populated by the service before the entity is returned/serialized
-  balance: number;
+  wallet_name!: string;
 
   @Column({ type: 'enum', enum: AppColor })
-  design: AppColor;
+  design!: AppColor;
 
   @Exclude()
   @Column({ type: 'tinyint', default: 0 })
-  is_deleted: number;
+  is_deleted!: number;
 
   @Exclude()
   @Column({ type: 'timestamp', nullable: true })
-  deleted_at: Date;
+  deleted_at!: Date | null;
 
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
-  space: Space;
+  space?: Space;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'timestamp' })
-  updated_at: Date;
+  updated_at!: Date;
 }
+
+// balance is derived from the wallet's transactions, not a column - only
+// responses that compute it carry it
+export type WalletWithBalance = Wallet & { balance: number };

@@ -1,6 +1,7 @@
-import { ConfigService } from '@nestjs/config';
+import { ValidationError } from 'class-validator';
 
-import { isSwaggerEnabled, parseTrustProxy } from './app.config';
+import { formatValidationErrors, isSwaggerEnabled, parseTrustProxy } from './app.config';
+import { buildConfigService } from '@testing';
 
 describe('parseTrustProxy', () => {
   it('defaults to false when unset', () => {
@@ -24,9 +25,6 @@ describe('parseTrustProxy', () => {
 });
 
 describe('isSwaggerEnabled', () => {
-  const buildConfigService = (values: Record<string, string | undefined>) =>
-    ({ get: jest.fn((key: string) => values[key]) }) as unknown as ConfigService;
-
   it('is disabled in production by default', () => {
     expect(isSwaggerEnabled(buildConfigService({ NODE_ENV: 'production' }))).toBe(false);
   });
@@ -39,5 +37,35 @@ describe('isSwaggerEnabled', () => {
   it('lets SWAGGER_ENABLED override the NODE_ENV default in either direction', () => {
     expect(isSwaggerEnabled(buildConfigService({ NODE_ENV: 'production', SWAGGER_ENABLED: 'true' }))).toBe(true);
     expect(isSwaggerEnabled(buildConfigService({ NODE_ENV: 'development', SWAGGER_ENABLED: 'false' }))).toBe(false);
+  });
+});
+
+describe('formatValidationErrors', () => {
+  const error = (overrides: Partial<ValidationError>): ValidationError =>
+    Object.assign(new ValidationError(), { property: 'field', children: [] }, overrides);
+
+  it('joins the constraint messages of each field', () => {
+    expect(
+      formatValidationErrors([
+        error({ property: 'name', constraints: { isString: 'name must be a string', maxLength: 'name is too long' } }),
+      ]),
+    ).toEqual([{ field: 'name', error: 'name must be a string, name is too long' }]);
+  });
+
+  it('reports nested errors under a dotted path instead of failing on missing constraints', () => {
+    expect(
+      formatValidationErrors([
+        error({
+          property: 'parent',
+          children: [error({ property: 'child', constraints: { isInt: 'child must be an integer' } })],
+        }),
+      ]),
+    ).toEqual([{ field: 'parent.child', error: 'child must be an integer' }]);
+  });
+
+  it('falls back to a generic message when an error has neither constraints nor children', () => {
+    expect(
+      formatValidationErrors([error({ property: 'amount', constraints: undefined, children: undefined })]),
+    ).toEqual([{ field: 'amount', error: 'amount is invalid' }]);
   });
 });

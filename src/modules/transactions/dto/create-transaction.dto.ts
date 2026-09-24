@@ -1,39 +1,32 @@
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  IsDecimal,
-  IsNumber,
-  IsEnum,
-  IsDateString,
-  MaxLength,
-} from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, IsDecimal, IsNumber, IsEnum, MaxLength } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
+import { IsInTimestampRange, IsIsoDate } from '@shared/decorators/is-iso-date.decorator';
 
 export class CreateTransactionDto {
   @IsNotEmpty()
   @IsNumber()
-  wallet_id: number;
+  wallet_id!: number;
 
   @IsNotEmpty()
   @IsNumber()
-  category_id: number;
+  category_id!: number;
 
   @IsNotEmpty()
   @IsEnum(TransactionType)
-  transaction_type: TransactionType;
+  transaction_type!: TransactionType;
 
   @IsNotEmpty()
   @IsDecimal()
-  amount: number;
+  amount!: string;
 
   @IsNotEmpty()
-  @IsDateString()
-  timestamp: Date;
+  @IsIsoDate()
+  @IsInTimestampRange()
+  timestamp!: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(140)
-  description?: string;
+  description?: string | null;
 }

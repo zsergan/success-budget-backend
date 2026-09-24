@@ -1,4 +1,4 @@
-import type { EntityManager } from 'typeorm';
+import type { EntityManager, EntityTarget, ObjectLiteral } from 'typeorm';
 
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
 import { Space } from '@entities/space.entity';
@@ -11,20 +11,19 @@ describe('space setup', () => {
   let spaceRepository: { create: jest.Mock; save: jest.Mock };
   let spaceMemberRepository: { create: jest.Mock; save: jest.Mock };
   let categoryRepository: { save: jest.Mock };
-  let manager: EntityManager;
+  let manager: Pick<EntityManager, 'getRepository'>;
 
   beforeEach(() => {
     spaceRepository = { create: jest.fn((entity) => entity), save: jest.fn(async (entity) => ({ ...entity, id: 10 })) };
     spaceMemberRepository = { create: jest.fn((entity) => entity), save: jest.fn() };
     categoryRepository = { save: jest.fn() };
-    manager = {
-      getRepository: jest.fn((entity) => {
-        if (entity === Space) return spaceRepository;
-        if (entity === SpaceMember) return spaceMemberRepository;
-        if (entity === Category) return categoryRepository;
-        throw new Error(`Unexpected entity: ${entity}`);
-      }),
-    } as unknown as EntityManager;
+    const getRepository = jest.fn().mockImplementation((entity: EntityTarget<ObjectLiteral>) => {
+      if (entity === Space) return spaceRepository;
+      if (entity === SpaceMember) return spaceMemberRepository;
+      if (entity === Category) return categoryRepository;
+      throw new Error(`Unexpected entity: ${String(entity)}`);
+    });
+    manager = { getRepository };
   });
 
   describe('createSpaceWithOwner', () => {
@@ -55,8 +54,8 @@ describe('space setup', () => {
       expect(categoryRepository.save).toHaveBeenCalledTimes(1);
       const [saved] = categoryRepository.save.mock.calls[0];
       expect(saved).toHaveLength(DEFAULT_CATEGORIES.length + 1);
-      expect(saved.every((category) => category.space_id === 10)).toBe(true);
-      expect(saved.filter((category) => category.is_system === 1)).toEqual([
+      expect(saved.every((category: Category) => category.space_id === 10)).toBe(true);
+      expect(saved.filter((category: Category) => category.is_system === 1)).toEqual([
         { ...INITIAL_BALANCE_CATEGORY, space_id: 10 },
       ]);
     });

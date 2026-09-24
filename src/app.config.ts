@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 
 import { HttpExceptionFilter } from '@shared/http-exception.filter';
+import type { EnvironmentVariables } from '@config/env.validation';
 
 /**
  * Express's `trust proxy` setting, driven by TRUST_PROXY:
@@ -28,23 +29,41 @@ export function parseTrustProxy(value: string | undefined): boolean | number | s
  * except production, so a hosted production deployment doesn't expose its
  * API schema by default.
  */
-export function isSwaggerEnabled(configService: ConfigService): boolean {
-  const explicit = configService.get<string>('SWAGGER_ENABLED');
+export function isSwaggerEnabled(configService: ConfigService<EnvironmentVariables, true>): boolean {
+  const explicit = configService.get('SWAGGER_ENABLED', { infer: true });
 
   if (explicit !== undefined) {
     return explicit === 'true';
   }
 
-  return configService.get<string>('NODE_ENV') !== 'production';
+  return configService.get('NODE_ENV', { infer: true }) !== 'production';
+}
+
+export interface FieldError {
+  field: string;
+  error: string;
+}
+
+// Nested errors (e.g. from @ValidateNested) carry their messages on
+// `children`, not `constraints`.
+export function formatValidationErrors(errors: ValidationError[], parentPath = ''): FieldError[] {
+  return errors.flatMap((error) => {
+    const field = parentPath ? `${parentPath}.${error.property}` : error.property;
+    const messages = Object.values(error.constraints ?? {});
+    const own = messages.length ? [{ field, error: messages.join(', ') }] : [];
+    const nested = formatValidationErrors(error.children ?? [], field);
+
+    return own.length || nested.length ? [...own, ...nested] : [{ field, error: `${field} is invalid` }];
+  });
 }
 
 export function configureApp(app: INestApplication): void {
-  const configService = app.get(ConfigService);
+  const configService = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
 
   app
     .getHttpAdapter()
     .getInstance()
-    .set('trust proxy', parseTrustProxy(configService.get<string>('TRUST_PROXY')));
+    .set('trust proxy', parseTrustProxy(configService.get('TRUST_PROXY', { infer: true })));
 
   app.use(helmet());
   app.setGlobalPrefix('api');
@@ -54,14 +73,8 @@ export function configureApp(app: INestApplication): void {
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
-      exceptionFactory: (validationErrors: ValidationError[] = []) => {
-        return new BadRequestException(
-          validationErrors.map((error) => ({
-            field: error.property,
-            error: Object.values(error.constraints).join(', '),
-          })),
-        );
-      },
+      exceptionFactory: (validationErrors: ValidationError[] = []) =>
+        new BadRequestException(formatValidationErrors(validationErrors)),
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());

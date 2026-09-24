@@ -9,27 +9,27 @@ import { SpaceRole } from '@shared/enums';
 @Unique(['space_id', 'user_id'])
 export class SpaceMember {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  space_id: number;
+  space_id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  user_id: number;
+  user_id!: number;
 
   @Column({ type: 'enum', enum: SpaceRole })
-  role: SpaceRole;
+  role!: SpaceRole;
 
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
-  space: Space;
+  space?: Space;
 
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user?: User;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 }

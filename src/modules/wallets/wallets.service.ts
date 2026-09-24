@@ -2,14 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 
-import { Wallet } from '@entities/wallet.entity';
+import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import { Transaction } from '@entities/transaction.entity';
 import { Category } from '@entities/category.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace } from '@shared/utils';
+import { assertBelongsToSpace, assertFound } from '@shared/utils';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import {
@@ -18,7 +18,7 @@ import {
 } from '@modules/transaction-queries/transaction-queries.service';
 
 export interface WalletSummary {
-  wallet: Wallet;
+  wallet: WalletWithBalance;
   total_spend: number;
   total_income: number;
 }
@@ -30,9 +30,13 @@ export interface WalletsOverview {
   wallets: WalletSummary[];
 }
 
+// POST /wallets returns the initial amount as a number, unlike DECIMAL
+// reads - see docs/type-contract.md
+export type InitialBalanceTransaction = Omit<Transaction, 'amount'> & { amount: number };
+
 export interface CreateWalletResult {
-  wallet: Wallet;
-  transaction: Transaction | null;
+  wallet: WalletWithBalance;
+  transaction: InitialBalanceTransaction | null;
 }
 
 @Injectable()
@@ -46,8 +50,8 @@ export class WalletsService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async getOne(walletId: number): Promise<Wallet> {
-    return await this.walletRepository.findOne({ where: { id: walletId } });
+  async getOne(walletId: number): Promise<Wallet | null> {
+    return this.walletRepository.findOne({ where: { id: walletId } });
   }
 
   async getAll(spaceId: number): Promise<Wallet[]> {
@@ -86,8 +90,7 @@ export class WalletsService {
       const initialBalance = Number(createWalletDto.initial_balance);
 
       if (initialBalance <= 0) {
-        wallet.balance = 0;
-        return { wallet, transaction: null };
+        return { wallet: Object.assign(wallet, { balance: 0 }), transaction: null };
       }
 
       const systemCategory = await manager
@@ -95,12 +98,12 @@ export class WalletsService {
         .findOneOrFail({ where: { space_id: spaceId, is_system: 1 } });
 
       const transactionRepository = manager.getRepository(Transaction);
-      const transaction = await transactionRepository.save(
+      const saved = await transactionRepository.save(
         transactionRepository.create({
           wallet_id: wallet.id,
           category_id: systemCategory.id,
           transaction_type: TransactionType.INCOME,
-          amount: initialBalance,
+          amount: createWalletDto.initial_balance,
           // set explicitly, in JS, rather than left to the column's DB-side
           // CURRENT_TIMESTAMP(3) default - the dev DB's server time zone is
           // not UTC, so a DB-computed default would be off by several hours
@@ -108,9 +111,9 @@ export class WalletsService {
         }),
       );
 
-      wallet.balance = initialBalance;
+      const transaction: InitialBalanceTransaction = Object.assign(saved, { amount: initialBalance });
 
-      return { wallet, transaction };
+      return { wallet: Object.assign(wallet, { balance: initialBalance }), transaction };
     });
   }
 
@@ -135,7 +138,7 @@ export class WalletsService {
     return wallet;
   }
 
-  private summarize(wallets: Wallet[], periodTotals: Map<number, WalletPeriodTotals>): WalletSummary[] {
+  private summarize(wallets: WalletWithBalance[], periodTotals: Map<number, WalletPeriodTotals>): WalletSummary[] {
     return wallets.map((wallet) => {
       const totals = periodTotals.get(wallet.id) ?? { income: 0, spend: 0 };
 
@@ -145,15 +148,14 @@ export class WalletsService {
 
   private async buildOverview(
     spaceId: number,
-    wallets: Wallet[],
+    walletRows: Wallet[],
     periodTotals: Map<number, WalletPeriodTotals>,
     balances: Map<number, number>,
   ): Promise<WalletsOverview> {
     const space = await this.spacesService.getOne(spaceId);
+    assertFound(space);
 
-    wallets.forEach((wallet) => {
-      wallet.balance = balances.get(wallet.id) ?? 0;
-    });
+    const wallets = walletRows.map((wallet) => Object.assign(wallet, { balance: balances.get(wallet.id) ?? 0 }));
 
     const total_balance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
 

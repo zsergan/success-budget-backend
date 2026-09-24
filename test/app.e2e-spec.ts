@@ -13,6 +13,26 @@ import { Transaction } from '@entities/transaction.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { ErrorMessages } from '@shared/error-messages';
 
+// Just the fields the assertions below read from untyped response bodies
+interface IdRow {
+  id: number;
+}
+interface CategoryRow {
+  id: number;
+  name: string;
+}
+interface WalletSummaryRow {
+  wallet: { id: number };
+}
+interface TransactionRow {
+  id: string;
+  wallet: { id: number } | null;
+}
+interface RosterRow {
+  type: 'member' | 'invite';
+  code?: string;
+}
+
 describe('App (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
@@ -184,7 +204,7 @@ describe('App (e2e)', () => {
 
     expect(walletsResponse.body.wallets).toHaveLength(1);
     expect(walletsResponse.body.wallets[0].wallet.wallet_name).toBe('Cash');
-    const baseCurrency = currencies.body.find((currency) => currency.id === baseCurrencyId);
+    const baseCurrency = currencies.body.find((currency: IdRow) => currency.id === baseCurrencyId);
     expect(walletsResponse.body.total_balance).toBe(0);
     expect(walletsResponse.body.total_balance_currency).toBe(baseCurrency.code);
     expect(walletsResponse.body.delta_percent).toBe(0);
@@ -229,7 +249,7 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     const initialBalanceTransaction = transactionsResponse.body.find(
-      (transaction) => transaction.wallet.id === savingsWalletId,
+      (transaction: TransactionRow) => transaction.wallet?.id === savingsWalletId,
     );
     expect(initialBalanceTransaction.category.name).toBe('Initial balance');
   });
@@ -278,7 +298,7 @@ describe('App (e2e)', () => {
       ...categoriesResponse.body.expenses,
       ...categoriesResponse.body.archived,
     ];
-    expect(allVisible.find((category) => category.id === systemCategory.id)).toBeUndefined();
+    expect(allVisible.find((category: IdRow) => category.id === systemCategory.id)).toBeUndefined();
   });
 
   it('creates transactions, filters by date range, reports the latest one, and undoes one', async () => {
@@ -287,8 +307,12 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const salaryCategoryId = categoriesResponse.body.incomes.find((category) => category.name === 'Salary').id;
-    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Grocery').id;
+    const salaryCategoryId = categoriesResponse.body.incomes.find(
+      (category: CategoryRow) => category.name === 'Salary',
+    ).id;
+    const groceriesCategoryId = categoriesResponse.body.expenses.find(
+      (category: CategoryRow) => category.name === 'Grocery',
+    ).id;
 
     const incomeResponse = await request(app.getHttpServer())
       .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
@@ -366,7 +390,7 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const wallet = walletsResponse.body.wallets.find((entry) => entry.wallet.id === walletId);
+    const wallet = walletsResponse.body.wallets.find((entry: WalletSummaryRow) => entry.wallet.id === walletId);
     expect(Number(wallet.wallet.balance)).toBe(500);
     // total_balance sums every wallet in the space now that currency is
     // unified at the space level: Cash (500) + Savings (200, from the
@@ -384,12 +408,14 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const healthCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Health').id;
+    const healthCategoryId = categoriesResponse.body.expenses.find(
+      (category: CategoryRow) => category.name === 'Health',
+    ).id;
     const restaurantsCategoryId = categoriesResponse.body.expenses.find(
-      (category) => category.name === 'Restaurant',
+      (category: CategoryRow) => category.name === 'Restaurant',
     ).id;
     const entertainmentCategoryId = categoriesResponse.body.expenses.find(
-      (category) => category.name === 'Entertainment',
+      (category: CategoryRow) => category.name === 'Entertainment',
     ).id;
 
     await request(app.getHttpServer())
@@ -452,13 +478,13 @@ describe('App (e2e)', () => {
 
     expect(limitsResponse.body.total).toMatchObject({ id: totalLimitId, spent: 40, in_percent: 4 });
 
-    const healthLimit = limitsResponse.body.categories.find((limit) => limit.id === healthLimitId);
+    const healthLimit = limitsResponse.body.categories.find((limit: IdRow) => limit.id === healthLimitId);
     expect(healthLimit).toMatchObject({ spent: 40, in_percent: 40 });
-    expect(healthLimit.categories.map((category) => category.id)).toEqual([healthCategoryId]);
+    expect(healthLimit.categories.map((category: IdRow) => category.id)).toEqual([healthCategoryId]);
 
-    const funLimit = limitsResponse.body.categories.find((limit) => limit.id === funLimitId);
+    const funLimit = limitsResponse.body.categories.find((limit: IdRow) => limit.id === funLimitId);
     expect(funLimit).toMatchObject({ name: 'Fun', spent: 0, in_percent: 0 });
-    expect(funLimit.categories.map((category) => category.id).sort()).toEqual(
+    expect(funLimit.categories.map((category: IdRow) => category.id).sort()).toEqual(
       [restaurantsCategoryId, entertainmentCategoryId].sort(),
     );
 
@@ -482,7 +508,7 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(afterDeleteResponse.body.categories.find((limit) => limit.id === healthLimitId)).toBeUndefined();
+    expect(afterDeleteResponse.body.categories.find((limit: IdRow) => limit.id === healthLimitId)).toBeUndefined();
   });
 
   it('deletes an unused category, archives one with history, and never accepts transaction_type on update', async () => {
@@ -504,8 +530,8 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(afterHardDelete.body.expenses.find((category) => category.id === unusedCategoryId)).toBeUndefined();
-    expect(afterHardDelete.body.archived.find((category) => category.id === unusedCategoryId)).toBeUndefined();
+    expect(afterHardDelete.body.expenses.find((category: IdRow) => category.id === unusedCategoryId)).toBeUndefined();
+    expect(afterHardDelete.body.archived.find((category: IdRow) => category.id === unusedCategoryId)).toBeUndefined();
 
     const createUsed = await request(app.getHttpServer())
       .post(`/api/v1/spaces/${personalSpaceId}/categories`)
@@ -543,8 +569,8 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(afterArchive.body.expenses.find((category) => category.id === usedCategoryId)).toBeUndefined();
-    const archivedView = afterArchive.body.archived.find((category) => category.id === usedCategoryId);
+    expect(afterArchive.body.expenses.find((category: IdRow) => category.id === usedCategoryId)).toBeUndefined();
+    const archivedView = afterArchive.body.archived.find((category: IdRow) => category.id === usedCategoryId);
     expect(archivedView).toMatchObject({ transaction_count: 1, is_active: 0 });
     expect(archivedView.archived_at).toEqual(expect.any(String));
     expect(archivedView.user_id).toBeUndefined();
@@ -561,10 +587,10 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const restoredView = afterRestore.body.expenses.find((category) => category.id === usedCategoryId);
+    const restoredView = afterRestore.body.expenses.find((category: IdRow) => category.id === usedCategoryId);
     expect(restoredView).toMatchObject({ is_active: 1 });
     expect(restoredView.archived_at).toBeNull();
-    expect(afterRestore.body.archived.find((category) => category.id === usedCategoryId)).toBeUndefined();
+    expect(afterRestore.body.archived.find((category: IdRow) => category.id === usedCategoryId)).toBeUndefined();
   });
 
   it('archiving a category unlinks it from its limit, and deletes an emptied single-category limit', async () => {
@@ -598,9 +624,11 @@ describe('App (e2e)', () => {
       .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(beforeDelete.body.expenses.find((category) => category.id === limitedCategoryId).limit).toMatchObject({
-      id: limitId,
-    });
+    expect(beforeDelete.body.expenses.find((category: IdRow) => category.id === limitedCategoryId).limit).toMatchObject(
+      {
+        id: limitId,
+      },
+    );
 
     await request(app.getHttpServer())
       .delete(`/api/v1/spaces/${personalSpaceId}/categories/${limitedCategoryId}`)
@@ -612,14 +640,14 @@ describe('App (e2e)', () => {
       .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const archivedView = afterArchive.body.archived.find((category) => category.id === limitedCategoryId);
+    const archivedView = afterArchive.body.archived.find((category: IdRow) => category.id === limitedCategoryId);
     expect(archivedView.limit).toBeNull();
 
     const limitsAfterArchive = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${personalSpaceId}/limits`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(limitsAfterArchive.body.categories.find((limit) => limit.id === limitId)).toBeUndefined();
+    expect(limitsAfterArchive.body.categories.find((limit: IdRow) => limit.id === limitId)).toBeUndefined();
 
     // restoring must not resurrect the (now-deleted) limit link
     await request(app.getHttpServer())
@@ -632,7 +660,7 @@ describe('App (e2e)', () => {
       .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(afterRestore.body.expenses.find((category) => category.id === limitedCategoryId).limit).toBeNull();
+    expect(afterRestore.body.expenses.find((category: IdRow) => category.id === limitedCategoryId).limit).toBeNull();
   });
 
   it('reorders a segment and persists the new order', async () => {
@@ -660,7 +688,7 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const ids = afterReorder.body.incomes.map((category) => category.id);
+    const ids = afterReorder.body.incomes.map((category: IdRow) => category.id);
     expect(ids.indexOf(secondId)).toBeLessThan(ids.indexOf(firstId));
 
     // an id that isn't the caller's own must reject the whole batch
@@ -692,7 +720,7 @@ describe('App (e2e)', () => {
     const groupCategories = await dataSource.getRepository(Category).find({ where: { space_id: groupSpaceId } });
     expect(groupCategories).toHaveLength(16);
     expect(groupCategories.filter((category) => category.is_system === 1)).toHaveLength(1);
-    expect(groupCategories.some((category) => category.name === 'Initial balance')).toBe(true);
+    expect(groupCategories.some((category: CategoryRow) => category.name === 'Initial balance')).toBe(true);
 
     const membersAfterCreate = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${groupSpaceId}/members`)
@@ -729,7 +757,7 @@ describe('App (e2e)', () => {
       .get(`/api/v1/spaces/${groupSpaceId}/members`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(membersAfterRevoke.body.find((entry) => entry.type === 'invite')).toBeUndefined();
+    expect(membersAfterRevoke.body.find((entry: RosterRow) => entry.type === 'invite')).toBeUndefined();
   });
 
   it('creates a second personal space and rejects inviting into it', async () => {
@@ -882,10 +910,11 @@ describe('App (e2e)', () => {
       .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(walletsResponse.body.wallets.map((summary) => summary.wallet.id)).toContain(walletId);
-    expect(walletsResponse.body.wallets.find((summary) => summary.wallet.id === walletId).wallet.wallet_name).not.toBe(
-      'Hijacked',
-    );
+    expect(walletsResponse.body.wallets.map((summary: WalletSummaryRow) => summary.wallet.id)).toContain(walletId);
+    expect(
+      walletsResponse.body.wallets.find((summary: WalletSummaryRow) => summary.wallet.id === walletId).wallet
+        .wallet_name,
+    ).not.toBe('Hijacked');
     const untouchedCategory = await dataSource.getRepository(Category).findOneByOrFail({ id: personalCategory.id });
     expect(untouchedCategory.name).toBe(personalCategory.name);
   });
@@ -986,7 +1015,9 @@ describe('App (e2e)', () => {
       .get(`/api/v1/spaces/${personalSpaceId}/categories`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Grocery').id;
+    const groceriesCategoryId = categoriesResponse.body.expenses.find(
+      (category: CategoryRow) => category.name === 'Grocery',
+    ).id;
 
     const walletResponse = await request(app.getHttpServer())
       .post(`/api/v1/spaces/${personalSpaceId}/wallets`)
@@ -1028,9 +1059,9 @@ describe('App (e2e)', () => {
       })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const listed = listResponse.body.find((transaction) => transaction.id === expenseTransactionId);
+    const listed = listResponse.body.find((transaction: TransactionRow) => transaction.id === expenseTransactionId);
     expect(listed.wallet).toBeNull();
-    expect(listResponse.body.some((transaction) => transaction.wallet?.id === walletId)).toBe(true);
+    expect(listResponse.body.some((transaction: TransactionRow) => transaction.wallet?.id === walletId)).toBe(true);
 
     const rejected = await request(app.getHttpServer())
       .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
@@ -1079,7 +1110,7 @@ describe('App (e2e)', () => {
         expect.objectContaining({ type: 'invite', id: pendingInvite.body.id, can_remove: false }),
       ]),
     );
-    expect(rosterResponse.body.every((entry) => entry.code === undefined)).toBe(true);
+    expect(rosterResponse.body.every((entry: RosterRow) => entry.code === undefined)).toBe(true);
 
     const ownerOnly = [
       () => request(server).delete(`/api/v1/spaces/${groupSpaceId}`).set('Authorization', memberAuth),
@@ -1111,7 +1142,7 @@ describe('App (e2e)', () => {
         expect.objectContaining({ type: 'invite', id: pendingInvite.body.id, can_remove: true }),
       ]),
     );
-    expect(ownerRoster.body.filter((entry) => entry.type === 'invite')).toHaveLength(1);
+    expect(ownerRoster.body.filter((entry: RosterRow) => entry.type === 'invite')).toHaveLength(1);
 
     await request(server)
       .delete(`/api/v1/spaces/${groupSpaceId}/invites/${pendingInvite.body.id}`)
@@ -1129,7 +1160,7 @@ describe('App (e2e)', () => {
       .get('/api/v1/spaces')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(spacesAfterLeaving.body.find((space) => space.id === groupSpaceId)).toBeUndefined();
+    expect(spacesAfterLeaving.body.find((space: IdRow) => space.id === groupSpaceId)).toBeUndefined();
 
     const membersResponse = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${groupSpaceId}/members`)

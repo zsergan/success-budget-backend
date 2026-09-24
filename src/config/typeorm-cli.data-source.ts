@@ -8,20 +8,22 @@ import { buildDataSourceOptions } from './database.config';
 // env vars directly) - dotenv only fills in values that aren't already set.
 loadEnv();
 
-const REQUIRED_VARS = ['DB_HOST', 'DB_PORT', 'DB_USERNAME', 'DB_PASSWORD', 'DB_DATABASE'] as const;
-const missing = REQUIRED_VARS.filter((key) => !process.env[key]);
+const { DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_DATABASE } = process.env;
 
-if (missing.length > 0) {
+if (!DB_HOST || !DB_PORT || !DB_USERNAME || !DB_PASSWORD || !DB_DATABASE) {
+  const required = ['DB_HOST', 'DB_PORT', 'DB_USERNAME', 'DB_PASSWORD', 'DB_DATABASE'];
+  const missing = required.filter((key) => !process.env[key]);
+
   throw new Error(`Missing required environment variable(s) for migrations: ${missing.join(', ')}`);
 }
 
 export default new DataSource(
   buildDataSourceOptions({
-    DB_HOST: process.env.DB_HOST,
-    DB_PORT: process.env.DB_PORT,
-    DB_USERNAME: process.env.DB_USERNAME,
-    DB_PASSWORD: process.env.DB_PASSWORD,
-    DB_DATABASE: process.env.DB_DATABASE,
+    DB_HOST,
+    DB_PORT,
+    DB_USERNAME,
+    DB_PASSWORD,
+    DB_DATABASE,
     DB_SSL: process.env.DB_SSL,
     DB_SSL_CA: process.env.DB_SSL_CA,
     DB_SSL_REJECT_UNAUTHORIZED: process.env.DB_SSL_REJECT_UNAUTHORIZED,

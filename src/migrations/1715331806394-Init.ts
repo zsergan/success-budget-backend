@@ -1,6 +1,8 @@
 import type { MigrationInterface } from 'typeorm';
 import { QueryRunner, Table, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 export class Init1715331806394 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // create users table
@@ -339,46 +341,31 @@ export class Init1715331806394 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     // drop foreign keys from transactions table
-    const transactionsTable = await queryRunner.getTable('transactions');
-    const foreignKeyCurrency = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('currency_id') !== -1);
-    await queryRunner.dropForeignKey('transactions', foreignKeyCurrency);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'currency_id');
 
-    const foreignKeyCategory = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
-    await queryRunner.dropForeignKey('transactions', foreignKeyCategory);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'category_id');
 
-    const foreignKeyWallet = transactionsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('wallet_id') !== -1);
-    await queryRunner.dropForeignKey('transactions', foreignKeyWallet);
+    await dropForeignKeyOn(queryRunner, 'transactions', 'wallet_id');
 
     // drop transactions table
     await queryRunner.dropTable('transactions');
 
     // drop foreign key for user_id in user_categories table
-    const categoriesTable = await queryRunner.getTable('categories');
-    const foreignKeyUser = categoriesTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
-    await queryRunner.dropForeignKey('categories', foreignKeyUser);
+    await dropForeignKeyOn(queryRunner, 'categories', 'user_id');
 
     // drop user categories table
     await queryRunner.dropTable('categories');
 
     // drop foreign keys for wallets table
-    const walletsTable = await queryRunner.getTable('wallets');
-    const foreignKeyCurrencyWallet = walletsTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('wallets', foreignKeyCurrencyWallet);
+    await dropForeignKeyOn(queryRunner, 'wallets', 'currency_id');
 
-    const foreignKeyUserWallet = walletsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('user_id') !== -1);
-    await queryRunner.dropForeignKey('wallets', foreignKeyUserWallet);
+    await dropForeignKeyOn(queryRunner, 'wallets', 'user_id');
 
     // drop wallets table
     await queryRunner.dropTable('wallets');
 
     // drop foreign key for base_currency_id in users table
-    const usersTable = await queryRunner.getTable('users');
-    const foreignKeyBaseCurrency = usersTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('base_currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('users', foreignKeyBaseCurrency);
+    await dropForeignKeyOn(queryRunner, 'users', 'base_currency_id');
 
     // drop currencies table
     await queryRunner.dropTable('currencies');

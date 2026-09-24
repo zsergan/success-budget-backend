@@ -235,10 +235,14 @@ afterward (which, thanks to `onDelete: CASCADE` on the relevant foreign
 keys, also removes their wallets/categories/confirmation codes). CI runs
 them against MySQL and MailDev service containers on every push/PR.
 
-## Linting
+## Linting and type checking
 
 ```bash
 npm run lint
+
+# strict type check of the app, unit specs and e2e specs - Jest runs tests
+# through SWC without type checking, and `npm run build` excludes specs
+npm run typecheck
 ```
 
 ## Deployment

@@ -1,6 +1,8 @@
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { TableColumn, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 const TABLES = ['wallets', 'categories', 'limits'] as const;
 
 export class AddSpaceIdToWalletsCategoriesLimits1789478240218 implements MigrationInterface {
@@ -21,9 +23,7 @@ export class AddSpaceIdToWalletsCategoriesLimits1789478240218 implements Migrati
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     for (const table of [...TABLES].reverse()) {
-      const tableSchema = await queryRunner.getTable(table);
-      const foreignKey = tableSchema.foreignKeys.find((fk) => fk.columnNames.indexOf('space_id') !== -1);
-      await queryRunner.dropForeignKey(table, foreignKey);
+      await dropForeignKeyOn(queryRunner, table, 'space_id');
       await queryRunner.dropColumn(table, 'space_id');
     }
   }

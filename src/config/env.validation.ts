@@ -1,6 +1,33 @@
 import * as Joi from 'joi';
 
-export const envValidationSchema = Joi.object({
+type BooleanString = 'true' | 'false';
+
+// The values ConfigService returns after Joi validation and conversion - read
+// them through ConfigService<EnvironmentVariables, true> with `infer: true`.
+export interface EnvironmentVariables {
+  DB_HOST: string;
+  DB_PORT: number;
+  DB_USERNAME: string;
+  DB_PASSWORD: string;
+  DB_DATABASE: string;
+  DB_SSL?: BooleanString;
+  DB_SSL_CA?: string;
+  DB_SSL_REJECT_UNAUTHORIZED?: BooleanString;
+  JWT_SECRET: string;
+  LOG_LEVEL?: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
+  NODE_ENV?: 'development' | 'test' | 'staging' | 'production';
+  PORT?: number;
+  TRUST_PROXY?: string;
+  SWAGGER_ENABLED?: BooleanString;
+  SMTP_HOST: string;
+  SMTP_PORT: number;
+  SMTP_SECURE?: BooleanString;
+  SMTP_USER?: string;
+  SMTP_PASSWORD?: string;
+  MAIL_FROM: string;
+}
+
+export const envValidationSchema = Joi.object<EnvironmentVariables>({
   DB_HOST: Joi.string().required(),
   DB_PORT: Joi.number().port().required(),
   DB_USERNAME: Joi.string().required(),

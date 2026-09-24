@@ -5,14 +5,14 @@ export class CreateWalletDto {
   @IsNotEmpty()
   @IsString()
   @MaxLength(20)
-  wallet_name: string;
+  wallet_name!: string;
 
   @IsNotEmpty()
   @IsDecimal()
   @Matches(/^\d+(\.\d+)?$/, { message: 'initial_balance must not be negative' })
-  initial_balance: number;
+  initial_balance!: string;
 
   @IsNotEmpty()
   @IsEnum(AppColor)
-  design: AppColor;
+  design!: AppColor;
 }

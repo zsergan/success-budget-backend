@@ -7,6 +7,7 @@ import { SpaceAccessService } from './space-access.service';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { buildSpaceMember } from '@testing';
 
 describe('SpaceAccessService', () => {
   let service: SpaceAccessService;
@@ -25,7 +26,7 @@ describe('SpaceAccessService', () => {
 
   describe('assertMembership', () => {
     it('returns the membership of a plain member', async () => {
-      const member = { role: SpaceRole.MEMBER } as SpaceMember;
+      const member = buildSpaceMember({ role: SpaceRole.MEMBER });
       spaceMemberRepository.findOne.mockResolvedValue(member);
 
       await expect(service.assertMembership(10, 1)).resolves.toBe(member);
@@ -33,21 +34,21 @@ describe('SpaceAccessService', () => {
     });
 
     it('returns the membership of an owner without a required role', async () => {
-      const member = { role: SpaceRole.OWNER } as SpaceMember;
+      const member = buildSpaceMember({ role: SpaceRole.OWNER });
       spaceMemberRepository.findOne.mockResolvedValue(member);
 
       await expect(service.assertMembership(10, 1)).resolves.toBe(member);
     });
 
     it('passes for an owner when an owner is required', async () => {
-      const member = { role: SpaceRole.OWNER } as SpaceMember;
+      const member = buildSpaceMember({ role: SpaceRole.OWNER });
       spaceMemberRepository.findOne.mockResolvedValue(member);
 
       await expect(service.assertMembership(10, 1, SpaceRole.OWNER)).resolves.toBe(member);
     });
 
     it('rejects a plain member when an owner is required', async () => {
-      spaceMemberRepository.findOne.mockResolvedValue({ role: SpaceRole.MEMBER } as SpaceMember);
+      spaceMemberRepository.findOne.mockResolvedValue(buildSpaceMember({ role: SpaceRole.MEMBER }));
 
       await expect(service.assertMembership(10, 1, SpaceRole.OWNER)).rejects.toMatchObject(forbidden);
     });

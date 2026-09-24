@@ -8,16 +8,13 @@ import { User } from '@entities/user.entity';
 import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
 import { RetryAfterException } from '@shared/retry-after.exception';
 import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS } from '@shared/constants';
+import { buildConfirmationCode } from '@testing';
 
 describe('decideSendAction', () => {
   const cooldownMs = CONFIRMATION_CODE_RESEND_COOLDOWN_MS;
   const now = Date.now();
 
-  it('creates a new code when none exists yet', () => {
-    expect(decideSendAction(null, now, cooldownMs)).toEqual({ action: 'create' });
-  });
-
-  it('creates a new code when the existing one has never been attempted (legacy row)', () => {
+  it('sends when the existing code has never been attempted (legacy row)', () => {
     const existing = { send_status: ConfirmationCodeSendStatus.PENDING, last_attempted_at: null };
 
     expect(decideSendAction(existing, now, cooldownMs)).toEqual({ action: 'send' });
@@ -67,6 +64,7 @@ describe('ConfirmationCodesService', () => {
   let service: ConfirmationCodesService;
   let repository: jest.Mocked<Repository<ConfirmationCode>>;
   let dataSource: { transaction: jest.Mock };
+  let codeLookup: { where: jest.Mock; andWhere: jest.Mock; getOne: jest.Mock };
 
   const buildQueryBuilder = (result: unknown) => ({
     setLock: jest.fn().mockReturnThis(),
@@ -94,7 +92,7 @@ describe('ConfirmationCodesService', () => {
   };
 
   beforeEach(async () => {
-    const queryBuilder = {
+    codeLookup = {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       getOne: jest.fn(),
@@ -113,7 +111,7 @@ describe('ConfirmationCodesService', () => {
             findOne: jest.fn(),
             update: jest.fn(),
             increment: jest.fn(),
-            createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+            createQueryBuilder: jest.fn().mockReturnValue(codeLookup),
           },
         },
         { provide: DataSource, useValue: dataSource },
@@ -126,13 +124,12 @@ describe('ConfirmationCodesService', () => {
 
   describe('getOne', () => {
     it('looks up a non-expired code for the user and type', async () => {
-      const code = { id: 1, confirmation_code: '1234' } as ConfirmationCode;
-      const queryBuilder = repository.createQueryBuilder();
-      (queryBuilder.getOne as jest.Mock).mockResolvedValue(code);
+      const code = buildConfirmationCode({ id: 1, confirmation_code: '1234' });
+      codeLookup.getOne.mockResolvedValue(code);
 
       const result = await service.getOne(1, ConfirmationType.EMAIL);
 
-      expect(queryBuilder.where).toHaveBeenCalledWith({ user_id: 1, confirmation_type: ConfirmationType.EMAIL });
+      expect(codeLookup.where).toHaveBeenCalledWith({ user_id: 1, confirmation_type: ConfirmationType.EMAIL });
       expect(result).toBe(code);
     });
   });
@@ -333,7 +330,7 @@ describe('ConfirmationCodesService', () => {
 
     it('sets expired_at back to created_at for an existing code', async () => {
       const createdAt = new Date('2026-01-01T00:00:00Z');
-      repository.findOne.mockResolvedValue({ id: 5, created_at: createdAt } as ConfirmationCode);
+      repository.findOne.mockResolvedValue(buildConfirmationCode({ id: 5, created_at: createdAt }));
 
       await service.expire(1, ConfirmationType.EMAIL);
 

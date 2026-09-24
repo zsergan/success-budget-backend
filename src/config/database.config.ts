@@ -2,6 +2,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { DataSourceOptions } from 'typeorm';
 
+type MysqlDataSourceOptions = Extract<DataSourceOptions, { type: 'mysql' | 'mariadb' }>;
+
 export interface DatabaseEnv {
   DB_HOST: string;
   DB_PORT: number | string;
@@ -47,7 +49,7 @@ function buildSslOptions(env: DatabaseEnv): MysqlSslOptions | undefined {
  * so the same glob matches whether it runs via ts-node from src/config or
  * as compiled JS from dist/config.
  */
-export function buildDataSourceOptions(env: DatabaseEnv): DataSourceOptions {
+export function buildDataSourceOptions(env: DatabaseEnv): MysqlDataSourceOptions {
   return {
     type: 'mysql',
     host: env.DB_HOST,

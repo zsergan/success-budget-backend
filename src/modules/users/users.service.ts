@@ -19,7 +19,8 @@ import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/s
 import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
-import { constantTimeEquals } from '@shared/utils';
+import { assertFound, constantTimeEquals } from '@shared/utils';
+import type { EnvironmentVariables } from '@config/env.validation';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
 
@@ -29,13 +30,13 @@ export class UsersService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
-    private readonly configService: ConfigService,
+    private readonly configService: ConfigService<EnvironmentVariables, true>,
     private readonly confirmationCodesService: ConfirmationCodesService,
     private readonly mailService: MailService,
   ) {}
 
   private generateAccessToken(user: User): string {
-    const jwtSecret = this.configService.getOrThrow<string>('JWT_SECRET');
+    const jwtSecret = this.configService.getOrThrow('JWT_SECRET', { infer: true });
     return jwt.sign({ id: user.id }, jwtSecret, { expiresIn: 60 * 60 * 24 * 90 });
   }
 
@@ -101,7 +102,10 @@ export class UsersService {
       await manager.getRepository(Space).update(spaceMember.space_id, { currency_id: createUserDto.base_currency_id });
     });
 
-    return this.findById(id);
+    const user = await this.findById(id);
+    assertFound(user);
+
+    return user;
   }
 
   async completeEmailVerification(user: User, confirmationCodeId?: number): Promise<string> {
@@ -175,11 +179,18 @@ export class UsersService {
     return this.generateAccessToken(user);
   }
 
-  async findById(id: number): Promise<User> {
+  async getProfile(userId: number): Promise<User> {
+    const user = await this.findById(userId);
+    assertFound(user);
+
+    return user;
+  }
+
+  async findById(id: number): Promise<User | null> {
     return this.userRepository.findOne({ where: { id } });
   }
 
-  async findByEmail(email: string): Promise<User> {
+  async findByEmail(email: string): Promise<User | null> {
     return this.userRepository.findOne({ where: { email } });
   }
 

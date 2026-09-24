@@ -13,6 +13,8 @@ import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
+import { withRelations } from '@shared/utils';
+import { buildCurrency, buildSpace, buildSpaceInvite, buildSpaceMember, buildUser } from '@testing';
 
 describe('SpaceInvitesService', () => {
   let service: SpaceInvitesService;
@@ -22,9 +24,12 @@ describe('SpaceInvitesService', () => {
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let spaceRepositoryInTx: { findOne: jest.Mock };
   let dataSource: { transaction: jest.Mock };
-  let spaceAccessService: { assertMembership: jest.Mock };
-  let spacesService: { getOne: jest.Mock };
-  let usersService: { findById: jest.Mock };
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
+  let spacesService: jest.Mocked<Pick<SpacesService, 'getOne'>>;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+
+  const spaceOfType = (type: SpaceType) =>
+    withRelations(buildSpace({ id: 1, type, currency: buildCurrency() }), 'currency');
 
   const forbidden = () => new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
@@ -41,9 +46,9 @@ describe('SpaceInvitesService', () => {
       }),
     };
     dataSource = { transaction: jest.fn((callback) => callback(manager)) };
-    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue({ role: SpaceRole.OWNER }) };
-    spacesService = { getOne: jest.fn().mockResolvedValue({ id: 1, type: SpaceType.GROUP }) };
-    usersService = { findById: jest.fn().mockResolvedValue({ id: 2, email: 'a@example.com' }) };
+    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ role: SpaceRole.OWNER })) };
+    spacesService = { getOne: jest.fn().mockResolvedValue(spaceOfType(SpaceType.GROUP)) };
+    usersService = { findById: jest.fn().mockResolvedValue(buildUser({ id: 2, email: 'a@example.com' })) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -81,8 +86,17 @@ describe('SpaceInvitesService', () => {
       expect(spaceInviteRepository.save).not.toHaveBeenCalled();
     });
 
+    it('returns 404 when the space is gone after the membership check', async () => {
+      spacesService.getOne.mockResolvedValue(null);
+
+      await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(
+        new HttpException(ErrorMessages.NOT_FOUND, 404),
+      );
+      expect(spaceInviteRepository.save).not.toHaveBeenCalled();
+    });
+
     it('rejects inviting into a personal space', async () => {
-      spacesService.getOne.mockResolvedValue({ id: 1, type: SpaceType.PERSONAL } as Space);
+      spacesService.getOne.mockResolvedValue(spaceOfType(SpaceType.PERSONAL));
 
       await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, 400),
@@ -92,7 +106,7 @@ describe('SpaceInvitesService', () => {
 
     it('rejects once the active-invite cap is reached', async () => {
       spaceInviteRepository.find.mockResolvedValue(
-        Array.from({ length: SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE }, () => ({}) as SpaceInvite),
+        Array.from({ length: SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE }, () => buildSpaceInvite()),
       );
 
       await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(
@@ -102,7 +116,9 @@ describe('SpaceInvitesService', () => {
 
     it('creates the invite and returns the only view that exposes its code', async () => {
       spaceInviteRepository.find.mockResolvedValue([]);
-      spaceInviteRepository.save.mockImplementation(async (entity) => ({ ...entity, id: 5 }) as SpaceInvite);
+      spaceInviteRepository.save.mockImplementation(async (entity) =>
+        Object.assign(buildSpaceInvite(), entity, { id: 5 }),
+      );
 
       const result = await service.create(7, 1, 'a@example.com');
 
@@ -136,7 +152,7 @@ describe('SpaceInvitesService', () => {
     });
 
     it('stamps revoked_at on the happy path', async () => {
-      spaceInviteRepository.findOne.mockResolvedValue({ id: 1 } as SpaceInvite);
+      spaceInviteRepository.findOne.mockResolvedValue(buildSpaceInvite({ id: 1 }));
 
       await service.revoke(7, 10, 1);
 
@@ -148,6 +164,13 @@ describe('SpaceInvitesService', () => {
   });
 
   describe('accept', () => {
+    it('returns 404 when the caller no longer exists', async () => {
+      usersService.findById.mockResolvedValue(null);
+
+      await expect(service.accept(2, '123456')).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+      expect(spaceInviteRepository.findOne).not.toHaveBeenCalled();
+    });
+
     it('rejects when no active invite matches the code and caller email', async () => {
       spaceInviteRepository.findOne.mockResolvedValue(null);
 
@@ -155,7 +178,9 @@ describe('SpaceInvitesService', () => {
     });
 
     it('rejects when the space has reached its member cap', async () => {
-      spaceInviteRepository.findOne.mockResolvedValue({ id: 1, space_id: 10, role: SpaceRole.MEMBER } as SpaceInvite);
+      spaceInviteRepository.findOne.mockResolvedValue(
+        buildSpaceInvite({ id: 1, space_id: 10, role: SpaceRole.MEMBER }),
+      );
       spaceMemberRepository.count.mockResolvedValue(SPACE_LIMITS.MAX_MEMBERS_PER_SPACE);
 
       await expect(service.accept(2, '123456')).rejects.toMatchObject(
@@ -165,9 +190,11 @@ describe('SpaceInvitesService', () => {
     });
 
     it('creates the membership and stamps accepted_at in one transaction', async () => {
-      spaceInviteRepository.findOne.mockResolvedValue({ id: 1, space_id: 10, role: SpaceRole.MEMBER } as SpaceInvite);
+      spaceInviteRepository.findOne.mockResolvedValue(
+        buildSpaceInvite({ id: 1, space_id: 10, role: SpaceRole.MEMBER }),
+      );
       spaceMemberRepository.count.mockResolvedValue(1);
-      const space = { id: 10 } as Space;
+      const space = buildSpace({ id: 10, currency: buildCurrency({ id: 1, code: 'USD', name: 'US Dollar' }) });
       spaceRepositoryInTx.findOne.mockResolvedValue(space);
 
       const result = await service.accept(2, '123456');

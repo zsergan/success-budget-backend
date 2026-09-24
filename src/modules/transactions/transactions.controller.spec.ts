@@ -3,6 +3,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { TransactionType } from '@shared/enums';
+import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import type { AuthedRequest } from '@shared/types';
+import { withRelations } from '@shared/utils';
+import { buildCategory, buildTransaction, buildWallet } from '@testing';
 
 describe('TransactionsController', () => {
   let controller: TransactionsController;
@@ -23,13 +27,28 @@ describe('TransactionsController', () => {
     transactionsService = module.get(TransactionsService);
   });
 
-  const req = { user: { id: 1 } } as any;
+  const req: AuthedRequest = { user: { id: 1 } };
   const spaceId = 10;
 
   it('create delegates to TransactionsService.create', async () => {
-    const dto = { wallet_id: 1, category_id: 5, transaction_type: TransactionType.INCOME, amount: 50 } as any;
-    const created = { transaction: { id: 99 }, wallet: { id: 1, balance: 150 }, previous_balance: 100 };
-    transactionsService.create.mockResolvedValue(created as any);
+    const dto: CreateTransactionDto = {
+      wallet_id: 1,
+      category_id: 5,
+      transaction_type: TransactionType.INCOME,
+      amount: '50',
+      timestamp: '2026-01-15T10:00:00.000Z',
+    };
+    const created = {
+      transaction: buildTransaction({
+        id: '99',
+        category_id: 5,
+        transaction_type: TransactionType.INCOME,
+        amount: '50',
+      }),
+      wallet: Object.assign(buildWallet(), { balance: 150 }),
+      previous_balance: 100,
+    };
+    transactionsService.create.mockResolvedValue(created);
 
     const result = await controller.create(req, spaceId, dto);
 
@@ -48,12 +67,15 @@ describe('TransactionsController', () => {
   it('getAll passes an explicit period through', async () => {
     const from = new Date(2026, 0, 1);
     const to = new Date(2026, 0, 31);
-    transactionsService.getAll.mockResolvedValue([{ id: 1 }] as any);
+    const transactions = [buildTransaction({ wallet: buildWallet(), category: buildCategory() })].map((transaction) =>
+      withRelations(transaction, 'wallet', 'category'),
+    );
+    transactionsService.getAll.mockResolvedValue(transactions);
 
     const result = await controller.getAll(req, spaceId, from, to);
 
     expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to);
-    expect(result).toEqual([{ id: 1 }]);
+    expect(result).toBe(transactions);
   });
 
   it('getLatest delegates to TransactionsService.getLatest', async () => {

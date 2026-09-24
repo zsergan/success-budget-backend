@@ -18,28 +18,28 @@ import { LimitType } from '@shared/enums';
 @Entity('limits')
 export class Limit {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  space_id: number;
+  space_id!: number;
 
   // only meaningful for a group limit (2+ categories) - a single-category
   // limit uses the category's own name, a total limit uses a fixed label,
   // both client-side
   @Column({ type: 'varchar', length: 60, nullable: true })
-  name: string | null;
+  name!: string | null;
 
   @Column({ type: 'enum', enum: LimitType })
-  limit_type: LimitType;
+  limit_type!: LimitType;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  amount: number;
+  amount!: string;
 
   @Exclude()
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
-  space: Space;
+  space?: Space;
 
   // 0 categories = monthly total limit, 1 = single-category, 2+ = group
   @ManyToMany(() => Category, { onDelete: 'RESTRICT' })
@@ -48,11 +48,11 @@ export class Limit {
     joinColumn: { name: 'limit_id' },
     inverseJoinColumn: { name: 'category_id' },
   })
-  categories: Category[];
+  categories?: Category[];
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'timestamp' })
-  updated_at: Date;
+  updated_at!: Date;
 }

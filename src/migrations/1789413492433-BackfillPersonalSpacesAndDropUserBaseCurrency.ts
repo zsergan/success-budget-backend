@@ -1,6 +1,8 @@
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { TableColumn, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 /**
  * Every existing user gets a personal Space + owner SpaceMember backfilled
  * from their current base_currency_id, before that column is dropped - see
@@ -30,11 +32,7 @@ export class BackfillPersonalSpacesAndDropUserBaseCurrency1789413492433 implemen
       ]);
     }
 
-    const usersTable = await queryRunner.getTable('users');
-    const baseCurrencyForeignKey = usersTable.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('base_currency_id') !== -1,
-    );
-    await queryRunner.dropForeignKey('users', baseCurrencyForeignKey);
+    await dropForeignKeyOn(queryRunner, 'users', 'base_currency_id');
     await queryRunner.dropColumn('users', 'base_currency_id');
   }
 
