@@ -3,9 +3,13 @@ import { UnauthorizedException } from '@nestjs/common';
 
 import { JwtStrategy } from './jwt.strategy';
 import { UsersService } from '@modules/users/users.service';
+import type { EnvironmentVariables } from '@config/env.validation';
 
 describe('JwtStrategy', () => {
-  const configService = { getOrThrow: jest.fn().mockReturnValue('test-secret') } as unknown as ConfigService;
+  const configService = { getOrThrow: jest.fn().mockReturnValue('test-secret') } as unknown as ConfigService<
+    EnvironmentVariables,
+    true
+  >;
 
   it('maps the JWT payload to the request user shape when the user still exists', async () => {
     const usersService = { exists: jest.fn().mockResolvedValue(true) } as unknown as UsersService;

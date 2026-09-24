@@ -5,10 +5,11 @@ import { ServiceUnavailableException } from '@nestjs/common';
 // @swc/jest gotcha) - jest.mock is the only form that actually replaces
 // what MailService itself sees when it imports { createTransport }.
 const sendMail = jest.fn();
-const createTransport = jest.fn(() => ({ sendMail }));
+const createTransport = jest.fn<{ sendMail: jest.Mock }, unknown[]>(() => ({ sendMail }));
 jest.mock('nodemailer', () => ({ createTransport: (...args: unknown[]) => createTransport(...args) }));
 
 import { MailService } from './mail.service';
+import type { EnvironmentVariables } from '@config/env.validation';
 
 describe('MailService', () => {
   let service: MailService;
@@ -17,7 +18,7 @@ describe('MailService', () => {
     ({
       getOrThrow: jest.fn((key: string) => values[key]),
       get: jest.fn((key: string) => values[key]),
-    }) as unknown as ConfigService;
+    }) as unknown as ConfigService<EnvironmentVariables, true>;
 
   const baseEnv = {
     MAIL_FROM: 'Success Budget <no-reply@success-budget.local>',

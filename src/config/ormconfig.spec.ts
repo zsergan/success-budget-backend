@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 
+import type { EnvironmentVariables } from './env.validation';
 import { getOrmConfig } from './ormconfig';
 
 describe('getOrmConfig', () => {
@@ -14,7 +15,7 @@ describe('getOrmConfig', () => {
     const configService = {
       getOrThrow: jest.fn((key: string) => values[key]),
       get: jest.fn((key: string) => values[key]),
-    } as unknown as ConfigService;
+    } as unknown as ConfigService<EnvironmentVariables, true>;
 
     const config = getOrmConfig(configService);
 

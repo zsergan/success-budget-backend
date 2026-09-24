@@ -2,25 +2,29 @@ import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config';
 import { createTransport, type Transporter } from 'nodemailer';
 
+import type { EnvironmentVariables } from '@config/env.validation';
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
   private readonly transporter: Transporter;
   private readonly from: string;
 
-  constructor(configService: ConfigService) {
-    this.from = configService.getOrThrow<string>('MAIL_FROM');
+  constructor(configService: ConfigService<EnvironmentVariables, true>) {
+    this.from = configService.getOrThrow('MAIL_FROM', { infer: true });
     this.transporter = createTransport({
-      host: configService.getOrThrow<string>('SMTP_HOST'),
-      port: configService.getOrThrow<number>('SMTP_PORT'),
-      secure: configService.get<string>('SMTP_SECURE') === 'true',
+      host: configService.getOrThrow('SMTP_HOST', { infer: true }),
+      port: configService.getOrThrow('SMTP_PORT', { infer: true }),
+      secure: configService.get('SMTP_SECURE', { infer: true }) === 'true',
       auth: this.buildAuth(configService),
     });
   }
 
-  private buildAuth(configService: ConfigService): { user: string; pass: string } | undefined {
-    const user = configService.get<string>('SMTP_USER');
-    const pass = configService.get<string>('SMTP_PASSWORD');
+  private buildAuth(
+    configService: ConfigService<EnvironmentVariables, true>,
+  ): { user: string; pass: string } | undefined {
+    const user = configService.get('SMTP_USER', { infer: true });
+    const pass = configService.get('SMTP_PASSWORD', { infer: true });
 
     // Most local mail catchers (e.g. MailDev) don't need auth at all.
     return user && pass ? { user, pass } : undefined;
@@ -46,7 +50,8 @@ export class MailService {
       // diagnose a delivery problem from the logs. This still flows
       // through the app's pino sink (see src/config/logger.config.ts),
       // not a separate console logger.
-      this.logger.error(`Failed to send confirmation email to ${to}: ${(error as Error).message}`);
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to send confirmation email to ${to}: ${reason}`);
       throw new ServiceUnavailableException('Could not send the confirmation email, please try again shortly');
     }
   }

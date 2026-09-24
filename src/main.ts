@@ -5,6 +5,7 @@ import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
 import { configureApp, isSwaggerEnabled } from './app.config';
+import type { EnvironmentVariables } from './config/env.validation';
 
 async function bootstrap() {
   // bufferLogs holds Nest's own bootstrap-time log lines until useLogger()
@@ -19,7 +20,7 @@ async function bootstrap() {
   app.enableShutdownHooks();
   configureApp(app);
 
-  const configService = app.get(ConfigService);
+  const configService = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
 
   if (isSwaggerEnabled(configService)) {
     const swaggerConfig = new DocumentBuilder()
@@ -32,7 +33,7 @@ async function bootstrap() {
     SwaggerModule.setup('docs', app, swaggerDocument);
   }
 
-  const port = configService.get<number>('PORT', 3000);
+  const port = configService.get('PORT', { infer: true }) ?? 3000;
   // 0.0.0.0, not the default loopback-only binding - a container's health
   // check and any reverse proxy connect from outside this network
   // namespace, not from localhost inside it.

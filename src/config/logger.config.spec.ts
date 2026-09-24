@@ -2,10 +2,11 @@ import { ConfigService } from '@nestjs/config';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { Options as PinoHttpOptions } from 'pino-http';
 
+import type { EnvironmentVariables } from './env.validation';
 import { getLoggerConfig } from './logger.config';
 
 const buildConfigService = (values: Record<string, unknown>) =>
-  ({ get: jest.fn((key: string, defaultValue?: unknown) => values[key] ?? defaultValue) }) as unknown as ConfigService;
+  ({ get: jest.fn((key: string) => values[key]) }) as unknown as ConfigService<EnvironmentVariables, true>;
 
 const getPinoHttpOptions = (values: Record<string, unknown> = {}) =>
   getLoggerConfig(buildConfigService(values)).pinoHttp as PinoHttpOptions;
@@ -44,7 +45,7 @@ describe('getLoggerConfig', () => {
     it('reuses an existing x-request-id header', () => {
       const { req, res } = buildReqRes({ 'x-request-id': 'client-supplied-id' });
 
-      const id = getPinoHttpOptions().genReqId(req, res);
+      const id = getPinoHttpOptions().genReqId?.(req, res);
 
       expect(id).toBe('client-supplied-id');
       expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', 'client-supplied-id');
@@ -53,7 +54,7 @@ describe('getLoggerConfig', () => {
     it('takes the first value when the header is sent multiple times', () => {
       const { req, res } = buildReqRes({ 'x-request-id': ['first-id', 'second-id'] });
 
-      const id = getPinoHttpOptions().genReqId(req, res);
+      const id = getPinoHttpOptions().genReqId?.(req, res);
 
       expect(id).toBe('first-id');
     });
@@ -61,7 +62,7 @@ describe('getLoggerConfig', () => {
     it('generates a uuid when no header is present', () => {
       const { req, res } = buildReqRes();
 
-      const id = getPinoHttpOptions().genReqId(req, res) as string;
+      const id = getPinoHttpOptions().genReqId?.(req, res) as string;
 
       expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
       expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', id);
@@ -71,7 +72,7 @@ describe('getLoggerConfig', () => {
   describe('customLogLevel', () => {
     const level = (statusCode: number, err?: Error) => {
       const res = { statusCode } as unknown as ServerResponse;
-      return getPinoHttpOptions().customLogLevel({} as IncomingMessage, res, err);
+      return getPinoHttpOptions().customLogLevel?.({} as IncomingMessage, res, err);
     };
 
     it('returns error for a server error status', () => {

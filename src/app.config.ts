@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 
 import { HttpExceptionFilter } from '@shared/http-exception.filter';
+import type { EnvironmentVariables } from '@config/env.validation';
 
 /**
  * Express's `trust proxy` setting, driven by TRUST_PROXY:
@@ -28,14 +29,14 @@ export function parseTrustProxy(value: string | undefined): boolean | number | s
  * except production, so a hosted production deployment doesn't expose its
  * API schema by default.
  */
-export function isSwaggerEnabled(configService: ConfigService): boolean {
-  const explicit = configService.get<string>('SWAGGER_ENABLED');
+export function isSwaggerEnabled(configService: ConfigService<EnvironmentVariables, true>): boolean {
+  const explicit = configService.get('SWAGGER_ENABLED', { infer: true });
 
   if (explicit !== undefined) {
     return explicit === 'true';
   }
 
-  return configService.get<string>('NODE_ENV') !== 'production';
+  return configService.get('NODE_ENV', { infer: true }) !== 'production';
 }
 
 export interface FieldError {
@@ -57,12 +58,12 @@ export function formatValidationErrors(errors: ValidationError[], parentPath = '
 }
 
 export function configureApp(app: INestApplication): void {
-  const configService = app.get(ConfigService);
+  const configService = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
 
   app
     .getHttpAdapter()
     .getInstance()
-    .set('trust proxy', parseTrustProxy(configService.get<string>('TRUST_PROXY')));
+    .set('trust proxy', parseTrustProxy(configService.get('TRUST_PROXY', { infer: true })));
 
   app.use(helmet());
   app.setGlobalPrefix('api');

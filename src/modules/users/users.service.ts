@@ -20,6 +20,7 @@ import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
 import { assertFound, constantTimeEquals } from '@shared/utils';
+import type { EnvironmentVariables } from '@config/env.validation';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
 
@@ -29,13 +30,13 @@ export class UsersService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
-    private readonly configService: ConfigService,
+    private readonly configService: ConfigService<EnvironmentVariables, true>,
     private readonly confirmationCodesService: ConfirmationCodesService,
     private readonly mailService: MailService,
   ) {}
 
   private generateAccessToken(user: User): string {
-    const jwtSecret = this.configService.getOrThrow<string>('JWT_SECRET');
+    const jwtSecret = this.configService.getOrThrow('JWT_SECRET', { infer: true });
     return jwt.sign({ id: user.id }, jwtSecret, { expiresIn: 60 * 60 * 24 * 90 });
   }
 

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ValidationError } from 'class-validator';
 
 import { formatValidationErrors, isSwaggerEnabled, parseTrustProxy } from './app.config';
+import type { EnvironmentVariables } from './config/env.validation';
 
 describe('parseTrustProxy', () => {
   it('defaults to false when unset', () => {
@@ -27,7 +28,7 @@ describe('parseTrustProxy', () => {
 
 describe('isSwaggerEnabled', () => {
   const buildConfigService = (values: Record<string, string | undefined>) =>
-    ({ get: jest.fn((key: string) => values[key]) }) as unknown as ConfigService;
+    ({ get: jest.fn((key: string) => values[key]) }) as unknown as ConfigService<EnvironmentVariables, true>;
 
   it('is disabled in production by default', () => {
     expect(isSwaggerEnabled(buildConfigService({ NODE_ENV: 'production' }))).toBe(false);
