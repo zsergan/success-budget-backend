@@ -1,7 +1,7 @@
 import { IsNotEmpty, IsOptional, IsString, IsDecimal, IsNumber, IsEnum, MaxLength } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
-import { IsIsoDate } from '@shared/decorators/is-iso-date.decorator';
+import { IsInTimestampRange, IsIsoDate } from '@shared/decorators/is-iso-date.decorator';
 
 export class CreateTransactionDto {
   @IsNotEmpty()
@@ -22,6 +22,7 @@ export class CreateTransactionDto {
 
   @IsNotEmpty()
   @IsIsoDate()
+  @IsInTimestampRange()
   timestamp: string;
 
   @IsOptional()

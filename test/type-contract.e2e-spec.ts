@@ -285,7 +285,7 @@ describe('Boundary type contract (e2e)', () => {
       expect(res.body.message).toEqual([{ field: 'to', error: 'to must be a valid ISO 8601 date' }]);
     });
 
-    it.each([null, 1700000000000, 'garbage', '2026-02-30', '2026-W03'])(
+    it.each([null, 1700000000000, 'garbage', '2026-02-30', '2026-W03', '2099-01-01T00:00:00Z', '1969-12-31'])(
       'rejects a transaction timestamp of %p without creating it',
       async (timestamp) => {
         const countTransactions = () =>
