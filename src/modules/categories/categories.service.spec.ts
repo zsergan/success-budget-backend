@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 
 import { CategoriesService } from './categories.service';
 import { Category } from '@entities/category.entity';
@@ -158,6 +158,19 @@ describe('CategoriesService', () => {
       await service.getMany([5, 5, 5]);
 
       expect(categoryRepository.find).toHaveBeenCalledWith({ where: { id: In([5]) } });
+    });
+
+    it('queries through the given entity manager instead of the injected repository', async () => {
+      const categories = [buildCategory({ id: 1 })];
+      const managerRepository = { find: jest.fn().mockResolvedValue(categories) };
+      const manager = { getRepository: jest.fn().mockReturnValue(managerRepository) } as unknown as EntityManager;
+
+      const result = await service.getMany([1], manager);
+
+      expect(manager.getRepository).toHaveBeenCalledWith(Category);
+      expect(managerRepository.find).toHaveBeenCalledWith({ where: { id: In([1]) } });
+      expect(categoryRepository.find).not.toHaveBeenCalled();
+      expect(result).toBe(categories);
     });
   });
 

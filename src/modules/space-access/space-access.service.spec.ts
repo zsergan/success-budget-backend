@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 
 import { SpaceAccessService } from './space-access.service';
 import { SpaceMember } from '@entities/space-member.entity';
@@ -63,6 +63,17 @@ describe('SpaceAccessService', () => {
       spaceMemberRepository.findOne.mockResolvedValue(null);
 
       await expect(service.assertMembership(10, 1, SpaceRole.OWNER)).rejects.toMatchObject(forbidden);
+    });
+
+    it('reads the membership through the given entity manager', async () => {
+      const member = buildSpaceMember({ role: SpaceRole.MEMBER });
+      const managerRepository = { findOne: jest.fn().mockResolvedValue(member) };
+      const manager = { getRepository: jest.fn().mockReturnValue(managerRepository) } as unknown as EntityManager;
+
+      await expect(service.assertMembership(10, 1, undefined, manager)).resolves.toBe(member);
+      expect(manager.getRepository).toHaveBeenCalledWith(SpaceMember);
+      expect(managerRepository.findOne).toHaveBeenCalledWith({ where: { space_id: 10, user_id: 1 } });
+      expect(spaceMemberRepository.findOne).not.toHaveBeenCalled();
     });
   });
 });

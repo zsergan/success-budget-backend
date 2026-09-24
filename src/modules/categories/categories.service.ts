@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
@@ -40,7 +40,7 @@ export class CategoriesService {
     return this.categoryRepository.findOne({ where: { id: categoryId } });
   }
 
-  async getMany(categoryIds: number[]): Promise<Category[]> {
+  async getMany(categoryIds: number[], manager?: EntityManager): Promise<Category[]> {
     // dedup is safe here - this is a read, and the caller's original id
     // list (order, duplicates) is never touched, only what we query with
     const uniqueIds = [...new Set(categoryIds)];
@@ -49,7 +49,9 @@ export class CategoriesService {
       return [];
     }
 
-    return this.categoryRepository.find({ where: { id: In(uniqueIds) } });
+    const repository = manager?.getRepository(Category) ?? this.categoryRepository;
+
+    return repository.find({ where: { id: In(uniqueIds) } });
   }
 
   async getAll(
