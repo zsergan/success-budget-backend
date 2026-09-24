@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { HttpException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
@@ -7,6 +8,7 @@ import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { User } from '@entities/user.entity';
 import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
 import { RetryAfterException } from '@shared/retry-after.exception';
+import { ErrorMessages } from '@shared/error-messages';
 import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS } from '@shared/constants';
 import { buildConfirmationCode } from '@testing';
 
@@ -157,6 +159,33 @@ describe('ConfirmationCodesService', () => {
         expiresAt: expect.any(Date),
         shouldSend: true,
         attemptId: 1,
+      });
+    });
+
+    it('rejects an email code for a user verified in the meantime without touching codes', async () => {
+      const confirmationCodeRepo = { create: jest.fn(), save: jest.fn(), update: jest.fn() };
+      const { userQueryBuilder, codeQueryBuilder } = mockManager(null, confirmationCodeRepo);
+      userQueryBuilder.getOne.mockResolvedValue({ id: 1, email_verified: 1 });
+
+      await expect(service.reserveSend(1, ConfirmationType.EMAIL)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
+      );
+      expect(userQueryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(codeQueryBuilder.getOne).not.toHaveBeenCalled();
+      expect(confirmationCodeRepo.save).not.toHaveBeenCalled();
+      expect(confirmationCodeRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('still reserves a non-email code for a verified user', async () => {
+      const confirmationCodeRepo = {
+        create: jest.fn((entity) => entity),
+        save: jest.fn((entity) => Promise.resolve({ ...entity, id: 42 })),
+      };
+      const { userQueryBuilder } = mockManager(null, confirmationCodeRepo);
+      userQueryBuilder.getOne.mockResolvedValue({ id: 1, email_verified: 1 });
+
+      await expect(service.reserveSend(1, ConfirmationType.RESET_PASSWORD)).resolves.toMatchObject({
+        shouldSend: true,
       });
     });
 

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
@@ -8,7 +8,7 @@ import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { RetryAfterException } from '@shared/retry-after.exception';
 import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS, CONFIRMATION_CODE_TTL_MS } from '@shared/constants';
-import { generateRandomNumberString } from '@shared/utils';
+import { assertFound, generateRandomNumberString } from '@shared/utils';
 
 export interface ReservedConfirmationCode {
   id: number;
@@ -83,11 +83,18 @@ export class ConfirmationCodesService {
   // have to account for confirmation_codes' historical rows.
   async reserveSend(userId: number, confirmationType: ConfirmationType): Promise<ReservedConfirmationCode> {
     return this.dataSource.transaction(async (manager) => {
-      await manager
+      const user = await manager
         .createQueryBuilder(User, 'user')
         .setLock('pessimistic_write')
         .where('user.id = :userId', { userId })
         .getOne();
+      assertFound(user);
+
+      // same answer registration gives for a verified account - a
+      // verification may have committed since the caller's own check
+      if (confirmationType === ConfirmationType.EMAIL && user.email_verified) {
+        throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+      }
 
       const existing = await this.lockActive(userId, confirmationType, manager);
 
