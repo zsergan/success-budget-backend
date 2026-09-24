@@ -21,7 +21,10 @@ export async function createTestApp(): Promise<TestApp> {
   const moduleFixture = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = moduleFixture.createNestApplication();
   configureApp(app);
-  await app.init();
+  // Bound once, to IPv4 loopback: supertest would otherwise listen(0) on every
+  // interface per request and dial 127.0.0.1, which on macOS can reach another
+  // local process that holds the same port number on 127.0.0.1 only.
+  await app.listen(0, '127.0.0.1');
 
   const dataSource = moduleFixture.get(DataSource);
   const throttlerStorage = moduleFixture.get<ThrottlerStorageService>(ThrottlerStorage);

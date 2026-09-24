@@ -36,7 +36,7 @@ describe('Confirmation code resend on SMTP failure (e2e)', () => {
 
     app = moduleFixture.createNestApplication();
     configureApp(app);
-    await app.init();
+    await app.listen(0, '127.0.0.1');
 
     dataSource = moduleFixture.get(DataSource);
     throttlerStorage = moduleFixture.get<ThrottlerStorageService>(ThrottlerStorage);

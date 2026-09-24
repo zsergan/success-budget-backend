@@ -36,7 +36,7 @@ describe('Space setup across registration, verification and space creation (e2e)
 
     app = moduleFixture.createNestApplication();
     configureApp(app);
-    await app.init();
+    await app.listen(0, '127.0.0.1');
 
     dataSource = moduleFixture.get(DataSource);
     usersService = moduleFixture.get(UsersService);

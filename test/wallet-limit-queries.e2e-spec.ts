@@ -58,7 +58,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
 
     app = moduleFixture.createNestApplication();
     configureApp(app);
-    await app.init();
+    await app.listen(0, '127.0.0.1');
 
     dataSource = moduleFixture.get(DataSource);
     transactionQueriesService = moduleFixture.get(TransactionQueriesService);
