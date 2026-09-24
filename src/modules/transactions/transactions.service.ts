@@ -59,6 +59,11 @@ export class TransactionsService {
 
     const balances = await this.transactionQueriesService.getBalances([wallet.id]);
     const previousBalance = balances.get(wallet.id) ?? 0n;
+    const amount = parseMoney(createTransactionDto.amount);
+    const balanceChange = createTransactionDto.transaction_type === TransactionType.INCOME ? amount : -amount;
+    // converted before saving, so a failed conversion leaves nothing written
+    const previousBalanceValue = moneyToNumber(previousBalance);
+    const balanceValue = moneyToNumber(previousBalance + balanceChange);
 
     const transaction = this.transactionRepository.create({
       wallet_id: createTransactionDto.wallet_id,
@@ -70,14 +75,10 @@ export class TransactionsService {
     });
     const savedTransaction = await this.transactionRepository.save(transaction);
 
-    const amount = parseMoney(createTransactionDto.amount);
-    const balanceChange = createTransactionDto.transaction_type === TransactionType.INCOME ? amount : -amount;
-    const walletWithBalance = Object.assign(wallet, { balance: moneyToNumber(previousBalance + balanceChange) });
-
     return {
       transaction: savedTransaction,
-      wallet: walletWithBalance,
-      previous_balance: moneyToNumber(previousBalance),
+      wallet: Object.assign(wallet, { balance: balanceValue }),
+      previous_balance: previousBalanceValue,
     };
   }
 
