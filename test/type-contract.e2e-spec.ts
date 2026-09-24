@@ -211,25 +211,95 @@ describe('Boundary type contract (e2e)', () => {
       expect(read.wallet.created_at).toMatch(ISO_DATE);
     });
 
-    it('passes query from/to through as raw strings, and defaults absent ones to Date', async () => {
+    it('converts query from/to to Date, and defaults absent ones to the current month', async () => {
       const spy = jest.spyOn(transactionQueriesService, 'getForAllWallets');
 
-      await api().get(`${base()}/transactions?from=2026-01-01&to=2026-01-31`).expect(200);
-      expect(spy).toHaveBeenLastCalledWith(spaceId, '2026-01-01', '2026-01-31');
+      await api().get(`${base()}/transactions?from=2026-01-01&to=2026-01-31T23:59:59.999`).expect(200);
+      expect(spy).toHaveBeenLastCalledWith(spaceId, new Date(2026, 0, 1), new Date(2026, 0, 31, 23, 59, 59, 999));
 
       await api().get(`${base()}/transactions`).expect(200);
-      const [, from, to] = spy.mock.lastCall!;
-      expect(from).toBeInstanceOf(Date);
-      expect(to).toBeInstanceOf(Date);
+      const now = new Date();
+      expect(spy.mock.lastCall).toEqual([
+        spaceId,
+        new Date(now.getFullYear(), now.getMonth(), 1),
+        new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+      ]);
     });
 
-    it.failing('rejects a malformed from with a 400', async () => {
-      await api().get(`${base()}/transactions?from=garbage`).expect(400);
+    it('keeps inclusive period boundaries for date-only, offset and millisecond values', async () => {
+      const wallet = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Period', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const periodWalletId = wallet.body.wallet.id;
+      const noonLocal = await createTransaction({ wallet_id: periodWalletId, timestamp: '2026-03-10T12:00:00' });
+      const exactUtc = await createTransaction({ wallet_id: periodWalletId, timestamp: '2026-03-12T08:00:00.250Z' });
+      expect(noonLocal.status).toBe(201);
+      expect(exactUtc.status).toBe(201);
+
+      const select = async (query: string): Promise<string[]> => {
+        const res = await api().get(`${base()}/transactions?${query}`).expect(200);
+
+        return res.body
+          .filter((transaction: { wallet: { id: number } }) => transaction.wallet.id === periodWalletId)
+          .map((transaction: { id: string }) => transaction.id)
+          .sort();
+      };
+      const noon = noonLocal.body.transaction.id;
+      const exact = exactUtc.body.transaction.id;
+
+      expect(await select('from=2026-03-10&to=2026-03-10')).toEqual([]);
+      expect(await select('from=2026-03-10&to=2026-03-11')).toEqual([noon]);
+      expect(await select('from=2026-03-10T12:00:00&to=2026-03-10T12:00:00')).toEqual([noon]);
+      expect(await select('from=2026-03-12T08:00:00.250Z&to=2026-03-12T08:00:00.250Z')).toEqual([exact]);
+      expect(await select('from=2026-03-12T08:00:00.251Z&to=2026-03-13')).toEqual([]);
+      expect(
+        await select(
+          `from=${encodeURIComponent('2026-03-12T11:00:00.250+03:00')}&to=${encodeURIComponent('2026-03-12T11:00:00.250+03:00')}`,
+        ),
+      ).toEqual([exact]);
+      expect(await select('from=2026-03-01&to=2026-03-31T23:59:59.999')).toEqual([noon, exact].sort());
     });
 
-    it.failing('rejects an empty from with a 400', async () => {
-      await api().get(`${base()}/wallets?from=`).expect(400);
+    it('normalizes a created transaction timestamp to ISO-8601 UTC, whatever offset it was sent with', async () => {
+      const created = await createTransaction({ timestamp: '2026-03-12T11:00:00.250+03:00' }).expect(201);
+
+      expect(created.body.transaction.timestamp).toBe('2026-03-12T08:00:00.250Z');
+      expect((await readTransaction(created.body.transaction.id)).timestamp).toBe('2026-03-12T08:00:00.250Z');
     });
+
+    it.each(['garbage', '', '2026-02-30', '2026-01', '1700000000000', 'from=2026-01-01&from=2026-01-02'])(
+      'rejects query from=%p on both period endpoints with a 400',
+      async (value) => {
+        const query = value.includes('=') ? value : `from=${value}`;
+
+        for (const path of ['transactions', 'wallets']) {
+          const res = await api().get(`${base()}/${path}?${query}`).expect(400);
+          expect(res.body.message).toEqual([{ field: 'from', error: 'from must be a valid ISO 8601 date' }]);
+        }
+      },
+    );
+
+    it('rejects a malformed to with a 400', async () => {
+      const res = await api().get(`${base()}/transactions?to=2026-01-01T25:00:00`).expect(400);
+      expect(res.body.message).toEqual([{ field: 'to', error: 'to must be a valid ISO 8601 date' }]);
+    });
+
+    it.each([null, 1700000000000, 'garbage', '2026-02-30', '2026-W03'])(
+      'rejects a transaction timestamp of %p without creating it',
+      async (timestamp) => {
+        const countTransactions = () =>
+          countRows(
+            'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
+            [spaceId],
+          );
+        const before = await countTransactions();
+
+        const res = await createTransaction({ timestamp }).expect(400);
+        expectFieldError(res, 'timestamp');
+        expect(await countTransactions()).toBe(before);
+      },
+    );
   });
 
   describe('missing values', () => {
