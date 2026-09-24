@@ -8,7 +8,7 @@ import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
-import { generateRandomNumberString, withRelations } from '@shared/utils';
+import { assertFound, generateRandomNumberString, withRelations } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
 import { SpacesService, type SpaceWithCurrency } from './spaces.service';
@@ -36,6 +36,7 @@ export class SpaceInvitesService {
   async create(userId: number, spaceId: number, email: string): Promise<CreatedSpaceInvite> {
     await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
     const space = await this.spacesService.getOne(spaceId);
+    assertFound(space);
 
     if (space.type === SpaceType.PERSONAL) {
       throw new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, HttpStatus.BAD_REQUEST);
@@ -83,8 +84,9 @@ export class SpaceInvitesService {
     await this.spaceInviteRepository.update(invite.id, { revoked_at: new Date() });
   }
 
-  async accept(userId: number, code: string): Promise<SpaceWithCurrency | null> {
+  async accept(userId: number, code: string): Promise<SpaceWithCurrency> {
     const user = await this.usersService.findById(userId);
+    assertFound(user);
 
     const invite = await this.spaceInviteRepository.findOne({
       where: {
@@ -120,7 +122,9 @@ export class SpaceInvitesService {
         .getRepository(Space)
         .findOne({ where: { id: invite.space_id }, relations: { currency: true } });
 
-      return space && withRelations(space, 'currency');
+      assertFound(space);
+
+      return withRelations(space, 'currency');
     });
   }
 }

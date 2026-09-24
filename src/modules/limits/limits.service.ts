@@ -7,7 +7,7 @@ import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace, getEndOfMonth, getStartOfMonth, withRelations } from '@shared/utils';
+import { assertBelongsToSpace, assertFound, getEndOfMonth, getStartOfMonth, withRelations } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -54,7 +54,7 @@ export class LimitsService {
     return this.calculateSpending(limits, categoryTotals);
   }
 
-  async create(userId: number, spaceId: number, createLimit: CreateLimitDto) {
+  async create(userId: number, spaceId: number, createLimit: CreateLimitDto): Promise<LimitWithCategories> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
     await this.assertCategoriesOwnership(spaceId, createLimit.category_ids);
 
@@ -79,10 +79,15 @@ export class LimitsService {
       await this.limitRepository.createQueryBuilder().relation('categories').of(saved.id).add(categoryIds);
     }
 
-    return this.getOne(saved.id);
+    return this.getExisting(saved.id);
   }
 
-  async update(userId: number, spaceId: number, limitId: number, updateLimit: UpdateLimitDto) {
+  async update(
+    userId: number,
+    spaceId: number,
+    limitId: number,
+    updateLimit: UpdateLimitDto,
+  ): Promise<LimitWithCategories> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
     const currentLimit = await this.getSpaceLimit(spaceId, limitId);
@@ -129,7 +134,7 @@ export class LimitsService {
       }
     }
 
-    return this.getOne(limitId);
+    return this.getExisting(limitId);
   }
 
   async remove(userId: number, spaceId: number, limitId: number): Promise<void> {
@@ -185,6 +190,13 @@ export class LimitsService {
         color: category.color,
       })),
     };
+  }
+
+  private async getExisting(limitId: number): Promise<LimitWithCategories> {
+    const limit = await this.getOne(limitId);
+    assertFound(limit);
+
+    return limit;
   }
 
   private async getSpaceLimit(spaceId: number, limitId: number): Promise<LimitWithCategories> {

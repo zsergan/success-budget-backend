@@ -18,7 +18,7 @@ describe('UsersController', () => {
             registerAndSendConfirmation: jest.fn(),
             verifyEmail: jest.fn(),
             login: jest.fn(),
-            findById: jest.fn(),
+            getProfile: jest.fn(),
           },
         },
       ],
@@ -57,9 +57,9 @@ describe('UsersController', () => {
 
   it('getProfile returns the authenticated user by id from the request', async () => {
     const user = { id: 1, email: 'a@b.com' } as any;
-    usersService.findById.mockResolvedValue(user);
+    usersService.getProfile.mockResolvedValue(user);
 
     await expect(controller.getProfile({ user: { id: 1 } } as any)).resolves.toBe(user);
-    expect(usersService.findById).toHaveBeenCalledWith(1);
+    expect(usersService.getProfile).toHaveBeenCalledWith(1);
   });
 });

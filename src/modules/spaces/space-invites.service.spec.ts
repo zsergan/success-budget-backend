@@ -81,6 +81,15 @@ describe('SpaceInvitesService', () => {
       expect(spaceInviteRepository.save).not.toHaveBeenCalled();
     });
 
+    it('returns 404 when the space is gone after the membership check', async () => {
+      spacesService.getOne.mockResolvedValue(null);
+
+      await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(
+        new HttpException(ErrorMessages.NOT_FOUND, 404),
+      );
+      expect(spaceInviteRepository.save).not.toHaveBeenCalled();
+    });
+
     it('rejects inviting into a personal space', async () => {
       spacesService.getOne.mockResolvedValue({ id: 1, type: SpaceType.PERSONAL } as Space);
 
@@ -148,6 +157,13 @@ describe('SpaceInvitesService', () => {
   });
 
   describe('accept', () => {
+    it('returns 404 when the caller no longer exists', async () => {
+      usersService.findById.mockResolvedValue(null);
+
+      await expect(service.accept(2, '123456')).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+      expect(spaceInviteRepository.findOne).not.toHaveBeenCalled();
+    });
+
     it('rejects when no active invite matches the code and caller email', async () => {
       spaceInviteRepository.findOne.mockResolvedValue(null);
 

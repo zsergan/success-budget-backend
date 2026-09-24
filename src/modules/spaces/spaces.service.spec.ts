@@ -230,6 +230,12 @@ describe('SpacesService', () => {
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1);
       expect(spaceRepository.findOne).toHaveBeenCalledWith({ where: { id: 10 }, relations: { currency: true } });
     });
+
+    it('returns 404 when the space is gone after the membership check', async () => {
+      spaceRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.getForMember(1, 10)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+    });
   });
 
   describe('remove', () => {

@@ -421,6 +421,21 @@ describe('UsersService', () => {
     });
   });
 
+  describe('getProfile', () => {
+    it('returns the user', async () => {
+      const user = { id: 1, email: 'a@b.com' } as User;
+      repository.findOne.mockResolvedValue(user);
+
+      await expect(service.getProfile(1)).resolves.toBe(user);
+    });
+
+    it('returns 404 when the user no longer exists', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(service.getProfile(1)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+    });
+  });
+
   describe('findById', () => {
     it('looks up the user by id', async () => {
       const user = { id: 1, email: 'a@b.com' } as User;

@@ -9,7 +9,7 @@ import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
-import { generateRandomNumberString, withRelations } from '@shared/utils';
+import { assertFound, generateRandomNumberString, withRelations } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
@@ -37,7 +37,7 @@ export class SpacesService {
     private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
-  async create(userId: number, dto: CreateSpaceDto): Promise<SpaceWithCurrency | null> {
+  async create(userId: number, dto: CreateSpaceDto): Promise<SpaceWithCurrency> {
     const invites = dto.invites ?? [];
 
     if (dto.type === SpaceType.PERSONAL && invites.length) {
@@ -72,7 +72,7 @@ export class SpacesService {
       return space.id;
     });
 
-    return this.getOne(spaceId);
+    return this.getExisting(spaceId);
   }
 
   async getAllForUser(userId: number): Promise<SpaceListItem[]> {
@@ -100,15 +100,23 @@ export class SpacesService {
     const countBySpaceId = new Map(counts.map((row) => [Number(row.space_id), Number(row.count)]));
     const roleBySpaceId = new Map(memberships.map((membership) => [membership.space_id, membership.role]));
 
-    return spaces.map((space) => ({
-      id: space.id,
-      name: space.name,
-      type: space.type,
-      currency: { id: space.currency.id, code: space.currency.code, name: space.currency.name },
-      role: roleBySpaceId.get(space.id),
-      member_count: countBySpaceId.get(space.id) ?? 0,
-      created_at: space.created_at,
-    }));
+    return spaces.flatMap((space) => {
+      const role = roleBySpaceId.get(space.id);
+
+      if (role === undefined) {
+        return [];
+      }
+
+      return {
+        id: space.id,
+        name: space.name,
+        type: space.type,
+        currency: { id: space.currency.id, code: space.currency.code, name: space.currency.name },
+        role,
+        member_count: countBySpaceId.get(space.id) ?? 0,
+        created_at: space.created_at,
+      };
+    });
   }
 
   async getOne(spaceId: number): Promise<SpaceWithCurrency | null> {
@@ -117,10 +125,10 @@ export class SpacesService {
     return space && withRelations(space, 'currency');
   }
 
-  async getForMember(userId: number, spaceId: number): Promise<SpaceWithCurrency | null> {
+  async getForMember(userId: number, spaceId: number): Promise<SpaceWithCurrency> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    return this.getOne(spaceId);
+    return this.getExisting(spaceId);
   }
 
   async remove(userId: number, spaceId: number): Promise<void> {
@@ -141,5 +149,12 @@ export class SpacesService {
       await manager.getRepository(SpaceMember).delete({ space_id: spaceId });
       await manager.getRepository(Space).delete(spaceId);
     });
+  }
+
+  private async getExisting(spaceId: number): Promise<SpaceWithCurrency> {
+    const space = await this.getOne(spaceId);
+    assertFound(space);
+
+    return space;
   }
 }

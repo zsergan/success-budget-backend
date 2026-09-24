@@ -9,7 +9,7 @@ import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace } from '@shared/utils';
+import { assertBelongsToSpace, assertFound } from '@shared/utils';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import {
@@ -50,8 +50,8 @@ export class WalletsService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async getOne(walletId: number): Promise<Wallet> {
-    return await this.walletRepository.findOne({ where: { id: walletId } });
+  async getOne(walletId: number): Promise<Wallet | null> {
+    return this.walletRepository.findOne({ where: { id: walletId } });
   }
 
   async getAll(spaceId: number): Promise<Wallet[]> {
@@ -153,6 +153,8 @@ export class WalletsService {
     balances: Map<number, number>,
   ): Promise<WalletsOverview> {
     const space = await this.spacesService.getOne(spaceId);
+    assertFound(space);
+
     const wallets = walletRows.map((wallet) => Object.assign(wallet, { balance: balances.get(wallet.id) ?? 0 }));
 
     const total_balance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
