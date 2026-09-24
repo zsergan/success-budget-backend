@@ -3,8 +3,9 @@
 Actual runtime types at the HTTP and MySQL boundaries, observed through the
 real `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`, no
 implicit conversion) and the `mysql2` driver as configured by TypeORM.
-Executable checks: `test/type-contract.e2e-spec.ts`. The one remaining
-**gap** (mixed amount types across responses) is kept for API compatibility.
+Executable checks: `test/type-contract.e2e-spec.ts`. The mixed amount types
+across responses are a **gap** kept for API compatibility; the money rules
+below list what is not enforced yet.
 
 ## Money
 
@@ -23,6 +24,36 @@ The same transaction amount still leaves the API as a number, the echoed
 input string, or a normalized DECIMAL string depending on the endpoint
 (**gap**, kept for API compatibility). The arithmetic itself (float
 `Number()` sums) is out of scope here.
+
+### Money rules
+
+These rules apply to every request amount: transaction `amount`, limit
+`amount` (create and update) and wallet `initial_balance`.
+
+| Rule   | Accepted                                                                  | Rejected (400)                                                    |
+| ------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Type   | decimal `string`                                                          | JSON number, `null` for a required field                          |
+| Format | digits, optionally `.` and one or two digits: `"12"`, `"12.3"`, `"12.30"` | sign (`"-1"`, `"+1"`), `".5"`, `"5."`, exponent, whitespace       |
+| Scale  | at most two decimal places                                                | `"1.234"`, `"1.230"`; extra digits are never rounded or truncated |
+| Range  | `0` to `99999999.99` inclusive (`DECIMAL(10,2)`), `"0"` included          | `"100000000"` and anything above                                  |
+
+Computed values are not request amounts: `wallet.balance`, `previous_balance`
+and `total_balance` may be negative, and sums may exceed the per-amount range.
+
+Percentages are computed from the exact decimal amounts, not from float
+products, so `29.00` spent of `100.00` is 29, never 28.
+
+| Field                      | Rounding                                                                                                                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /limits` `in_percent` | `floor(spent / amount * 100)` to an integer, not capped at 100; `0` when the limit amount is `0`                                                                                                           |
+| `delta_percent`            | `net / balance at period start * 100` to one decimal place, halves toward positive infinity (`2.25` → `2.3`, `-2.25` → `-2.2`); `0` when the start balance is `0`; a negative start balance flips the sign |
+
+Response field types stay as listed in the table above.
+
+**Gaps** until the rules are enforced: transaction and limit amounts accept a
+sign; all amounts accept extra decimal places and values above the range, so
+MySQL rounds or rejects them; `in_percent` is floored from a float product
+(`29.00` of `100.00` gives 28).
 
 ## Dates
 
