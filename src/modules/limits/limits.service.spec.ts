@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 
 import { LimitsService } from './limits.service';
 import { Limit } from '@entities/limit.entity';
+import type { Category } from '@entities/category.entity';
 import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { CategoriesService } from '@modules/categories/categories.service';
@@ -161,7 +162,7 @@ describe('LimitsService', () => {
     });
 
     it('switches a total limit to a single-category limit', async () => {
-      const current = { id: 1, space_id: 1, name: null, categories: [] } as Limit;
+      const current = { id: 1, space_id: 1, name: null, categories: [] as Category[] } as Limit;
       repository.findOne.mockResolvedValue(current);
 
       await service.update(userId, 1, 1, { category_ids: [7] } as any);
@@ -208,7 +209,7 @@ describe('LimitsService', () => {
 
   describe('remove', () => {
     it('deletes the limit by id', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, space_id: 1, categories: [] } as Limit);
+      repository.findOne.mockResolvedValue({ id: 1, space_id: 1, categories: [] as Category[] } as Limit);
 
       await service.remove(userId, 1, 1);
 

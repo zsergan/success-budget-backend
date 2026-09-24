@@ -6,24 +6,24 @@ import { IsInTimestampRange, IsIsoDate } from '@shared/decorators/is-iso-date.de
 export class CreateTransactionDto {
   @IsNotEmpty()
   @IsNumber()
-  wallet_id: number;
+  wallet_id!: number;
 
   @IsNotEmpty()
   @IsNumber()
-  category_id: number;
+  category_id!: number;
 
   @IsNotEmpty()
   @IsEnum(TransactionType)
-  transaction_type: TransactionType;
+  transaction_type!: TransactionType;
 
   @IsNotEmpty()
   @IsDecimal()
-  amount: string;
+  amount!: string;
 
   @IsNotEmpty()
   @IsIsoDate()
   @IsInTimestampRange()
-  timestamp: string;
+  timestamp!: string;
 
   @IsOptional()
   @IsString()

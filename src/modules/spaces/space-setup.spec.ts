@@ -55,8 +55,8 @@ describe('space setup', () => {
       expect(categoryRepository.save).toHaveBeenCalledTimes(1);
       const [saved] = categoryRepository.save.mock.calls[0];
       expect(saved).toHaveLength(DEFAULT_CATEGORIES.length + 1);
-      expect(saved.every((category) => category.space_id === 10)).toBe(true);
-      expect(saved.filter((category) => category.is_system === 1)).toEqual([
+      expect(saved.every((category: Category) => category.space_id === 10)).toBe(true);
+      expect(saved.filter((category: Category) => category.is_system === 1)).toEqual([
         { ...INITIAL_BALANCE_CATEGORY, space_id: 10 },
       ]);
     });

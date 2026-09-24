@@ -4,10 +4,10 @@ export class VerifyUserDto {
   @IsNotEmpty()
   @IsEmail()
   @MaxLength(255)
-  email: string;
+  email!: string;
 
   @IsNotEmpty()
   @IsString()
   @MaxLength(6)
-  code: string;
+  code!: string;
 }

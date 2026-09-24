@@ -7,38 +7,38 @@ import { SpaceRole } from '@shared/enums';
 @Entity('space_invites')
 export class SpaceInvite {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  space_id: number;
+  space_id!: number;
 
   @Column({ type: 'varchar', length: 255 })
-  email: string;
+  email!: string;
 
   @Exclude()
   @Column({ type: 'varchar', length: 6 })
-  code: string;
+  code!: string;
 
   @Column({ type: 'enum', enum: SpaceRole, default: SpaceRole.MEMBER })
-  role: SpaceRole;
+  role!: SpaceRole;
 
   @Exclude()
   @Column({ type: 'timestamp' })
-  expires_at: Date;
+  expires_at!: Date;
 
   @Exclude()
   @Column({ type: 'timestamp', nullable: true })
-  accepted_at: Date | null;
+  accepted_at!: Date | null;
 
   @Exclude()
   @Column({ type: 'timestamp', nullable: true })
-  revoked_at: Date | null;
+  revoked_at!: Date | null;
 
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
   space?: Space;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 }

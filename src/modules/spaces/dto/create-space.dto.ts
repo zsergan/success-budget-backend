@@ -7,15 +7,15 @@ export class CreateSpaceDto {
   @IsNotEmpty()
   @IsString()
   @MaxLength(255)
-  name: string;
+  name!: string;
 
   @IsNotEmpty()
   @IsInt()
-  currency_id: number;
+  currency_id!: number;
 
   @IsNotEmpty()
   @IsEnum(SpaceType)
-  type: SpaceType;
+  type!: SpaceType;
 
   @IsOptionalNonNull()
   @IsArray()

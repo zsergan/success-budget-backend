@@ -218,7 +218,7 @@ describe('TransactionsService', () => {
 
       const result = await service.getLatest(userId, spaceId);
 
-      expect(result.wallet).toBeNull();
+      expect(result?.wallet).toBeNull();
     });
 
     it('keeps the wallet when it is active', async () => {
@@ -226,7 +226,7 @@ describe('TransactionsService', () => {
 
       const result = await service.getLatest(userId, spaceId);
 
-      expect(result.wallet).toEqual({ id: 1, is_deleted: 0 });
+      expect(result?.wallet).toEqual({ id: 1, is_deleted: 0 });
     });
   });
 

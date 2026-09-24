@@ -4,5 +4,5 @@ export class ReorderCategoriesDto {
   @IsArray()
   @ArrayNotEmpty()
   @IsInt({ each: true })
-  category_ids: number[];
+  category_ids!: number[];
 }

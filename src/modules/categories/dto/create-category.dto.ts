@@ -5,17 +5,17 @@ export class CreateCategoryDto {
   @IsNotEmpty()
   @IsString()
   @MaxLength(20)
-  name: string;
+  name!: string;
 
   @IsNotEmpty()
   @IsEnum(TransactionType)
-  transaction_type: TransactionType;
+  transaction_type!: TransactionType;
 
   @IsNotEmpty()
   @IsEnum(CategoryIcon)
-  icon: CategoryIcon;
+  icon!: CategoryIcon;
 
   @IsNotEmpty()
   @IsEnum(AppColor)
-  color: AppColor;
+  color!: AppColor;
 }

@@ -5,17 +5,17 @@ import * as bcrypt from 'bcrypt';
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Column({ type: 'varchar', length: 255 })
-  email: string;
+  email!: string;
 
   @Column({ type: 'varchar', length: 255 })
-  name: string;
+  name!: string;
 
   @Exclude()
   @Column({ type: 'varchar', length: 255 })
-  password: string;
+  password!: string;
 
   @BeforeInsert()
   async hashPassword() {
@@ -24,11 +24,11 @@ export class User {
 
   @Exclude()
   @Column({ type: 'tinyint', default: 0 })
-  email_verified: number;
+  email_verified!: number;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'timestamp' })
-  updated_at: Date;
+  updated_at!: Date;
 }
