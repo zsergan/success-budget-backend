@@ -323,14 +323,14 @@ describe('ConfirmationCodesService', () => {
   });
 
   describe('expire', () => {
-    it('sets expired_at back to created_at through the given manager', async () => {
+    it('moves expired_at at least a second into the past through the given manager', async () => {
       const managerRepository = { update: jest.fn() };
       const manager = { getRepository: jest.fn().mockReturnValue(managerRepository) } as unknown as EntityManager;
-
       await service.expire(5, manager);
+      const after = Date.now();
 
-      expect(managerRepository.update).toHaveBeenCalledWith(5, { expired_at: expect.any(Function) });
-      expect(managerRepository.update.mock.calls[0][1].expired_at()).toBe('created_at');
+      expect(managerRepository.update).toHaveBeenCalledWith(5, { expired_at: expect.any(Date) });
+      expect(managerRepository.update.mock.calls[0][1].expired_at.getTime()).toBeLessThanOrEqual(after - 1000);
       expect(repository.update).not.toHaveBeenCalled();
     });
   });

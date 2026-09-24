@@ -175,10 +175,10 @@ export class ConfirmationCodesService {
     await manager.getRepository(ConfirmationCode).increment({ id }, 'attempts', 1);
   }
 
-  // created_at rather than now: expired_at is a second-precision timestamp,
-  // and a rounded-up "now" would keep the code active for the rest of that
-  // second.
+  // A second in the past, not now: expired_at is a second-precision
+  // timestamp and MySQL rounds fractional seconds, so "now" can be stored up
+  // to half a second ahead and keep the code active until then.
   async expire(id: number, manager: EntityManager): Promise<void> {
-    await manager.getRepository(ConfirmationCode).update(id, { expired_at: () => 'created_at' });
+    await manager.getRepository(ConfirmationCode).update(id, { expired_at: new Date(Date.now() - 1000) });
   }
 }
