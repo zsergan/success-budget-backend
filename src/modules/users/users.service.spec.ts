@@ -17,16 +17,18 @@ import { MailService } from '@modules/mail/mail.service';
 import { RetryAfterException } from '@shared/retry-after.exception';
 import { ErrorMessages } from '@shared/error-messages';
 import { ConfirmationType, SpaceRole, SpaceType } from '@shared/enums';
+import type { CreateUserDto } from './dto/create-user.dto';
+import { buildConfigService, buildConfirmationCode, buildUser } from '@testing';
 
-const JWT_SECRET_FOR_TESTS = 'test-secret';
+const JWT_SECRET_FOR_TESTS = 'test-secret-value';
 
+const mockCompare = jest.fn<Promise<boolean>, [string, string]>();
+const mockHash = jest.fn<Promise<string>, [string, number]>();
 jest.mock('bcrypt', () => ({
-  compare: jest.fn(),
-  hash: jest.fn(),
-  hashSync: jest.fn().mockReturnValue('dummy-password-hash'),
+  compare: (...args: [string, string]) => mockCompare(...args),
+  hash: (...args: [string, number]) => mockHash(...args),
+  hashSync: () => 'dummy-password-hash',
 }));
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const bcrypt = require('bcrypt') as { compare: jest.Mock; hash: jest.Mock; hashSync: jest.Mock };
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -39,7 +41,7 @@ describe('UsersService', () => {
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; findOneOrFail: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
-  let mailService: { sendConfirmationCode: jest.Mock };
+  let mailService: jest.Mocked<Pick<MailService, 'sendConfirmationCode'>>;
   let inTransaction: boolean;
 
   beforeEach(async () => {
@@ -86,7 +88,7 @@ describe('UsersService', () => {
           useValue: { findOne: jest.fn(), update: jest.fn() },
         },
         { provide: DataSource, useValue: dataSource },
-        { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue(JWT_SECRET_FOR_TESTS) } },
+        { provide: ConfigService, useValue: buildConfigService({ JWT_SECRET: JWT_SECRET_FOR_TESTS }) },
         {
           provide: ConfirmationCodesService,
           useValue: {
@@ -113,7 +115,7 @@ describe('UsersService', () => {
 
   describe('register', () => {
     it('creates the user, a personal space, and an owner membership in one transaction', async () => {
-      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+      const dto: CreateUserDto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 };
       userRepositoryInTx.save.mockResolvedValue({ id: 1, email: 'a@b.com', name: 'A' });
       spaceRepositoryInTx.save.mockResolvedValue({ id: 10 });
 
@@ -135,14 +137,14 @@ describe('UsersService', () => {
 
   describe('updateUnverified', () => {
     it('re-hashes the password, updates the personal space currency, and returns the refreshed user', async () => {
-      const dto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 2 } as any;
-      bcrypt.hash.mockResolvedValue('hashed-newpw');
+      const dto: CreateUserDto = { email: 'a@b.com', name: 'New Name', password: 'newpw', base_currency_id: 2 };
+      mockHash.mockResolvedValue('hashed-newpw');
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
-      repository.findOne.mockResolvedValue({ id: 4, name: 'New Name' } as User);
+      repository.findOne.mockResolvedValue(buildUser({ id: 4, name: 'New Name' }));
 
       const result = await service.updateUnverified(4, dto);
 
-      expect(bcrypt.hash).toHaveBeenCalledWith('newpw', 10);
+      expect(mockHash).toHaveBeenCalledWith('newpw', 10);
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(4, { name: 'New Name', password: 'hashed-newpw' });
       expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 4 } });
       expect(spaceRepositoryInTx.update).toHaveBeenCalledWith(20, { currency_id: 2 });
@@ -151,7 +153,7 @@ describe('UsersService', () => {
   });
 
   describe('registerAndSendConfirmation', () => {
-    const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+    const dto: CreateUserDto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 };
     const reservation = (overrides = {}) => ({
       id: 9,
       code: '123456',
@@ -182,7 +184,7 @@ describe('UsersService', () => {
     });
 
     it('does not resend an email when the reservation reports it was already sent', async () => {
-      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue({ id: 2, email: 'a@b.com' } as User);
+      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue(buildUser({ id: 2, email: 'a@b.com' }));
       confirmationCodesService.reserveSend.mockResolvedValue(reservation({ shouldSend: false, attemptId: 1 }));
 
       await service.registerAndSendConfirmation(dto);
@@ -193,7 +195,7 @@ describe('UsersService', () => {
     });
 
     it('stops before reserving a send when the email already belongs to a verified user', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, email_verified: 1 } as User);
+      repository.findOne.mockResolvedValue(buildUser({ id: 1, email_verified: 1 }));
 
       await expect(service.registerAndSendConfirmation(dto)).rejects.toMatchObject(
         new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
@@ -202,7 +204,7 @@ describe('UsersService', () => {
     });
 
     it('propagates a 429 with a retry delay when a send attempt is still in its cooldown', async () => {
-      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue({ id: 2, email: 'a@b.com' } as User);
+      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue(buildUser({ id: 2, email: 'a@b.com' }));
       confirmationCodesService.reserveSend.mockRejectedValue(
         new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, 42),
       );
@@ -212,7 +214,7 @@ describe('UsersService', () => {
     });
 
     it('marks this attempt failed and propagates a controlled error when email delivery fails', async () => {
-      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue({ id: 2, email: 'a@b.com' } as User);
+      jest.spyOn(service, 'registerOrRefresh').mockResolvedValue(buildUser({ id: 2, email: 'a@b.com' }));
       confirmationCodesService.reserveSend.mockResolvedValue(reservation({ attemptId: 5 }));
       mailService.sendConfirmationCode.mockRejectedValue(new HttpException('Could not send', 503));
 
@@ -226,16 +228,16 @@ describe('UsersService', () => {
 
   describe('registerOrRefresh', () => {
     it('rejects when the email already belongs to a verified user', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, email_verified: 1 } as User);
+      repository.findOne.mockResolvedValue(buildUser({ id: 1, email_verified: 1 }));
 
-      await expect(service.registerOrRefresh({ email: 'a@b.com' } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
-      );
+      await expect(
+        service.registerOrRefresh({ email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 }),
+      ).rejects.toMatchObject(new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400));
     });
 
     it('creates a new user when none exists yet', async () => {
       repository.findOne.mockResolvedValue(null);
-      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
+      const dto: CreateUserDto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 };
       userRepositoryInTx.save.mockResolvedValue({ id: 2, email: 'a@b.com', name: 'A' });
       spaceRepositoryInTx.save.mockResolvedValue({ id: 10 });
 
@@ -246,12 +248,12 @@ describe('UsersService', () => {
     });
 
     it('refreshes an existing unverified user instead of creating a duplicate', async () => {
-      const existing = { id: 3, email: 'a@b.com', email_verified: 0 } as User;
-      repository.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce({ id: 3, name: 'New' } as User);
-      bcrypt.hash.mockResolvedValue('hashed');
+      const existing = buildUser({ id: 3, email: 'a@b.com', email_verified: 0 });
+      repository.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce(buildUser({ id: 3, name: 'New' }));
+      mockHash.mockResolvedValue('hashed');
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
 
-      const dto = { email: 'a@b.com', name: 'New', password: 'newpw', base_currency_id: 1 } as any;
+      const dto: CreateUserDto = { email: 'a@b.com', name: 'New', password: 'newpw', base_currency_id: 1 };
       const result = await service.registerOrRefresh(dto);
 
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(3, expect.objectContaining({ name: 'New' }));
@@ -261,7 +263,7 @@ describe('UsersService', () => {
 
   describe('completeEmailVerification', () => {
     it('marks the user verified, expires the code, provisions defaults, and returns a token in one transaction', async () => {
-      const user = { id: 1 } as User;
+      const user = buildUser({ id: 1 });
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.create.mockReturnValue({ id: 10 });
@@ -286,7 +288,7 @@ describe('UsersService', () => {
     });
 
     it('skips the confirmation-code update when no id is given (the seed flow)', async () => {
-      const user = { id: 1 } as User;
+      const user = buildUser({ id: 1 });
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.create.mockReturnValue({ id: 10 });
@@ -297,7 +299,7 @@ describe('UsersService', () => {
     });
 
     it('propagates a failure from inside the transaction instead of returning a token', async () => {
-      const user = { id: 1 } as User;
+      const user = buildUser({ id: 1 });
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
@@ -310,35 +312,39 @@ describe('UsersService', () => {
     it('rejects when the user does not exist', async () => {
       repository.findOne.mockResolvedValue(null);
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.NOT_FOUND, 404),
       );
     });
 
     it('rejects when there is no active confirmation code', async () => {
-      repository.findOne.mockResolvedValue({ id: 1 } as User);
+      repository.findOne.mockResolvedValue(buildUser({ id: 1 }));
       confirmationCodesService.getOne.mockResolvedValue(null);
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.NOT_FOUND, 404),
       );
     });
 
     it('rejects when the code does not match and records the failed attempt', async () => {
-      repository.findOne.mockResolvedValue({ id: 1 } as User);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 0 } as any);
+      repository.findOne.mockResolvedValue(buildUser({ id: 1 }));
+      confirmationCodesService.getOne.mockResolvedValue(
+        buildConfirmationCode({ id: 7, confirmation_code: '9999', attempts: 0 }),
+      );
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
       );
       expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7);
     });
 
     it('rejects and expires the code once the attempt limit is reached', async () => {
-      repository.findOne.mockResolvedValue({ id: 1 } as User);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '9999', attempts: 5 } as any);
+      repository.findOne.mockResolvedValue(buildUser({ id: 1 }));
+      confirmationCodesService.getOne.mockResolvedValue(
+        buildConfirmationCode({ id: 7, confirmation_code: '9999', attempts: 5 }),
+      );
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
+      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, 429),
       );
       expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
@@ -346,14 +352,14 @@ describe('UsersService', () => {
     });
 
     it('completes email verification on a matching code', async () => {
-      const user = { id: 1 } as User;
+      const user = buildUser({ id: 1 });
       repository.findOne.mockResolvedValue(user);
-      confirmationCodesService.getOne.mockResolvedValue({ id: 7, confirmation_code: '1234' } as any);
+      confirmationCodesService.getOne.mockResolvedValue(buildConfirmationCode({ id: 7, confirmation_code: '1234' }));
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.create.mockReturnValue({ id: 10 });
 
-      const token = await service.verifyEmail({ email: 'x@x.com', code: '1234' } as any);
+      const token = await service.verifyEmail({ email: 'x@x.com', code: '1234' });
 
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
       const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
@@ -365,55 +371,55 @@ describe('UsersService', () => {
     it('rejects when no user matches the email', async () => {
       repository.findOne.mockResolvedValue(null);
 
-      await expect(service.login({ email: 'missing@x.com', password: 'pw' } as any)).rejects.toMatchObject(
+      await expect(service.login({ email: 'missing@x.com', password: 'pw' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
       );
     });
 
     it('still runs a bcrypt comparison when no user matches, to avoid a timing side-channel', async () => {
       repository.findOne.mockResolvedValue(null);
-      bcrypt.compare.mockResolvedValue(false);
+      mockCompare.mockResolvedValue(false);
 
-      await expect(service.login({ email: 'missing@x.com', password: 'pw' } as any)).rejects.toMatchObject(
+      await expect(service.login({ email: 'missing@x.com', password: 'pw' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
       );
 
-      expect(bcrypt.compare).toHaveBeenCalledWith('pw', 'dummy-password-hash');
+      expect(mockCompare).toHaveBeenCalledWith('pw', 'dummy-password-hash');
     });
 
     it('rejects when the password does not match', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, password: 'hashed' } as User);
-      bcrypt.compare.mockResolvedValue(false);
+      repository.findOne.mockResolvedValue(buildUser({ id: 1, password: 'hashed' }));
+      mockCompare.mockResolvedValue(false);
 
-      await expect(service.login({ email: 'a@b.com', password: 'wrong' } as any)).rejects.toMatchObject(
+      await expect(service.login({ email: 'a@b.com', password: 'wrong' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
       );
     });
 
     it('rejects when the email is not verified yet', async () => {
-      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 0 } as User);
-      bcrypt.compare.mockResolvedValue(true);
+      repository.findOne.mockResolvedValue(buildUser({ id: 3, password: 'hashed', email_verified: 0 }));
+      mockCompare.mockResolvedValue(true);
 
-      await expect(service.login({ email: 'a@b.com', password: 'right' } as any)).rejects.toMatchObject(
+      await expect(service.login({ email: 'a@b.com', password: 'right' })).rejects.toMatchObject(
         new HttpException(ErrorMessages.EMAIL_NOT_VERIFIED, 403),
       );
     });
 
     it('returns an access token on valid credentials for a verified user', async () => {
-      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 1 } as User);
-      bcrypt.compare.mockResolvedValue(true);
+      repository.findOne.mockResolvedValue(buildUser({ id: 3, password: 'hashed', email_verified: 1 }));
+      mockCompare.mockResolvedValue(true);
 
-      const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
+      const token = await service.login({ email: 'a@b.com', password: 'right' });
 
       const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
       expect(decoded.id).toBe(3);
     });
 
     it('sets a ~90 day expiry, not 90000 days', async () => {
-      repository.findOne.mockResolvedValue({ id: 3, password: 'hashed', email_verified: 1 } as User);
-      bcrypt.compare.mockResolvedValue(true);
+      repository.findOne.mockResolvedValue(buildUser({ id: 3, password: 'hashed', email_verified: 1 }));
+      mockCompare.mockResolvedValue(true);
 
-      const token = await service.login({ email: 'a@b.com', password: 'right' } as any);
+      const token = await service.login({ email: 'a@b.com', password: 'right' });
 
       const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number; exp: number; iat: number };
       const ninetyDaysInSeconds = 60 * 60 * 24 * 90;
@@ -423,7 +429,7 @@ describe('UsersService', () => {
 
   describe('getProfile', () => {
     it('returns the user', async () => {
-      const user = { id: 1, email: 'a@b.com' } as User;
+      const user = buildUser({ id: 1, email: 'a@b.com' });
       repository.findOne.mockResolvedValue(user);
 
       await expect(service.getProfile(1)).resolves.toBe(user);
@@ -438,7 +444,7 @@ describe('UsersService', () => {
 
   describe('findById', () => {
     it('looks up the user by id', async () => {
-      const user = { id: 1, email: 'a@b.com' } as User;
+      const user = buildUser({ id: 1, email: 'a@b.com' });
       repository.findOne.mockResolvedValue(user);
 
       const result = await service.findById(1);
@@ -450,7 +456,7 @@ describe('UsersService', () => {
 
   describe('findByEmail', () => {
     it('looks up the user by email', async () => {
-      const user = { id: 1, email: 'a@b.com' } as User;
+      const user = buildUser({ id: 1, email: 'a@b.com' });
       repository.findOne.mockResolvedValue(user);
 
       const result = await service.findByEmail('a@b.com');

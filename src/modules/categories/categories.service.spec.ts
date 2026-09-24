@@ -10,6 +10,7 @@ import { Limit } from '@entities/limit.entity';
 import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { buildCategory } from '@testing';
 
 describe('CategoriesService', () => {
   let service: CategoriesService;
@@ -135,12 +136,13 @@ describe('CategoriesService', () => {
 
   describe('getMany', () => {
     it('fetches every requested category in a single query', async () => {
-      categoryRepository.find.mockResolvedValue([{ id: 1 }, { id: 2 }] as Category[]);
+      const categories = [buildCategory({ id: 1 }), buildCategory({ id: 2 })];
+      categoryRepository.find.mockResolvedValue(categories);
 
       const result = await service.getMany([1, 2]);
 
       expect(categoryRepository.find).toHaveBeenCalledWith({ where: { id: In([1, 2]) } });
-      expect(result).toEqual([{ id: 1 }, { id: 2 }]);
+      expect(result).toBe(categories);
     });
 
     it('returns an empty array without querying when no ids are given', async () => {
@@ -151,7 +153,7 @@ describe('CategoriesService', () => {
     });
 
     it('deduplicates repeated ids before querying', async () => {
-      categoryRepository.find.mockResolvedValue([{ id: 5 }] as Category[]);
+      categoryRepository.find.mockResolvedValue([buildCategory({ id: 5 })]);
 
       await service.getMany([5, 5, 5]);
 
@@ -165,15 +167,15 @@ describe('CategoriesService', () => {
     it('rejects a non-member without loading the category', async () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
 
-      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(forbiddenSpace);
+      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(forbiddenSpace);
       expect(categoryRepository.findOne).not.toHaveBeenCalled();
       expect(categoryRepository.save).not.toHaveBeenCalled();
     });
 
     it('rejects a category that belongs to a different space', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: 20 } as Category);
+      categoryRepository.findOne.mockResolvedValue(buildCategory({ id: 1, space_id: 20 }));
 
-      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(
+      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
       expect(categoryRepository.save).not.toHaveBeenCalled();
@@ -182,51 +184,49 @@ describe('CategoriesService', () => {
     it('rejects a category that does not exist', async () => {
       categoryRepository.findOne.mockResolvedValue(null);
 
-      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(
+      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
       expect(categoryRepository.save).not.toHaveBeenCalled();
     });
 
     it('rejects a system category', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, is_system: 1 } as Category);
+      categoryRepository.findOne.mockResolvedValue(buildCategory({ id: 1, space_id: spaceId, is_system: 1 }));
 
-      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(
+      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(
         new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
       );
       expect(categoryRepository.save).not.toHaveBeenCalled();
     });
 
     it('merges the update onto the category it loaded and checked, reading it only once', async () => {
-      categoryRepository.findOne.mockResolvedValue({
-        id: 1,
-        space_id: spaceId,
-        name: 'Old',
-        sort: 1,
-        is_active: 1,
-      } as Category);
-      categoryRepository.save.mockResolvedValue({} as Category);
+      categoryRepository.findOne.mockResolvedValue(
+        buildCategory({
+          id: 1,
+          space_id: spaceId,
+          name: 'Old',
+          sort: 1,
+          is_active: 1,
+        }),
+      );
+      categoryRepository.save.mockResolvedValue(buildCategory());
 
-      await service.update(userId, spaceId, 1, { name: 'New' } as any);
+      await service.update(userId, spaceId, 1, { name: 'New' });
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
       expect(categoryRepository.findOne).toHaveBeenCalledTimes(1);
-      expect(categoryRepository.save).toHaveBeenCalledWith({
-        id: 1,
-        space_id: spaceId,
-        name: 'New',
-        sort: 1,
-        is_active: 1,
-      });
+      expect(categoryRepository.save).toHaveBeenCalledWith(
+        buildCategory({ id: 1, space_id: spaceId, name: 'New', sort: 1, is_active: 1 }),
+      );
     });
 
     it('unlinks from its limit and stamps archived_at when is_active flips to 0', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, is_active: 1 } as Category);
-      categoryRepository.save.mockResolvedValue({} as Category);
+      categoryRepository.findOne.mockResolvedValue(buildCategory({ id: 1, space_id: spaceId, is_active: 1 }));
+      categoryRepository.save.mockResolvedValue(buildCategory());
       limitQueryBuilder.getOne.mockResolvedValue({ id: 7 });
 
-      await service.update(userId, spaceId, 1, { is_active: 0 } as any);
+      await service.update(userId, spaceId, 1, { is_active: 0 });
 
       expect(limitQueryBuilder.relation).toHaveBeenCalledWith('categories');
       expect(limitRelationBuilder.of).toHaveBeenCalledWith(7);
@@ -237,15 +237,17 @@ describe('CategoriesService', () => {
     });
 
     it('clears archived_at on restore (is_active flips to 1)', async () => {
-      categoryRepository.findOne.mockResolvedValue({
-        id: 1,
-        space_id: spaceId,
-        is_active: 0,
-        archived_at: new Date(),
-      } as Category);
-      categoryRepository.save.mockResolvedValue({} as Category);
+      categoryRepository.findOne.mockResolvedValue(
+        buildCategory({
+          id: 1,
+          space_id: spaceId,
+          is_active: 0,
+          archived_at: new Date(),
+        }),
+      );
+      categoryRepository.save.mockResolvedValue(buildCategory());
 
-      await service.update(userId, spaceId, 1, { is_active: 1 } as any);
+      await service.update(userId, spaceId, 1, { is_active: 1 });
 
       expect(categoryRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ id: 1, is_active: 1, archived_at: null }),
@@ -257,12 +259,19 @@ describe('CategoriesService', () => {
     it('rejects a non-member without saving', async () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
 
-      await expect(service.create(userId, 9, { name: 'Food' } as any)).rejects.toMatchObject(forbiddenSpace);
+      await expect(
+        service.create(userId, 9, {
+          name: 'Food',
+          transaction_type: TransactionType.EXPENSE,
+          icon: CategoryIcon.GROCERY,
+          color: AppColor.EVERGREEN,
+        }),
+      ).rejects.toMatchObject(forbiddenSpace);
       expect(categoryRepository.save).not.toHaveBeenCalled();
     });
 
     it('saves a new category for the space', async () => {
-      categoryRepository.save.mockResolvedValue({} as Category);
+      categoryRepository.save.mockResolvedValue(buildCategory());
 
       await service.create(userId, 9, {
         name: 'Food',
@@ -285,7 +294,7 @@ describe('CategoriesService', () => {
     const spaceId = 3;
 
     beforeEach(() => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId } as Category);
+      categoryRepository.findOne.mockResolvedValue(buildCategory({ id: 1, space_id: spaceId }));
     });
 
     it('rejects a non-member without loading the category', async () => {
@@ -297,7 +306,7 @@ describe('CategoriesService', () => {
     });
 
     it('rejects a category that belongs to a different space', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: 20 } as Category);
+      categoryRepository.findOne.mockResolvedValue(buildCategory({ id: 1, space_id: 20 }));
 
       await expect(service.deleteOrArchive(userId, spaceId, 1)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
@@ -307,7 +316,7 @@ describe('CategoriesService', () => {
     });
 
     it('rejects a system category', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, is_system: 1 } as Category);
+      categoryRepository.findOne.mockResolvedValue(buildCategory({ id: 1, space_id: spaceId, is_system: 1 }));
 
       await expect(service.deleteOrArchive(userId, spaceId, 1)).rejects.toMatchObject(
         new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
@@ -373,11 +382,10 @@ describe('CategoriesService', () => {
 
     it('reassigns sort with the expense prefix (200) in the given order', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-        { id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-        { id: 3, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-      ] as Category[]);
-      categoryRepository.save.mockResolvedValue([] as any);
+        buildCategory({ id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 }),
+        buildCategory({ id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 }),
+        buildCategory({ id: 3, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 }),
+      ]);
 
       await service.reorder(userId, 1, [2, 1, 3]);
 
@@ -390,10 +398,9 @@ describe('CategoriesService', () => {
 
     it('reassigns sort with the income prefix (100) in the given order', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
-        { id: 2, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
-      ] as Category[]);
-      categoryRepository.save.mockResolvedValue([] as any);
+        buildCategory({ id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 }),
+        buildCategory({ id: 2, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 }),
+      ]);
 
       await service.reorder(userId, 1, [1, 2]);
 
@@ -405,8 +412,8 @@ describe('CategoriesService', () => {
 
     it('rejects a category belonging to a different space', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, space_id: 2, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-      ] as Category[]);
+        buildCategory({ id: 1, space_id: 2, transaction_type: TransactionType.EXPENSE, is_active: 1 }),
+      ]);
 
       await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
@@ -415,8 +422,8 @@ describe('CategoriesService', () => {
 
     it('rejects reordering a system category', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1, is_system: 1 },
-      ] as Category[]);
+        buildCategory({ id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1, is_system: 1 }),
+      ]);
 
       await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
@@ -426,9 +433,9 @@ describe('CategoriesService', () => {
 
     it('rejects mixing income and expense categories in one reorder', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 },
-        { id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
-      ] as Category[]);
+        buildCategory({ id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1 }),
+        buildCategory({ id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 }),
+      ]);
 
       await expect(service.reorder(userId, 1, [1, 2])).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_REORDER, 400),
@@ -437,8 +444,8 @@ describe('CategoriesService', () => {
 
     it('rejects reordering an archived category', async () => {
       categoryRepository.find.mockResolvedValue([
-        { id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 0 },
-      ] as Category[]);
+        buildCategory({ id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 0 }),
+      ]);
 
       await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_REORDER, 400),

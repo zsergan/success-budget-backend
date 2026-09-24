@@ -1,35 +1,47 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
+import type { Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
+import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { Transaction } from '@entities/transaction.entity';
+import type { Category } from '@entities/category.entity';
+import type { Wallet } from '@entities/wallet.entity';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { withRelations } from '@shared/utils';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { buildCategory, buildSpaceMember, buildTransaction, buildWallet } from '@testing';
 
 describe('TransactionsService', () => {
   let service: TransactionsService;
-  let transactionRepository: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
-  let transactionQueriesService: {
-    getBalances: jest.Mock;
-    getForAllWallets: jest.Mock;
-    getLatest: jest.Mock;
-    getOneWithWallet: jest.Mock;
-  };
-  let walletsService: { getOne: jest.Mock };
-  let categoriesService: { getOne: jest.Mock };
-  let spaceAccessService: { assertMembership: jest.Mock };
+  let transactionRepository: jest.Mocked<Pick<Repository<Transaction>, 'create' | 'save' | 'delete'>>;
+  let transactionQueriesService: jest.Mocked<
+    Pick<TransactionQueriesService, 'getBalances' | 'getForAllWallets' | 'getLatest' | 'getOneWithWallet'>
+  >;
+  let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
+  let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
 
   const userId = 1;
   const spaceId = 10;
 
+  const loadedTransaction = (id: string, wallet: Partial<Wallet>) =>
+    withRelations(
+      buildTransaction({ id, wallet: buildWallet({ space_id: spaceId, ...wallet }), category: buildCategory() }),
+      'wallet',
+      'category',
+    );
+  const withWallet = (id: string, wallet: Partial<Wallet>) =>
+    withRelations(buildTransaction({ id, wallet: buildWallet(wallet) }), 'wallet');
+
   beforeEach(async () => {
     transactionRepository = {
-      create: jest.fn((entity) => entity),
+      create: jest.fn().mockImplementation((entityLike) => Object.assign(new Transaction(), entityLike)),
       save: jest.fn(),
       delete: jest.fn(),
     };
@@ -39,9 +51,15 @@ describe('TransactionsService', () => {
       getLatest: jest.fn(),
       getOneWithWallet: jest.fn(),
     };
-    walletsService = { getOne: jest.fn().mockResolvedValue({ id: 1, space_id: spaceId, is_deleted: 0 }) };
-    categoriesService = { getOne: jest.fn().mockResolvedValue({ id: 5, space_id: spaceId, is_system: 0 }) };
-    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue({}) };
+    walletsService = { getOne: jest.fn().mockResolvedValue(buildWallet({ id: 1, space_id: spaceId })) };
+    categoriesService = {
+      getOne: jest
+        .fn()
+        .mockResolvedValue(buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.INCOME })),
+    };
+    spaceAccessService = {
+      assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ space_id: spaceId, user_id: userId })),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -60,15 +78,14 @@ describe('TransactionsService', () => {
   const forbidden = () => new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
   describe('create', () => {
-    const dto = (overrides = {}) =>
-      ({
-        wallet_id: 1,
-        category_id: 5,
-        amount: '10',
-        transaction_type: TransactionType.INCOME,
-        timestamp: '2026-01-15T10:00:00.000Z',
-        ...overrides,
-      }) as any;
+    const dto = (overrides: Partial<CreateTransactionDto> = {}): CreateTransactionDto => ({
+      wallet_id: 1,
+      category_id: 5,
+      amount: '10',
+      transaction_type: TransactionType.INCOME,
+      timestamp: '2026-01-15T10:00:00.000Z',
+      ...overrides,
+    });
 
     it('rejects a non-member before loading anything', async () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbidden());
@@ -79,10 +96,10 @@ describe('TransactionsService', () => {
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it.each([
+    it.each<[string, Wallet | null]>([
       ['does not exist', null],
-      ['belongs to a different space', { id: 1, space_id: 20 }],
-      ['was soft-deleted', { id: 1, space_id: spaceId, is_deleted: 1 }],
+      ['belongs to a different space', buildWallet({ id: 1, space_id: 20 })],
+      ['was soft-deleted', buildWallet({ id: 1, space_id: spaceId, is_deleted: 1, deleted_at: new Date() })],
     ])('rejects when the wallet %s, before loading the category', async (_, wallet) => {
       walletsService.getOne.mockResolvedValue(wallet);
 
@@ -93,10 +110,10 @@ describe('TransactionsService', () => {
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it.each([
+    it.each<[string, Category | null]>([
       ['does not exist', null],
-      ['belongs to a different space', { id: 5, space_id: 20 }],
-      ['is a system category', { id: 5, space_id: spaceId, is_system: 1 }],
+      ['belongs to a different space', buildCategory({ id: 5, space_id: 20 })],
+      ['is a system category', buildCategory({ id: 5, space_id: spaceId, is_system: 1 })],
     ])('rejects when the category %s', async (_, category) => {
       categoriesService.getOne.mockResolvedValue(category);
 
@@ -107,7 +124,7 @@ describe('TransactionsService', () => {
     });
 
     it('creates the transaction and derives the wallet balance from its previous history', async () => {
-      const wallet = { id: 1, space_id: spaceId, is_deleted: 0 };
+      const wallet = buildWallet({ id: 1, space_id: spaceId });
       walletsService.getOne.mockResolvedValue(wallet);
       transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 100]]));
       const input = dto({ description: 'Lunch' });
@@ -119,7 +136,8 @@ describe('TransactionsService', () => {
         timestamp: new Date('2026-01-15T10:00:00.000Z'),
         description: 'Lunch',
       };
-      transactionRepository.save.mockResolvedValue({ ...entity, id: 'tx-1' });
+      const saved = buildTransaction({ ...entity, id: 'tx-1' });
+      transactionRepository.save.mockResolvedValue(saved);
 
       const result = await service.create(userId, spaceId, input);
 
@@ -129,11 +147,7 @@ describe('TransactionsService', () => {
       expect(categoriesService.getOne).toHaveBeenCalledWith(5);
       expect(transactionRepository.create).toHaveBeenCalledWith(entity);
       expect(transactionRepository.save).toHaveBeenCalledWith(entity);
-      expect(result).toEqual({
-        transaction: { ...entity, id: 'tx-1' },
-        wallet: { ...wallet, balance: 110 },
-        previous_balance: 100,
-      });
+      expect(result).toEqual({ transaction: saved, wallet: { ...wallet, balance: 110 }, previous_balance: 100 });
       expect(result.wallet).toBe(wallet);
       expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1]);
     });
@@ -141,7 +155,9 @@ describe('TransactionsService', () => {
     it('subtracts the amount for an expense transaction', async () => {
       transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 100]]));
       const input = dto({ amount: '30', transaction_type: TransactionType.EXPENSE });
-      transactionRepository.save.mockResolvedValue(input);
+      transactionRepository.save.mockResolvedValue(
+        buildTransaction({ amount: '30', transaction_type: TransactionType.EXPENSE }),
+      );
 
       const result = await service.create(userId, spaceId, input);
 
@@ -151,7 +167,7 @@ describe('TransactionsService', () => {
 
     it('starts from a balance of 0 when the wallet has no transactions yet', async () => {
       const input = dto({ amount: '50' });
-      transactionRepository.save.mockResolvedValue(input);
+      transactionRepository.save.mockResolvedValue(buildTransaction({ amount: '50' }));
 
       const result = await service.create(userId, spaceId, input);
 
@@ -180,17 +196,17 @@ describe('TransactionsService', () => {
     });
 
     it('nulls out the wallet on transactions whose wallet was soft-deleted', async () => {
-      transactionQueriesService.getForAllWallets.mockResolvedValue([
-        { id: 1, wallet: { id: 1, is_deleted: 0 } },
-        { id: 2, wallet: { id: 2, is_deleted: 1 } },
-      ]);
+      const active = loadedTransaction('1', { id: 1 });
+      const activeWallet = active.wallet;
+      const deleted = loadedTransaction('2', { id: 2, is_deleted: 1, deleted_at: new Date() });
+      transactionQueriesService.getForAllWallets.mockResolvedValue([active, deleted]);
 
       const result = await service.getAll(userId, spaceId, from, to);
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
       expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to);
-      expect(result[0].wallet).toEqual({ id: 1, is_deleted: 0 });
+      expect(result[0].wallet).toBe(activeWallet);
       expect(result[1].wallet).toBeNull();
     });
   });
@@ -214,7 +230,9 @@ describe('TransactionsService', () => {
     });
 
     it('nulls out the wallet when it was soft-deleted', async () => {
-      transactionQueriesService.getLatest.mockResolvedValue({ id: 1, wallet: { id: 1, is_deleted: 1 } });
+      transactionQueriesService.getLatest.mockResolvedValue(
+        loadedTransaction('1', { id: 1, is_deleted: 1, deleted_at: new Date() }),
+      );
 
       const result = await service.getLatest(userId, spaceId);
 
@@ -222,11 +240,13 @@ describe('TransactionsService', () => {
     });
 
     it('keeps the wallet when it is active', async () => {
-      transactionQueriesService.getLatest.mockResolvedValue({ id: 1, wallet: { id: 1, is_deleted: 0 } });
+      const latest = loadedTransaction('1', { id: 1 });
+      const wallet = latest.wallet;
+      transactionQueriesService.getLatest.mockResolvedValue(latest);
 
       const result = await service.getLatest(userId, spaceId);
 
-      expect(result?.wallet).toEqual({ id: 1, is_deleted: 0 });
+      expect(result?.wallet).toBe(wallet);
     });
   });
 
@@ -241,7 +261,7 @@ describe('TransactionsService', () => {
 
     it.each([
       ['does not exist', null],
-      ['belongs to a different space', { id: 'tx-1', wallet: { id: 1, space_id: 20 } }],
+      ['belongs to a different space', withWallet('tx-1', { space_id: 20 })],
     ])('rejects when the transaction %s', async (_, transaction) => {
       transactionQueriesService.getOneWithWallet.mockResolvedValue(transaction);
 
@@ -252,10 +272,7 @@ describe('TransactionsService', () => {
     });
 
     it('deletes the transaction when its wallet belongs to the space', async () => {
-      transactionQueriesService.getOneWithWallet.mockResolvedValue({
-        id: 'tx-1',
-        wallet: { id: 1, space_id: spaceId },
-      });
+      transactionQueriesService.getOneWithWallet.mockResolvedValue(withWallet('tx-1', { space_id: spaceId }));
 
       await service.remove(userId, spaceId, 'tx-1');
 
