@@ -85,6 +85,22 @@ describe('moneyToNumber', () => {
     expect(moneyToNumber(-1230n)).toBe(-12.3);
     expect(moneyToNumber(parseMoney('0.10') + parseMoney('0.20'))).toBe(0.3);
   });
+
+  it.each([
+    ['0', 0],
+    ['99999999.99', 99999999.99],
+    ['-99999999.99', -99999999.99],
+    ['90071992547409.91', 90071992547409.91],
+  ])('keeps every cent of %p', (value, expected) => {
+    expect(moneyToNumber(parseMoney(value))).toBe(expected);
+  });
+
+  it.each(['90071992547409.93', '9007199254740993.00', '123456789012345678.99'])(
+    'throws when %p would lose cents',
+    (value) => {
+      expect(() => moneyToNumber(parseMoney(value))).toThrow(RangeError);
+    },
+  );
 });
 
 describe('floorPercent', () => {

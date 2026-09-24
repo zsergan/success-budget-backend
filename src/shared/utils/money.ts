@@ -49,7 +49,17 @@ export const formatMoney = (cents: bigint): string => {
   return `${sign}${digits.slice(0, -2)}.${digits.slice(-2)}`;
 };
 
-export const moneyToNumber = (cents: bigint): number => Number(formatMoney(cents));
+// For the number-typed response fields; throws instead of dropping cents.
+export const moneyToNumber = (cents: bigint): number => {
+  const money = formatMoney(cents);
+  const value = Number(money);
+
+  if (value.toFixed(2) !== money) {
+    throw new RangeError(`Money value cannot be represented as a number: ${money}`);
+  }
+
+  return value;
+};
 
 export const floorPercent = (part: bigint, whole: bigint): number =>
   whole === 0n ? 0 : Number(floorDiv(part * 100n, whole));
