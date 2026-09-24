@@ -67,6 +67,7 @@ export class LimitsService {
 
   async create(userId: number, spaceId: number, createLimit: CreateLimitDto): Promise<LimitWithCategories> {
     return this.dataSource.transaction(async (manager) => {
+      await this.spaceAccessService.lockSpace(spaceId, manager);
       await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
       await this.assertCategoriesOwnership(manager, spaceId, createLimit.category_ids);
 
@@ -104,6 +105,7 @@ export class LimitsService {
     updateLimit: UpdateLimitDto,
   ): Promise<LimitWithCategories> {
     return this.dataSource.transaction(async (manager) => {
+      await this.spaceAccessService.lockSpace(spaceId, manager);
       await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
 
       const currentLimit = await this.getSpaceLimit(spaceId, limitId, manager);
@@ -157,11 +159,14 @@ export class LimitsService {
   }
 
   async remove(userId: number, spaceId: number, limitId: number): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.getSpaceLimit(spaceId, limitId);
+    await this.dataSource.transaction(async (manager) => {
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+      await this.getSpaceLimit(spaceId, limitId, manager);
 
-    // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
-    await this.limitRepository.delete(limitId);
+      // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
+      await manager.getRepository(Limit).delete(limitId);
+    });
   }
 
   // categoryTotals are in cents

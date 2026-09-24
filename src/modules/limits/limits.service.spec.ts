@@ -22,7 +22,7 @@ describe('LimitsService', () => {
   let manager: { getRepository: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getMany'>>;
-  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockSpace'>>;
   let transactionQueriesService: jest.Mocked<Pick<TransactionQueriesService, 'getExpensesByCategory'>>;
 
   const userId = 7;
@@ -52,7 +52,10 @@ describe('LimitsService', () => {
     categoriesService = {
       getMany: jest.fn(async (ids: number[]) => [...new Set(ids)].map((id) => buildCategory({ id, space_id: 1 }))),
     };
-    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })) };
+    spaceAccessService = {
+      assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })),
+      lockSpace: jest.fn().mockResolvedValue(undefined),
+    };
     transactionQueriesService = { getExpensesByCategory: jest.fn().mockResolvedValue(new Map()) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -92,6 +95,7 @@ describe('LimitsService', () => {
         create: jest.fn((entityLike) => Object.assign(new Limit(), entityLike)),
         save: jest.fn().mockResolvedValue(buildLimit({ id: 1 })),
         update: jest.fn(),
+        delete: jest.fn(),
         createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
       } as unknown as jest.Mocked<Repository<Limit>>;
       manager.getRepository.mockReturnValue(txRepository);
@@ -124,6 +128,30 @@ describe('LimitsService', () => {
 
       await expect(run()).rejects.toBe(failure);
       expect(txRepository.findOne).toHaveBeenCalledTimes(readsBeforeLink);
+    });
+
+    it.each([
+      ['create', () => service.create(userId, 1, { category_ids: [4], amount: '10' })],
+      ['update', () => service.update(userId, 1, 1, { category_ids: [5] })],
+      ['remove', () => service.remove(userId, 1, 1)],
+    ])('%s locks the space before any other query', async (_, run) => {
+      await run();
+
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(1, manager);
+      const lockOrder = spaceAccessService.lockSpace.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(spaceAccessService.assertMembership.mock.invocationCallOrder[0]);
+      expect(lockOrder).toBeLessThan(manager.getRepository.mock.invocationCallOrder[0]);
+    });
+
+    it('remove deletes through the transaction manager', async () => {
+      await service.remove(userId, 1, 1);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(txRepository.delete).toHaveBeenCalledWith(1);
+      expect(repository.findOne).not.toHaveBeenCalled();
+      expect(repository.delete).not.toHaveBeenCalled();
     });
   });
 

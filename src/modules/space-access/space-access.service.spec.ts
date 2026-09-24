@@ -4,6 +4,7 @@ import { HttpException } from '@nestjs/common';
 import { EntityManager, Repository } from 'typeorm';
 
 import { SpaceAccessService } from './space-access.service';
+import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
@@ -74,6 +75,24 @@ describe('SpaceAccessService', () => {
       expect(manager.getRepository).toHaveBeenCalledWith(SpaceMember);
       expect(managerRepository.findOne).toHaveBeenCalledWith({ where: { space_id: 10, user_id: 1 } });
       expect(spaceMemberRepository.findOne).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lockSpace', () => {
+    it('takes a write lock on the space row through the given entity manager', async () => {
+      const queryBuilder = {
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      const manager = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) } as unknown as EntityManager;
+
+      await service.lockSpace(10, manager);
+
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(Space, 'space');
+      expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(queryBuilder.where).toHaveBeenCalledWith('space.id = :spaceId', { spaceId: 10 });
+      expect(queryBuilder.getOne).toHaveBeenCalled();
     });
   });
 });
