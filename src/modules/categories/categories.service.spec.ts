@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import { EntityManager, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
 import { CategoriesService } from './categories.service';
 import { Category } from '@entities/category.entity';
@@ -21,6 +21,8 @@ describe('CategoriesService', () => {
   let limitQueryBuilder: Record<string, jest.Mock>;
   let limitRelationBuilder: Record<string, jest.Mock>;
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
+  let dataSource: { transaction: jest.Mock };
+  let manager: { getRepository: jest.Mock };
 
   const userId = 42;
   const forbiddenSpace = new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
@@ -82,7 +84,8 @@ describe('CategoriesService', () => {
             createQueryBuilder: jest.fn().mockReturnValue(limitQueryBuilder),
           },
         },
-        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn(), lockSpace: jest.fn() } },
       ],
     }).compile();
 
@@ -90,6 +93,78 @@ describe('CategoriesService', () => {
     categoryRepository = module.get(getRepositoryToken(Category));
     limitRepository = module.get(getRepositoryToken(Limit));
     spaceAccessService = module.get(SpaceAccessService);
+
+    const repositories = new Map<unknown, unknown>([
+      [Category, categoryRepository],
+      [Transaction, module.get(getRepositoryToken(Transaction))],
+      [Limit, limitRepository],
+    ]);
+    manager = { getRepository: jest.fn((entity) => repositories.get(entity)) };
+    dataSource = module.get(DataSource);
+    dataSource.transaction.mockImplementation((callback: (m: typeof manager) => unknown) => callback(manager));
+  });
+
+  describe('transaction boundary', () => {
+    const spaceId = 3;
+    let txCategoryRepository: Record<string, jest.Mock>;
+    let txLimitRepository: Record<string, jest.Mock>;
+
+    beforeEach(() => {
+      txCategoryRepository = {
+        findOne: jest.fn().mockResolvedValue(buildCategory({ id: 1, space_id: spaceId, is_active: 1 })),
+        save: jest.fn((category) => category),
+        update: jest.fn(),
+        delete: jest.fn(),
+      };
+      txLimitRepository = { delete: jest.fn(), createQueryBuilder: jest.fn().mockReturnValue(limitQueryBuilder) };
+      const txTransactionRepository = { createQueryBuilder: jest.fn().mockReturnValue(transactionQueryBuilder) };
+      const repositories = new Map<unknown, unknown>([
+        [Category, txCategoryRepository],
+        [Transaction, txTransactionRepository],
+        [Limit, txLimitRepository],
+      ]);
+      manager.getRepository.mockImplementation((entity) => repositories.get(entity));
+      limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
+      limitRelationBuilder.loadMany.mockResolvedValue([]);
+    });
+
+    it.each([
+      ['archive via update', () => service.update(userId, spaceId, 1, { is_active: 0 })],
+      ['archive via delete', () => service.deleteOrArchive(userId, spaceId, 1)],
+    ])('%s locks the space first and runs every query through the transaction manager', async (name, run) => {
+      transactionQueryBuilder.getRawMany.mockResolvedValue(
+        name === 'archive via delete' ? [{ category_id: '1', count: '3' }] : [],
+      );
+
+      await run();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager);
+      const lockOrder = spaceAccessService.lockSpace.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(spaceAccessService.assertMembership.mock.invocationCallOrder[0]);
+      expect(lockOrder).toBeLessThan(manager.getRepository.mock.invocationCallOrder[0]);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId, undefined, manager);
+      expect(txCategoryRepository.findOne).toHaveBeenCalled();
+      expect(txLimitRepository.delete).toHaveBeenCalledWith(5);
+      expect(categoryRepository.findOne).not.toHaveBeenCalled();
+      expect(categoryRepository.save).not.toHaveBeenCalled();
+      expect(categoryRepository.update).not.toHaveBeenCalled();
+      expect(categoryRepository.delete).not.toHaveBeenCalled();
+      expect(limitRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(limitRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['update', () => service.update(userId, spaceId, 1, { is_active: 0 }), 'save'],
+      ['deleteOrArchive', () => service.deleteOrArchive(userId, spaceId, 1), 'update'],
+    ])('%s propagates a failed category write after unlinking', async (_, run, write) => {
+      transactionQueryBuilder.getRawMany.mockResolvedValue([{ category_id: '1', count: '3' }]);
+      const failure = new Error('write failed');
+      txCategoryRepository[write].mockRejectedValue(failure);
+
+      await expect(run()).rejects.toBe(failure);
+      expect(limitRelationBuilder.remove).toHaveBeenCalledWith([1]);
+    });
   });
 
   describe('getAll', () => {
@@ -230,7 +305,7 @@ describe('CategoriesService', () => {
       await service.update(userId, spaceId, 1, { name: 'New' });
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId, undefined, manager);
       expect(categoryRepository.findOne).toHaveBeenCalledTimes(1);
       expect(categoryRepository.save).toHaveBeenCalledWith(
         buildCategory({ id: 1, space_id: spaceId, name: 'New', sort: 1, is_active: 1 }),
