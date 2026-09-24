@@ -67,6 +67,7 @@
     "@nestjs/testing": "^11.2.1",
     "@swc/core": "^1.16.1",
     "@swc/jest": "^0.2.39",
+    "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.13.3",
