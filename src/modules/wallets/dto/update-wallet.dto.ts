@@ -1,13 +1,14 @@
-import { IsOptional, IsString, IsEnum, MaxLength } from 'class-validator';
+import { IsString, IsEnum, MaxLength } from 'class-validator';
 import { AppColor } from '@shared/enums';
+import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 
 export class UpdateWalletDto {
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsString()
   @MaxLength(20)
-  wallet_name: string;
+  wallet_name?: string;
 
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsEnum(AppColor)
-  design: AppColor;
+  design?: AppColor;
 }

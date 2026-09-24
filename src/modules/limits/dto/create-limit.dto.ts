@@ -1,7 +1,9 @@
 import { IsNotEmpty, IsDecimal, IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
 
+import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
+
 export class CreateLimitDto {
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsArray()
   @IsInt({ each: true })
   category_ids?: number[];
@@ -9,7 +11,7 @@ export class CreateLimitDto {
   @IsOptional()
   @IsString()
   @MaxLength(60)
-  name?: string;
+  name?: string | null;
 
   @IsNotEmpty()
   @IsDecimal()

@@ -1,16 +1,7 @@
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  IsInt,
-  IsEnum,
-  IsArray,
-  ArrayUnique,
-  IsEmail,
-  MaxLength,
-} from 'class-validator';
+import { IsNotEmpty, IsString, IsInt, IsEnum, IsArray, ArrayUnique, IsEmail, MaxLength } from 'class-validator';
 
 import { SpaceType } from '@shared/enums';
+import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 
 export class CreateSpaceDto {
   @IsNotEmpty()
@@ -26,7 +17,7 @@ export class CreateSpaceDto {
   @IsEnum(SpaceType)
   type: SpaceType;
 
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsArray()
   @ArrayUnique()
   @IsEmail({}, { each: true })

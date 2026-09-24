@@ -31,7 +31,7 @@ export class Transaction {
   timestamp: Date;
 
   @Column({ type: 'text', nullable: true })
-  description: string;
+  description: string | null;
 
   @ManyToOne(() => Wallet, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'wallet_id' })

@@ -35,5 +35,5 @@ export class CreateTransactionDto {
   @IsOptional()
   @IsString()
   @MaxLength(140)
-  description?: string;
+  description?: string | null;
 }
