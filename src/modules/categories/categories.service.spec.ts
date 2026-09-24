@@ -131,6 +131,7 @@ describe('CategoriesService', () => {
     it.each([
       ['archive via update', () => service.update(userId, spaceId, 1, { is_active: 0 })],
       ['archive via delete', () => service.deleteOrArchive(userId, spaceId, 1)],
+      ['delete', () => service.deleteOrArchive(userId, spaceId, 1)],
     ])('%s locks the space first and runs every query through the transaction manager', async (name, run) => {
       transactionQueryBuilder.getRawMany.mockResolvedValue(
         name === 'archive via delete' ? [{ category_id: '1', count: '3' }] : [],
@@ -422,6 +423,21 @@ describe('CategoriesService', () => {
       const result = await service.deleteOrArchive(userId, spaceId, 1);
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(categoryRepository.delete).toHaveBeenCalledWith(1);
+      expect(result).toEqual({ archived: false });
+    });
+
+    it('unlinks a category with no transactions from its limit before deleting it', async () => {
+      transactionQueryBuilder.getRawMany.mockResolvedValue([]);
+      limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
+
+      const result = await service.deleteOrArchive(userId, spaceId, 1);
+
+      expect(limitRelationBuilder.of).toHaveBeenCalledWith(5);
+      expect(limitRelationBuilder.remove).toHaveBeenCalledWith([1]);
+      expect(limitRelationBuilder.remove.mock.invocationCallOrder[0]).toBeLessThan(
+        categoryRepository.delete.mock.invocationCallOrder[0],
+      );
       expect(categoryRepository.delete).toHaveBeenCalledWith(1);
       expect(result).toEqual({ archived: false });
     });

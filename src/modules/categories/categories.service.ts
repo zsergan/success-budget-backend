@@ -131,12 +131,13 @@ export class CategoriesService {
       const count = counts.get(categoryId) ?? 0;
       const categoryRepository = manager.getRepository(Category);
 
+      await this.unlinkFromLimit(categoryId, manager);
+
       if (count === 0) {
         await categoryRepository.delete(categoryId);
         return { archived: false };
       }
 
-      await this.unlinkFromLimit(categoryId, manager);
       await categoryRepository.update(categoryId, { is_active: 0, archived_at: new Date() });
 
       return { archived: true };
