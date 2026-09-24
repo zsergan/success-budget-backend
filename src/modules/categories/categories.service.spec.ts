@@ -9,6 +9,7 @@ import { Transaction } from '@entities/transaction.entity';
 import { Limit } from '@entities/limit.entity';
 import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 describe('CategoriesService', () => {
   let service: CategoriesService;
@@ -18,6 +19,10 @@ describe('CategoriesService', () => {
   let transactionQueryBuilder: Record<string, jest.Mock>;
   let limitQueryBuilder: Record<string, jest.Mock>;
   let limitRelationBuilder: Record<string, jest.Mock>;
+  let spaceAccessService: jest.Mocked<SpaceAccessService>;
+
+  const userId = 42;
+  const forbiddenSpace = new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
   beforeEach(async () => {
     categoryQueryBuilder = {
@@ -73,18 +78,28 @@ describe('CategoriesService', () => {
             createQueryBuilder: jest.fn().mockReturnValue(limitQueryBuilder),
           },
         },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
       ],
     }).compile();
 
     service = module.get(CategoriesService);
     categoryRepository = module.get(getRepositoryToken(Category));
     limitRepository = module.get(getRepositoryToken(Limit));
+    spaceAccessService = module.get(SpaceAccessService);
   });
 
   describe('getAll', () => {
-    it('scopes to the space and orders by sort ascending', async () => {
-      await service.getAll(2);
+    it('rejects a non-member before querying', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
 
+      await expect(service.getAll(userId, 2)).rejects.toMatchObject(forbiddenSpace);
+      expect(categoryQueryBuilder.getMany).not.toHaveBeenCalled();
+    });
+
+    it('scopes to the space and orders by sort ascending', async () => {
+      await service.getAll(userId, 2);
+
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(2, userId);
       expect(categoryQueryBuilder.where).toHaveBeenCalledWith('category.space_id = :spaceId', { spaceId: 2 });
       expect(categoryQueryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
       expect(categoryQueryBuilder.orderBy).toHaveBeenCalledWith('category.sort', 'ASC');
@@ -97,7 +112,7 @@ describe('CategoriesService', () => {
         { id: 3, transaction_type: TransactionType.EXPENSE, is_active: 0 },
       ]);
 
-      const result = await service.getAll(1);
+      const result = await service.getAll(userId, 1);
 
       expect(result.incomes.map((c) => c.id)).toEqual([1]);
       expect(result.expenses.map((c) => c.id)).toEqual([2]);
@@ -111,7 +126,7 @@ describe('CategoriesService', () => {
       transactionQueryBuilder.getRawMany.mockResolvedValue([{ category_id: '1', count: '4' }]);
       limitQueryBuilder.getRawMany.mockResolvedValue([{ limit_id: 7, limit_name: 'Fun', category_id: 1 }]);
 
-      const result = await service.getAll(1);
+      const result = await service.getAll(userId, 1);
 
       expect(result.expenses[0].transaction_count).toBe(4);
       expect(result.expenses[0].limit).toEqual({ id: 7, name: 'Fun' });
@@ -145,21 +160,73 @@ describe('CategoriesService', () => {
   });
 
   describe('update', () => {
-    it('merges the update onto the existing category', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, name: 'Old', sort: 1, is_active: 1 } as Category);
+    const spaceId = 3;
+
+    it('rejects a non-member without loading the category', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+
+      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(forbiddenSpace);
+      expect(categoryRepository.findOne).not.toHaveBeenCalled();
+      expect(categoryRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a category that belongs to a different space', async () => {
+      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: 20 } as Category);
+
+      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
+      );
+      expect(categoryRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a category that does not exist', async () => {
+      categoryRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
+      );
+      expect(categoryRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a system category', async () => {
+      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, is_system: 1 } as Category);
+
+      await expect(service.update(userId, spaceId, 1, {} as any)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
+      );
+      expect(categoryRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('merges the update onto the category it loaded and checked, reading it only once', async () => {
+      categoryRepository.findOne.mockResolvedValue({
+        id: 1,
+        space_id: spaceId,
+        name: 'Old',
+        sort: 1,
+        is_active: 1,
+      } as Category);
       categoryRepository.save.mockResolvedValue({} as Category);
 
-      await service.update(1, { name: 'New' } as any);
+      await service.update(userId, spaceId, 1, { name: 'New' } as any);
 
-      expect(categoryRepository.save).toHaveBeenCalledWith({ id: 1, name: 'New', sort: 1, is_active: 1 });
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
+      expect(categoryRepository.findOne).toHaveBeenCalledTimes(1);
+      expect(categoryRepository.save).toHaveBeenCalledWith({
+        id: 1,
+        space_id: spaceId,
+        name: 'New',
+        sort: 1,
+        is_active: 1,
+      });
     });
 
     it('unlinks from its limit and stamps archived_at when is_active flips to 0', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, is_active: 1 } as Category);
+      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, is_active: 1 } as Category);
       categoryRepository.save.mockResolvedValue({} as Category);
       limitQueryBuilder.getOne.mockResolvedValue({ id: 7 });
 
-      await service.update(1, { is_active: 0 } as any);
+      await service.update(userId, spaceId, 1, { is_active: 0 } as any);
 
       expect(limitQueryBuilder.relation).toHaveBeenCalledWith('categories');
       expect(limitRelationBuilder.of).toHaveBeenCalledWith(7);
@@ -170,10 +237,15 @@ describe('CategoriesService', () => {
     });
 
     it('clears archived_at on restore (is_active flips to 1)', async () => {
-      categoryRepository.findOne.mockResolvedValue({ id: 1, is_active: 0, archived_at: new Date() } as Category);
+      categoryRepository.findOne.mockResolvedValue({
+        id: 1,
+        space_id: spaceId,
+        is_active: 0,
+        archived_at: new Date(),
+      } as Category);
       categoryRepository.save.mockResolvedValue({} as Category);
 
-      await service.update(1, { is_active: 1 } as any);
+      await service.update(userId, spaceId, 1, { is_active: 1 } as any);
 
       expect(categoryRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ id: 1, is_active: 1, archived_at: null }),
@@ -182,10 +254,17 @@ describe('CategoriesService', () => {
   });
 
   describe('create', () => {
+    it('rejects a non-member without saving', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+
+      await expect(service.create(userId, 9, { name: 'Food' } as any)).rejects.toMatchObject(forbiddenSpace);
+      expect(categoryRepository.save).not.toHaveBeenCalled();
+    });
+
     it('saves a new category for the space', async () => {
       categoryRepository.save.mockResolvedValue({} as Category);
 
-      await service.create(9, {
+      await service.create(userId, 9, {
         name: 'Food',
         transaction_type: TransactionType.EXPENSE,
         icon: CategoryIcon.GROCERY,
@@ -203,11 +282,46 @@ describe('CategoriesService', () => {
   });
 
   describe('deleteOrArchive', () => {
+    const spaceId = 3;
+
+    beforeEach(() => {
+      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId } as Category);
+    });
+
+    it('rejects a non-member without loading the category', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+
+      await expect(service.deleteOrArchive(userId, spaceId, 1)).rejects.toMatchObject(forbiddenSpace);
+      expect(categoryRepository.findOne).not.toHaveBeenCalled();
+      expect(categoryRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects a category that belongs to a different space', async () => {
+      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: 20 } as Category);
+
+      await expect(service.deleteOrArchive(userId, spaceId, 1)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
+      );
+      expect(categoryRepository.delete).not.toHaveBeenCalled();
+      expect(categoryRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a system category', async () => {
+      categoryRepository.findOne.mockResolvedValue({ id: 1, space_id: spaceId, is_system: 1 } as Category);
+
+      await expect(service.deleteOrArchive(userId, spaceId, 1)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
+      );
+      expect(categoryRepository.delete).not.toHaveBeenCalled();
+      expect(categoryRepository.update).not.toHaveBeenCalled();
+    });
+
     it('hard-deletes a category with no transactions', async () => {
       transactionQueryBuilder.getRawMany.mockResolvedValue([]);
 
-      const result = await service.deleteOrArchive(1);
+      const result = await service.deleteOrArchive(userId, spaceId, 1);
 
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(categoryRepository.delete).toHaveBeenCalledWith(1);
       expect(result).toEqual({ archived: false });
     });
@@ -216,7 +330,7 @@ describe('CategoriesService', () => {
       transactionQueryBuilder.getRawMany.mockResolvedValue([{ category_id: '1', count: '3' }]);
       limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
 
-      const result = await service.deleteOrArchive(1);
+      const result = await service.deleteOrArchive(userId, spaceId, 1);
 
       expect(limitRelationBuilder.of).toHaveBeenCalledWith(5);
       expect(limitRelationBuilder.remove).toHaveBeenCalledWith([1]);
@@ -233,7 +347,7 @@ describe('CategoriesService', () => {
       limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
       limitQueryBuilder.getCount.mockResolvedValue(1);
 
-      await service.deleteOrArchive(1);
+      await service.deleteOrArchive(userId, spaceId, 1);
 
       expect(limitRepository.delete).toHaveBeenCalledWith(5);
     });
@@ -243,13 +357,20 @@ describe('CategoriesService', () => {
       limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
       limitQueryBuilder.getCount.mockResolvedValue(2);
 
-      await service.deleteOrArchive(1);
+      await service.deleteOrArchive(userId, spaceId, 1);
 
       expect(limitRepository.delete).not.toHaveBeenCalled();
     });
   });
 
   describe('reorder', () => {
+    it('rejects a non-member before loading categories', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+
+      await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(forbiddenSpace);
+      expect(categoryRepository.find).not.toHaveBeenCalled();
+    });
+
     it('reassigns sort with the expense prefix (200) in the given order', async () => {
       categoryRepository.find.mockResolvedValue([
         { id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
@@ -258,7 +379,7 @@ describe('CategoriesService', () => {
       ] as Category[]);
       categoryRepository.save.mockResolvedValue([] as any);
 
-      await service.reorder(1, [2, 1, 3]);
+      await service.reorder(userId, 1, [2, 1, 3]);
 
       expect(categoryRepository.save).toHaveBeenCalledWith([
         { id: 2, sort: 201 },
@@ -274,7 +395,7 @@ describe('CategoriesService', () => {
       ] as Category[]);
       categoryRepository.save.mockResolvedValue([] as any);
 
-      await service.reorder(1, [1, 2]);
+      await service.reorder(userId, 1, [1, 2]);
 
       expect(categoryRepository.save).toHaveBeenCalledWith([
         { id: 1, sort: 101 },
@@ -287,7 +408,7 @@ describe('CategoriesService', () => {
         { id: 1, space_id: 2, transaction_type: TransactionType.EXPENSE, is_active: 1 },
       ] as Category[]);
 
-      await expect(service.reorder(1, [1])).rejects.toMatchObject(
+      await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
     });
@@ -297,7 +418,7 @@ describe('CategoriesService', () => {
         { id: 1, space_id: 1, transaction_type: TransactionType.INCOME, is_active: 1, is_system: 1 },
       ] as Category[]);
 
-      await expect(service.reorder(1, [1])).rejects.toMatchObject(
+      await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400),
       );
       expect(categoryRepository.save).not.toHaveBeenCalled();
@@ -309,7 +430,7 @@ describe('CategoriesService', () => {
         { id: 2, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
       ] as Category[]);
 
-      await expect(service.reorder(1, [1, 2])).rejects.toMatchObject(
+      await expect(service.reorder(userId, 1, [1, 2])).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_REORDER, 400),
       );
     });
@@ -319,7 +440,7 @@ describe('CategoriesService', () => {
         { id: 1, space_id: 1, transaction_type: TransactionType.EXPENSE, is_active: 0 },
       ] as Category[]);
 
-      await expect(service.reorder(1, [1])).rejects.toMatchObject(
+      await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_REORDER, 400),
       );
     });

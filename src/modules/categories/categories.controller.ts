@@ -4,8 +4,6 @@ import {
   Controller,
   Delete,
   Get,
-  HttpException,
-  HttpStatus,
   Param,
   ParseIntPipe,
   Post,
@@ -18,27 +16,19 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CategoriesService } from './categories.service';
 import type { AuthedRequest } from '@shared/types';
 import { UpdateCategoryDto } from './dto/update-category.dto';
-import { ErrorMessages } from '@shared/error-messages';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
-import { assertBelongsToSpace } from '@shared/utils';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
 
 @ApiTags('categories')
 @ApiBearerAuth()
 @Controller('spaces/:spaceId/categories')
 export class CategoriesController {
-  constructor(
-    private readonly categoriesService: CategoriesService,
-    private readonly spaceMembersService: SpaceMembersService,
-  ) {}
+  constructor(private readonly categoriesService: CategoriesService) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    return this.categoriesService.getAll(spaceId);
+    return this.categoriesService.getAll(req.user.id, spaceId);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -48,9 +38,7 @@ export class CategoriesController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() body: ReorderCategoriesDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    await this.categoriesService.reorder(spaceId, body.category_ids);
+    await this.categoriesService.reorder(req.user.id, spaceId, body.category_ids);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -61,16 +49,7 @@ export class CategoriesController {
     @Param('categoryId', ParseIntPipe) categoryId: number,
     @Body() updateCategory: UpdateCategoryDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    const category = await this.categoriesService.getOne(categoryId);
-    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
-
-    if (category.is_system) {
-      throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
-    }
-
-    return this.categoriesService.update(categoryId, updateCategory);
+    return this.categoriesService.update(req.user.id, spaceId, categoryId, updateCategory);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -80,9 +59,7 @@ export class CategoriesController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() createCategory: CreateCategoryDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    return this.categoriesService.create(spaceId, createCategory);
+    return this.categoriesService.create(req.user.id, spaceId, createCategory);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -92,15 +69,6 @@ export class CategoriesController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('categoryId', ParseIntPipe) categoryId: number,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    const category = await this.categoriesService.getOne(categoryId);
-    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
-
-    if (category.is_system) {
-      throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
-    }
-
-    return this.categoriesService.deleteOrArchive(categoryId);
+    return this.categoriesService.deleteOrArchive(req.user.id, spaceId, categoryId);
   }
 }

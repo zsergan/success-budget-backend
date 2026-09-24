@@ -8,8 +8,14 @@ import { Category } from '@entities/category.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
+import { ErrorMessages } from '@shared/error-messages';
+import { assertBelongsToSpace } from '@shared/utils';
 import { SpacesService } from '@modules/spaces/spaces.service';
-import type { WalletPeriodTotals } from '@modules/transactions/transactions.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import {
+  TransactionQueriesService,
+  type WalletPeriodTotals,
+} from '@modules/transaction-queries/transaction-queries.service';
 
 export interface WalletSummary {
   wallet: Wallet;
@@ -35,6 +41,8 @@ export class WalletsService {
     @InjectRepository(Wallet)
     private readonly walletRepository: Repository<Wallet>,
     private readonly spacesService: SpacesService,
+    private readonly spaceAccessService: SpaceAccessService,
+    private readonly transactionQueriesService: TransactionQueriesService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -49,7 +57,22 @@ export class WalletsService {
       .getMany();
   }
 
-  async create(spaceId: number, createWalletDto: CreateWalletDto): Promise<CreateWalletResult> {
+  async getOverview(userId: number, spaceId: number, from: Date, to: Date): Promise<WalletsOverview> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    const wallets = await this.getAll(spaceId);
+    const walletIds = wallets.map((wallet) => wallet.id);
+    const [periodTotals, balances] = await Promise.all([
+      this.transactionQueriesService.getPeriodTotals(walletIds, from, to),
+      this.transactionQueriesService.getBalances(walletIds),
+    ]);
+
+    return this.buildOverview(spaceId, wallets, periodTotals, balances);
+  }
+
+  async create(userId: number, spaceId: number, createWalletDto: CreateWalletDto): Promise<CreateWalletResult> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
     return this.dataSource.transaction(async (manager) => {
       const walletRepository = manager.getRepository(Wallet);
       const wallet = await walletRepository.save(
@@ -91,15 +114,28 @@ export class WalletsService {
     });
   }
 
-  async update(walletId: number, updateWalletDto: UpdateWalletDto): Promise<void> {
+  async update(userId: number, spaceId: number, walletId: number, updateWalletDto: UpdateWalletDto): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+    await this.getSpaceWallet(spaceId, walletId);
+
     await this.walletRepository.update({ id: walletId }, updateWalletDto);
   }
 
-  async delete(walletId: number): Promise<void> {
+  async delete(userId: number, spaceId: number, walletId: number): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+    await this.getSpaceWallet(spaceId, walletId);
+
     await this.walletRepository.update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
   }
 
-  summarize(wallets: Wallet[], periodTotals: Map<number, WalletPeriodTotals>): WalletSummary[] {
+  private async getSpaceWallet(spaceId: number, walletId: number): Promise<Wallet> {
+    const wallet = await this.getOne(walletId);
+    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
+
+    return wallet;
+  }
+
+  private summarize(wallets: Wallet[], periodTotals: Map<number, WalletPeriodTotals>): WalletSummary[] {
     return wallets.map((wallet) => {
       const totals = periodTotals.get(wallet.id) ?? { income: 0, spend: 0 };
 
@@ -107,7 +143,7 @@ export class WalletsService {
     });
   }
 
-  async buildOverview(
+  private async buildOverview(
     spaceId: number,
     wallets: Wallet[],
     periodTotals: Map<number, WalletPeriodTotals>,

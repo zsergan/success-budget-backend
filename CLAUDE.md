@@ -98,8 +98,15 @@ readiness" ниже.
   Переоценить, когда появится официальный гайд.
 - **Module DI**: модуль `export`-ит сервисы, которые нужны другим, а
   использующий модуль их `import`-ит — не дублировать чужой сервис как
-  свой provider. `Wallets`/`Transactions` импортируют друг друга через
-  `forwardRef()` (реальная циклическая зависимость, это нормально).
+  свой provider. No `forwardRef()` anywhere: the former Wallets/Transactions
+  cycle was removed by moving read queries into `TransactionQueriesModule`.
+- **Controller/service layering**: controllers only map HTTP params, DTOs
+  and decorators to one service call. Every service scenario takes
+  `userId`/`spaceId`, checks membership exactly once via
+  `SpaceAccessService` (`SpaceAccessModule`, depends only on the
+  `SpaceMember` repository), then checks resource ownership. Public
+  helpers without an access check (`getOne`, `getMany`, `getAll(spaceId)`,
+  `removeOwned`, ...) are for other services that already checked.
 - **Path aliases** (`@entities/*`, `@modules/*`, `@shared/*`,
   `@config/*`) — для каждого cross-directory импорта; same-directory/
   same-module импорты остаются относительными.

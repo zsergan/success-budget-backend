@@ -4,6 +4,9 @@ import { HttpException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 
 import { SpaceInvitesService } from './space-invites.service';
+import { SpacesService } from './spaces.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { UsersService } from '@modules/users/users.service';
 import { Space } from '@entities/space.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { SpaceMember } from '@entities/space-member.entity';
@@ -19,6 +22,11 @@ describe('SpaceInvitesService', () => {
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let spaceRepositoryInTx: { findOne: jest.Mock };
   let dataSource: { transaction: jest.Mock };
+  let spaceAccessService: { assertMembership: jest.Mock };
+  let spacesService: { getOne: jest.Mock };
+  let usersService: { findById: jest.Mock };
+
+  const forbidden = () => new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
   beforeEach(async () => {
     spaceInviteRepositoryInTx = { update: jest.fn() };
@@ -33,6 +41,9 @@ describe('SpaceInvitesService', () => {
       }),
     };
     dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue({ role: SpaceRole.OWNER }) };
+    spacesService = { getOne: jest.fn().mockResolvedValue({ id: 1, type: SpaceType.GROUP }) };
+    usersService = { findById: jest.fn().mockResolvedValue({ id: 2, email: 'a@example.com' }) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -49,6 +60,9 @@ describe('SpaceInvitesService', () => {
         },
         { provide: getRepositoryToken(SpaceMember), useValue: { count: jest.fn() } },
         { provide: DataSource, useValue: dataSource },
+        { provide: SpaceAccessService, useValue: spaceAccessService },
+        { provide: SpacesService, useValue: spacesService },
+        { provide: UsersService, useValue: usersService },
       ],
     }).compile();
 
@@ -58,52 +72,77 @@ describe('SpaceInvitesService', () => {
   });
 
   describe('create', () => {
-    it('rejects inviting into a personal space', async () => {
-      const space = { id: 1, type: SpaceType.PERSONAL } as Space;
+    it('rejects a plain member before loading the space', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
 
-      await expect(service.create(space, 'a@example.com')).rejects.toMatchObject(
+      await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(forbidden());
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, 7, SpaceRole.OWNER);
+      expect(spacesService.getOne).not.toHaveBeenCalled();
+      expect(spaceInviteRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects inviting into a personal space', async () => {
+      spacesService.getOne.mockResolvedValue({ id: 1, type: SpaceType.PERSONAL } as Space);
+
+      await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, 400),
       );
       expect(spaceInviteRepository.save).not.toHaveBeenCalled();
     });
 
     it('rejects once the active-invite cap is reached', async () => {
-      const space = { id: 1, type: SpaceType.GROUP } as Space;
       spaceInviteRepository.find.mockResolvedValue(
         Array.from({ length: SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE }, () => ({}) as SpaceInvite),
       );
 
-      await expect(service.create(space, 'a@example.com')).rejects.toMatchObject(
+      await expect(service.create(7, 1, 'a@example.com')).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_INVITE_LIMIT_REACHED, 400),
       );
     });
 
-    it('creates the invite on the happy path', async () => {
-      const space = { id: 1, type: SpaceType.GROUP } as Space;
+    it('creates the invite and returns the only view that exposes its code', async () => {
       spaceInviteRepository.find.mockResolvedValue([]);
-      spaceInviteRepository.save.mockImplementation(async (entity) => entity as SpaceInvite);
+      spaceInviteRepository.save.mockImplementation(async (entity) => ({ ...entity, id: 5 }) as SpaceInvite);
 
-      const result = await service.create(space, 'a@example.com');
+      const result = await service.create(7, 1, 'a@example.com');
 
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spacesService.getOne).toHaveBeenCalledWith(1);
       expect(spaceInviteRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 1, email: 'a@example.com', role: SpaceRole.MEMBER }),
       );
-      expect(result).toMatchObject({ email: 'a@example.com' });
+      expect(result).toEqual({
+        id: 5,
+        email: 'a@example.com',
+        expires_at: expect.any(Date),
+        code: expect.any(String),
+      });
     });
   });
 
   describe('revoke', () => {
+    it('rejects a plain member before looking up the invite', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
+
+      await expect(service.revoke(7, 10, 1)).rejects.toMatchObject(forbidden());
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 7, SpaceRole.OWNER);
+      expect(spaceInviteRepository.findOne).not.toHaveBeenCalled();
+    });
+
     it('rejects an unknown or already-resolved invite', async () => {
       spaceInviteRepository.findOne.mockResolvedValue(null);
 
-      await expect(service.revoke(1, 10)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+      await expect(service.revoke(7, 10, 1)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
     });
 
     it('stamps revoked_at on the happy path', async () => {
       spaceInviteRepository.findOne.mockResolvedValue({ id: 1 } as SpaceInvite);
 
-      await service.revoke(1, 10);
+      await service.revoke(7, 10, 1);
 
+      expect(spaceInviteRepository.findOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({ id: 1, space_id: 10 }),
+      });
       expect(spaceInviteRepository.update).toHaveBeenCalledWith(1, { revoked_at: expect.any(Date) });
     });
   });
@@ -112,16 +151,14 @@ describe('SpaceInvitesService', () => {
     it('rejects when no active invite matches the code and caller email', async () => {
       spaceInviteRepository.findOne.mockResolvedValue(null);
 
-      await expect(service.accept(1, 'a@example.com', '123456')).rejects.toMatchObject(
-        new HttpException(ErrorMessages.NOT_FOUND, 404),
-      );
+      await expect(service.accept(2, '123456')).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
     });
 
     it('rejects when the space has reached its member cap', async () => {
       spaceInviteRepository.findOne.mockResolvedValue({ id: 1, space_id: 10, role: SpaceRole.MEMBER } as SpaceInvite);
       spaceMemberRepository.count.mockResolvedValue(SPACE_LIMITS.MAX_MEMBERS_PER_SPACE);
 
-      await expect(service.accept(1, 'a@example.com', '123456')).rejects.toMatchObject(
+      await expect(service.accept(2, '123456')).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_MEMBER_LIMIT_REACHED, 400),
       );
       expect(dataSource.transaction).not.toHaveBeenCalled();
@@ -133,8 +170,12 @@ describe('SpaceInvitesService', () => {
       const space = { id: 10 } as Space;
       spaceRepositoryInTx.findOne.mockResolvedValue(space);
 
-      const result = await service.accept(2, 'a@example.com', '123456');
+      const result = await service.accept(2, '123456');
 
+      expect(usersService.findById).toHaveBeenCalledWith(2);
+      expect(spaceInviteRepository.findOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({ email: 'a@example.com', code: '123456' }),
+      });
       expect(dataSource.transaction).toHaveBeenCalled();
       expect(spaceMemberRepositoryInTx.save).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 10, user_id: 2, role: SpaceRole.MEMBER }),

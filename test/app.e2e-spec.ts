@@ -8,6 +8,10 @@ import { configureApp } from '../src/app.config';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { Category } from '@entities/category.entity';
+import { Limit } from '@entities/limit.entity';
+import { Transaction } from '@entities/transaction.entity';
+import { Wallet } from '@entities/wallet.entity';
+import { ErrorMessages } from '@shared/error-messages';
 
 describe('App (e2e)', () => {
   let app: INestApplication;
@@ -834,10 +838,285 @@ describe('App (e2e)', () => {
       .expect(201);
 
     // the same member has no membership at all in the first user's personal space
-    await request(app.getHttpServer())
+    const nonMemberResponse = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
       .set('Authorization', `Bearer ${secondUserToken}`)
       .expect(403);
+    expect(nonMemberResponse.body.message).toBe(ErrorMessages.FORBIDDEN_SPACE);
+  });
+
+  it('a member cannot reach another space wallet or category through a space they belong to', async () => {
+    const personalCategory = await dataSource
+      .getRepository(Category)
+      .findOneOrFail({ where: { space_id: personalSpaceId, is_system: 0 } });
+
+    const walletResponses = await Promise.all([
+      request(app.getHttpServer())
+        .put(`/api/v1/spaces/${groupSpaceId}/wallets/${walletId}`)
+        .set('Authorization', `Bearer ${secondUserToken}`)
+        .send({ wallet_name: 'Hijacked' }),
+      request(app.getHttpServer())
+        .delete(`/api/v1/spaces/${groupSpaceId}/wallets/${walletId}`)
+        .set('Authorization', `Bearer ${secondUserToken}`),
+    ]);
+    walletResponses.forEach((response) => {
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe(ErrorMessages.FORBIDDEN_WALLET);
+    });
+
+    const categoryResponses = await Promise.all([
+      request(app.getHttpServer())
+        .put(`/api/v1/spaces/${groupSpaceId}/categories/${personalCategory.id}`)
+        .set('Authorization', `Bearer ${secondUserToken}`)
+        .send({ name: 'Hijacked' }),
+      request(app.getHttpServer())
+        .delete(`/api/v1/spaces/${groupSpaceId}/categories/${personalCategory.id}`)
+        .set('Authorization', `Bearer ${secondUserToken}`),
+    ]);
+    categoryResponses.forEach((response) => {
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe(ErrorMessages.FORBIDDEN_CATEGORY);
+    });
+
+    const walletsResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/wallets`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(walletsResponse.body.wallets.map((summary) => summary.wallet.id)).toContain(walletId);
+    expect(walletsResponse.body.wallets.find((summary) => summary.wallet.id === walletId).wallet.wallet_name).not.toBe(
+      'Hijacked',
+    );
+    const untouchedCategory = await dataSource.getRepository(Category).findOneByOrFail({ id: personalCategory.id });
+    expect(untouchedCategory.name).toBe(personalCategory.name);
+  });
+
+  it('a member cannot reach another space transaction or limit through a space they belong to', async () => {
+    const personalTransaction = await dataSource
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .innerJoin('transaction.wallet', 'wallet')
+      .where('wallet.space_id = :spaceId', { spaceId: personalSpaceId })
+      .getOneOrFail();
+    const personalLimit = await dataSource.getRepository(Limit).findOneByOrFail({ space_id: personalSpaceId });
+    const personalCategory = await dataSource
+      .getRepository(Category)
+      .findOneOrFail({ where: { space_id: personalSpaceId, is_system: 0 } });
+    const groupWallet = await dataSource.getRepository(Wallet).findOneByOrFail({ space_id: groupSpaceId });
+    const server = app.getHttpServer();
+    const auth = `Bearer ${secondUserToken}`;
+    const transactionBody = { transaction_type: 'expense', amount: '1.00', timestamp: new Date().toISOString() };
+
+    const cases: [() => request.Test, string][] = [
+      [
+        () =>
+          request(server)
+            .post(`/api/v1/spaces/${groupSpaceId}/transactions`)
+            .set('Authorization', auth)
+            .send({ ...transactionBody, wallet_id: walletId, category_id: personalCategory.id }),
+        ErrorMessages.FORBIDDEN_WALLET,
+      ],
+      [
+        () =>
+          request(server)
+            .post(`/api/v1/spaces/${groupSpaceId}/transactions`)
+            .set('Authorization', auth)
+            .send({ ...transactionBody, wallet_id: groupWallet.id, category_id: personalCategory.id }),
+        ErrorMessages.FORBIDDEN_CATEGORY,
+      ],
+      [
+        () =>
+          request(server)
+            .delete(`/api/v1/spaces/${groupSpaceId}/transactions/${personalTransaction.id}`)
+            .set('Authorization', auth),
+        ErrorMessages.FORBIDDEN_WALLET,
+      ],
+      [
+        () =>
+          request(server)
+            .post(`/api/v1/spaces/${groupSpaceId}/limits`)
+            .set('Authorization', auth)
+            .send({ category_ids: [personalCategory.id], amount: '10.00' }),
+        ErrorMessages.FORBIDDEN_CATEGORY,
+      ],
+      [
+        () =>
+          request(server)
+            .put(`/api/v1/spaces/${groupSpaceId}/limits/${personalLimit.id}`)
+            .set('Authorization', auth)
+            .send({ amount: '1.00' }),
+        ErrorMessages.FORBIDDEN_LIMIT,
+      ],
+      [
+        () =>
+          request(server)
+            .delete(`/api/v1/spaces/${groupSpaceId}/limits/${personalLimit.id}`)
+            .set('Authorization', auth),
+        ErrorMessages.FORBIDDEN_LIMIT,
+      ],
+      [
+        () => request(server).get(`/api/v1/spaces/${personalSpaceId}/transactions`).set('Authorization', auth),
+        ErrorMessages.FORBIDDEN_SPACE,
+      ],
+      [
+        () => request(server).get(`/api/v1/spaces/${personalSpaceId}/transactions/latest`).set('Authorization', auth),
+        ErrorMessages.FORBIDDEN_SPACE,
+      ],
+      [
+        () => request(server).get(`/api/v1/spaces/${personalSpaceId}/limits`).set('Authorization', auth),
+        ErrorMessages.FORBIDDEN_SPACE,
+      ],
+    ];
+
+    for (const [send, message] of cases) {
+      const response = await send();
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe(message);
+    }
+
+    await expect(
+      dataSource.getRepository(Transaction).findOneBy({ id: personalTransaction.id }),
+    ).resolves.not.toBeNull();
+    const untouchedLimit = await dataSource.getRepository(Limit).findOneByOrFail({ id: personalLimit.id });
+    expect(untouchedLimit.amount).toBe(personalLimit.amount);
+    await expect(dataSource.getRepository(Limit).countBy({ space_id: groupSpaceId })).resolves.toBe(0);
+  });
+
+  it('hides a soft-deleted wallet in transaction responses and rejects new transactions on it', async () => {
+    const categoriesResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/categories`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const groceriesCategoryId = categoriesResponse.body.expenses.find((category) => category.name === 'Grocery').id;
+
+    const walletResponse = await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${personalSpaceId}/wallets`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ wallet_name: 'Temporary', initial_balance: '0', design: 'slate' })
+      .expect(201);
+    const temporaryWalletId = walletResponse.body.wallet.id;
+
+    const expenseResponse = await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: temporaryWalletId,
+        category_id: groceriesCategoryId,
+        transaction_type: 'expense',
+        amount: '5.00',
+        timestamp: new Date(Date.now() + 60_000).toISOString(),
+      })
+      .expect(201);
+    const expenseTransactionId = expenseResponse.body.transaction.id;
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/spaces/${personalSpaceId}/wallets/${temporaryWalletId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const latestResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions/latest`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(latestResponse.body.id).toBe(expenseTransactionId);
+    expect(latestResponse.body.wallet).toBeNull();
+
+    const listResponse = await request(app.getHttpServer())
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .query({
+        from: new Date(Date.now() - 86400000).toISOString(),
+        to: new Date(Date.now() + 86400000).toISOString(),
+      })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const listed = listResponse.body.find((transaction) => transaction.id === expenseTransactionId);
+    expect(listed.wallet).toBeNull();
+    expect(listResponse.body.some((transaction) => transaction.wallet?.id === walletId)).toBe(true);
+
+    const rejected = await request(app.getHttpServer())
+      .post(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        wallet_id: temporaryWalletId,
+        category_id: groceriesCategoryId,
+        transaction_type: 'expense',
+        amount: '1.00',
+        timestamp: new Date().toISOString(),
+      })
+      .expect(403);
+    expect(rejected.body.message).toBe(ErrorMessages.FORBIDDEN_WALLET);
+  });
+
+  it('a plain member sees the roster without remove rights and cannot run owner-only space operations', async () => {
+    const server = app.getHttpServer();
+    const memberAuth = `Bearer ${secondUserToken}`;
+
+    const pendingInvite = await request(server)
+      .post(`/api/v1/spaces/${groupSpaceId}/invites`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'pending-owner-only@example.com' })
+      .expect(201);
+
+    const spaceResponse = await request(server)
+      .get(`/api/v1/spaces/${groupSpaceId}`)
+      .set('Authorization', memberAuth)
+      .expect(200);
+    expect(spaceResponse.body.id).toBe(groupSpaceId);
+
+    const outsiderResponse = await request(server)
+      .get(`/api/v1/spaces/${personalSpaceId}`)
+      .set('Authorization', memberAuth)
+      .expect(403);
+    expect(outsiderResponse.body.message).toBe(ErrorMessages.FORBIDDEN_SPACE);
+
+    const rosterResponse = await request(server)
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', memberAuth)
+      .expect(200);
+    expect(rosterResponse.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'member', user_id: userId, role: 'owner', can_remove: false }),
+        expect.objectContaining({ type: 'member', user_id: secondUserId, role: 'member', can_remove: false }),
+        expect.objectContaining({ type: 'invite', id: pendingInvite.body.id, can_remove: false }),
+      ]),
+    );
+    expect(rosterResponse.body.every((entry) => entry.code === undefined)).toBe(true);
+
+    const ownerOnly = [
+      () => request(server).delete(`/api/v1/spaces/${groupSpaceId}`).set('Authorization', memberAuth),
+      () =>
+        request(server)
+          .post(`/api/v1/spaces/${groupSpaceId}/invites`)
+          .set('Authorization', memberAuth)
+          .send({ email: 'someone-else@example.com' }),
+      () =>
+        request(server)
+          .delete(`/api/v1/spaces/${groupSpaceId}/invites/${pendingInvite.body.id}`)
+          .set('Authorization', memberAuth),
+      () => request(server).delete(`/api/v1/spaces/${groupSpaceId}/members/${userId}`).set('Authorization', memberAuth),
+    ];
+    for (const send of ownerOnly) {
+      const response = await send();
+      expect(response.status).toBe(403);
+      expect(response.body.message).toBe(ErrorMessages.FORBIDDEN_SPACE);
+    }
+
+    const ownerRoster = await request(server)
+      .get(`/api/v1/spaces/${groupSpaceId}/members`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(ownerRoster.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'member', user_id: userId, can_remove: false }),
+        expect.objectContaining({ type: 'member', user_id: secondUserId, can_remove: true }),
+        expect.objectContaining({ type: 'invite', id: pendingInvite.body.id, can_remove: true }),
+      ]),
+    );
+    expect(ownerRoster.body.filter((entry) => entry.type === 'invite')).toHaveLength(1);
+
+    await request(server)
+      .delete(`/api/v1/spaces/${groupSpaceId}/invites/${pendingInvite.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
   });
 
   it('the owner leaves the group space and ownership transfers to the next member', async () => {

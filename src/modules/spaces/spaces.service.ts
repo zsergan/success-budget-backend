@@ -5,12 +5,13 @@ import { DataSource, In, Repository } from 'typeorm';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
-import { Category } from '@entities/category.entity';
 import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
-import { SPACE_LIMITS, SPACE_INVITE_TTL_MS, DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY } from '@shared/constants';
+import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
 import { generateRandomNumberString } from '@shared/utils';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
 
 export interface SpaceListItem {
   id: number;
@@ -30,6 +31,7 @@ export class SpacesService {
     @InjectRepository(SpaceMember)
     private readonly spaceMemberRepository: Repository<SpaceMember>,
     private readonly dataSource: DataSource,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
   async create(userId: number, dto: CreateSpaceDto): Promise<Space> {
@@ -44,27 +46,12 @@ export class SpacesService {
     }
 
     const spaceId = await this.dataSource.transaction(async (manager) => {
-      const space = await manager.getRepository(Space).save(
-        manager.getRepository(Space).create({
-          name: dto.name,
-          type: dto.type,
-          currency_id: dto.currency_id,
-        }),
+      const space = await createSpaceWithOwner(
+        manager,
+        { name: dto.name, type: dto.type, currency_id: dto.currency_id },
+        userId,
       );
-
-      await manager.getRepository(SpaceMember).save(
-        manager.getRepository(SpaceMember).create({
-          space_id: space.id,
-          user_id: userId,
-          role: SpaceRole.OWNER,
-        }),
-      );
-
-      const categories = [...DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY].map((category) => ({
-        ...category,
-        space_id: space.id,
-      }));
-      await manager.getRepository(Category).save(categories);
+      await createDefaultCategories(manager, space.id);
 
       if (invites.length) {
         const inviteRows = invites.map((email) =>
@@ -123,7 +110,19 @@ export class SpacesService {
     return this.spaceRepository.findOne({ where: { id: spaceId }, relations: { currency: true } });
   }
 
-  async remove(spaceId: number, userId: number): Promise<void> {
+  async getForMember(userId: number, spaceId: number): Promise<Space> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    return this.getOne(spaceId);
+  }
+
+  async remove(userId: number, spaceId: number): Promise<void> {
+    await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
+    await this.removeOwned(userId, spaceId);
+  }
+
+  // the caller must already have verified that userId owns spaceId
+  async removeOwned(userId: number, spaceId: number): Promise<void> {
     const spaceCount = await this.spaceMemberRepository.count({ where: { user_id: userId } });
 
     if (spaceCount <= 1) {

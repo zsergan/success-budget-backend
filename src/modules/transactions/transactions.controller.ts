@@ -4,8 +4,6 @@ import {
   Controller,
   Delete,
   Get,
-  HttpException,
-  HttpStatus,
   Param,
   ParseIntPipe,
   Post,
@@ -16,24 +14,15 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
-import { WalletsService } from '@modules/wallets/wallets.service';
-import { CategoriesService } from '@modules/categories/categories.service';
-import { SpaceMembersService } from '@modules/spaces/space-members.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '@shared/types';
-import { getEndOfMonth, getStartOfMonth, assertBelongsToSpace } from '@shared/utils';
-import { ErrorMessages } from '@shared/error-messages';
+import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
 
 @ApiTags('transactions')
 @ApiBearerAuth()
 @Controller('spaces/:spaceId/transactions')
 export class TransactionsController {
-  constructor(
-    private readonly transactionsService: TransactionsService,
-    private readonly walletsService: WalletsService,
-    private readonly categoriesService: CategoriesService,
-    private readonly spaceMembersService: SpaceMembersService,
-  ) {}
+  constructor(private readonly transactionsService: TransactionsService) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
@@ -42,41 +31,13 @@ export class TransactionsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() createTransactionDto: CreateTransactionDto,
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    const wallet = await this.walletsService.getOne(createTransactionDto.wallet_id);
-    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
-
-    if (wallet.is_deleted) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
-    }
-
-    const category = await this.categoriesService.getOne(createTransactionDto.category_id);
-    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
-
-    if (category.is_system) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
-    }
-
-    return this.transactionsService.create(wallet, createTransactionDto);
+    return this.transactionsService.create(req.user.id, spaceId, createTransactionDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Get('latest')
   async getLatest(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    const transaction = await this.transactionsService.getLatest(spaceId);
-
-    if (!transaction) {
-      return null;
-    }
-
-    if (transaction.wallet.is_deleted) {
-      transaction.wallet = null;
-    }
-
-    return transaction;
+    return this.transactionsService.getLatest(req.user.id, spaceId);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -87,17 +48,7 @@ export class TransactionsController {
     @Query('from') from: Date = getStartOfMonth(new Date()),
     @Query('to') to: Date = getEndOfMonth(new Date()),
   ) {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    const transactions = await this.transactionsService.getForAllWallets(spaceId, from, to);
-
-    transactions.forEach((transaction) => {
-      if (transaction.wallet.is_deleted) {
-        transaction.wallet = null;
-      }
-    });
-
-    return transactions;
+    return this.transactionsService.getAll(req.user.id, spaceId, from, to);
   }
 
   @Delete(':transactionId')
@@ -106,12 +57,7 @@ export class TransactionsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('transactionId') transactionId: string,
   ): Promise<boolean> {
-    await this.spaceMembersService.assertMembership(spaceId, req.user.id);
-
-    const transaction = await this.transactionsService.getOneWithWallet(transactionId);
-    assertBelongsToSpace(transaction?.wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
-
-    await this.transactionsService.remove(transaction);
+    await this.transactionsService.remove(req.user.id, spaceId, transactionId);
 
     return true;
   }

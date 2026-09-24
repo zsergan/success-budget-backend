@@ -5,7 +5,23 @@ import { DataSource, Not, Repository } from 'typeorm';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
+import { SpaceInvitesService } from './space-invites.service';
+
+export interface SpaceMemberView {
+  type: 'member' | 'invite';
+  id: number;
+  // The user id behind this row -- distinct from `id`, which for a member
+  // row is the *membership* id. DELETE :id/members/:userId expects this
+  // value, not `id`. null for invite rows, which are removed by invite id
+  // (`id`) via DELETE :id/invites/:inviteId instead.
+  user_id: number | null;
+  name: string | null;
+  email: string;
+  role: SpaceRole | null;
+  can_remove: boolean;
+}
 
 @Injectable()
 export class SpaceMembersService {
@@ -13,18 +29,10 @@ export class SpaceMembersService {
     @InjectRepository(SpaceMember)
     private readonly spaceMemberRepository: Repository<SpaceMember>,
     private readonly dataSource: DataSource,
+    private readonly spaceAccessService: SpaceAccessService,
     private readonly spacesService: SpacesService,
+    private readonly spaceInvitesService: SpaceInvitesService,
   ) {}
-
-  async assertMembership(spaceId: number, userId: number, minRole?: SpaceRole): Promise<SpaceMember> {
-    const member = await this.spaceMemberRepository.findOne({ where: { space_id: spaceId, user_id: userId } });
-
-    if (!member || (minRole === SpaceRole.OWNER && member.role !== SpaceRole.OWNER)) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_SPACE, HttpStatus.FORBIDDEN);
-    }
-
-    return member;
-  }
 
   async getAll(spaceId: number): Promise<SpaceMember[]> {
     return this.spaceMemberRepository.find({
@@ -34,14 +42,37 @@ export class SpaceMembersService {
     });
   }
 
-  async leaveOrRemove(spaceId: number, actingUserId: number, targetUserId: number): Promise<void> {
-    const actingMember = await this.spaceMemberRepository.findOne({
-      where: { space_id: spaceId, user_id: actingUserId },
-    });
+  async getMembersWithInvites(userId: number, spaceId: number): Promise<SpaceMemberView[]> {
+    const caller = await this.spaceAccessService.assertMembership(spaceId, userId);
+    const isOwner = caller.role === SpaceRole.OWNER;
 
-    if (!actingMember) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_SPACE, HttpStatus.FORBIDDEN);
-    }
+    const [members, invites] = await Promise.all([this.getAll(spaceId), this.spaceInvitesService.getActive(spaceId)]);
+
+    const memberViews: SpaceMemberView[] = members.map((member) => ({
+      type: 'member',
+      id: member.id,
+      user_id: member.user_id,
+      name: member.user.name,
+      email: member.user.email,
+      role: member.role,
+      can_remove: isOwner && member.user_id !== userId,
+    }));
+
+    const inviteViews: SpaceMemberView[] = invites.map((invite) => ({
+      type: 'invite',
+      id: invite.id,
+      user_id: null,
+      name: null,
+      email: invite.email,
+      role: null,
+      can_remove: isOwner,
+    }));
+
+    return [...memberViews, ...inviteViews];
+  }
+
+  async leaveOrRemove(spaceId: number, actingUserId: number, targetUserId: number): Promise<void> {
+    const actingMember = await this.spaceAccessService.assertMembership(spaceId, actingUserId);
 
     if (targetUserId !== actingUserId) {
       if (actingMember.role !== SpaceRole.OWNER) {
@@ -73,7 +104,7 @@ export class SpaceMembersService {
     if (!nextOwner) {
       // sole remaining member of the space - leaving is equivalent to
       // deleting it (also carries the "not your last remaining space" guard)
-      await this.spacesService.remove(spaceId, actingUserId);
+      await this.spacesService.removeOwned(actingUserId, spaceId);
       return;
     }
 

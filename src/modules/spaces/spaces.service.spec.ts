@@ -4,6 +4,7 @@ import { HttpException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 
 import { SpacesService } from './spaces.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
@@ -21,6 +22,7 @@ describe('SpacesService', () => {
   let spaceInviteRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
+  let spaceAccessService: { assertMembership: jest.Mock };
   let memberQueryBuilder: {
     select: jest.Mock;
     addSelect: jest.Mock;
@@ -52,6 +54,7 @@ describe('SpacesService', () => {
       }),
     };
     dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue({}) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -72,6 +75,7 @@ describe('SpacesService', () => {
           },
         },
         { provide: DataSource, useValue: dataSource },
+        { provide: SpaceAccessService, useValue: spaceAccessService },
       ],
     }).compile();
 
@@ -200,11 +204,51 @@ describe('SpacesService', () => {
     });
   });
 
+  describe('getForMember', () => {
+    it('rejects a non-member before loading the space', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403));
+
+      await expect(service.getForMember(1, 10)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
+      );
+      expect(spaceRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('returns the space with its currency for a member', async () => {
+      const space = { id: 10 } as Space;
+      spaceRepository.findOne.mockResolvedValue(space);
+
+      await expect(service.getForMember(1, 10)).resolves.toBe(space);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1);
+      expect(spaceRepository.findOne).toHaveBeenCalledWith({ where: { id: 10 }, relations: { currency: true } });
+    });
+  });
+
   describe('remove', () => {
+    it('rejects a plain member before any other check', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403));
+
+      await expect(service.remove(1, 10)).rejects.toMatchObject(new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403));
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1, SpaceRole.OWNER);
+      expect(spaceMemberRepository.count).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('checks ownership once, then deletes', async () => {
+      spaceMemberRepository.count.mockResolvedValue(2);
+
+      await service.remove(1, 10);
+
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceRepositoryInTx.delete).toHaveBeenCalledWith(10);
+    });
+  });
+
+  describe('removeOwned', () => {
     it('rejects deleting a user’s only remaining space', async () => {
       spaceMemberRepository.count.mockResolvedValue(1);
 
-      await expect(service.remove(10, 1)).rejects.toMatchObject(
+      await expect(service.removeOwned(1, 10)).rejects.toMatchObject(
         new HttpException(ErrorMessages.SPACE_LAST_REMAINING, 400),
       );
       expect(dataSource.transaction).not.toHaveBeenCalled();
@@ -213,8 +257,10 @@ describe('SpacesService', () => {
     it('deletes invites, members, and the space in order', async () => {
       spaceMemberRepository.count.mockResolvedValue(2);
 
-      await service.remove(10, 1);
+      await service.removeOwned(1, 10);
 
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+      expect(spaceMemberRepository.count).toHaveBeenCalledWith({ where: { user_id: 1 } });
       expect(spaceInviteRepositoryInTx.delete).toHaveBeenCalledWith({ space_id: 10 });
       expect(spaceMemberRepositoryInTx.delete).toHaveBeenCalledWith({ space_id: 10 });
       expect(spaceRepositoryInTx.delete).toHaveBeenCalledWith(10);
@@ -230,7 +276,7 @@ describe('SpacesService', () => {
       spaceMemberRepository.count.mockResolvedValue(2);
       spaceRepositoryInTx.delete.mockRejectedValue(new Error('db unavailable'));
 
-      await expect(service.remove(10, 1)).rejects.toThrow('db unavailable');
+      await expect(service.removeOwned(1, 10)).rejects.toThrow('db unavailable');
     });
   });
 });
