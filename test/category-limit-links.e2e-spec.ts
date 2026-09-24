@@ -1,45 +1,19 @@
-import { HttpException, INestApplication } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { DataSource, Repository } from 'typeorm';
+import request from 'supertest';
+import { ObjectLiteral, Repository } from 'typeorm';
 
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/app.config';
-
-import { Space } from '@entities/space.entity';
-import { SpaceMember } from '@entities/space-member.entity';
-import { User } from '@entities/user.entity';
-import { Currency } from '@entities/currency.entity';
 import { Category } from '@entities/category.entity';
-import { CategoriesService } from '@modules/categories/categories.service';
-import { LimitsService } from '@modules/limits/limits.service';
-import { AppColor, CategoryIcon, LimitType, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
-
-const ROUNDS = 5;
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { AppColor, CategoryIcon, LimitType, TransactionType } from '@shared/enums';
+import { ErrorMessages } from '@shared/error-messages';
+import { createTestApp, createVerifiedMember, deleteUsers, Member, TestApp } from './support/app';
+import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
 
 describe('Category changes and limit links (e2e)', () => {
-  let app: INestApplication;
-  let dataSource: DataSource;
-  let categoriesService: CategoriesService;
-  let limitsService: LimitsService;
-  let currencyId: number;
-  const spaceIds: number[] = [];
+  let testApp: TestApp;
   const userIds: number[] = [];
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    dataSource = moduleFixture.get(DataSource);
-    categoriesService = moduleFixture.get(CategoriesService);
-    limitsService = moduleFixture.get(LimitsService);
-
-    const [currency] = await dataSource.getRepository(Currency).find({ take: 1 });
-    currencyId = currency.id;
+    testApp = await createTestApp();
   });
 
   afterEach(() => {
@@ -48,45 +22,34 @@ describe('Category changes and limit links (e2e)', () => {
 
   afterAll(async () => {
     try {
-      if (spaceIds.length) {
-        await dataSource.query(
-          'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.space_id IN (?)',
-          [spaceIds],
-        );
-        await dataSource.query('DELETE FROM limits WHERE space_id IN (?)', [spaceIds]);
-        await dataSource.query('DELETE FROM space_members WHERE space_id IN (?)', [spaceIds]);
-        await dataSource.query('DELETE FROM spaces WHERE id IN (?)', [spaceIds]);
-      }
-      if (userIds.length) {
-        await dataSource.query('DELETE FROM users WHERE id IN (?)', [userIds]);
-      }
+      await deleteUsers(testApp.dataSource, userIds);
     } finally {
-      await app.close();
+      await testApp.app.close();
     }
   });
 
-  async function createSpaceWithOwner(): Promise<{ spaceId: number; userId: number }> {
-    const space = await dataSource.getRepository(Space).save({
-      name: `e2e-category-links-${Date.now()}-${Math.random()}`,
-      type: SpaceType.PERSONAL,
-      currency_id: currencyId,
-    });
-    spaceIds.push(space.id);
+  async function member(): Promise<Member> {
+    const created = await createVerifiedMember(testApp, 'category-links');
+    userIds.push(created.userId);
+    return created;
+  }
 
-    const user = await dataSource.getRepository(User).save({
-      email: `e2e-category-links-${Date.now()}-${Math.random()}@example.com`,
-      name: 'E2E category links',
-      password: 'DevTest#2026',
-    });
-    userIds.push(user.id);
-
-    await dataSource.getRepository(SpaceMember).save({ space_id: space.id, user_id: user.id, role: SpaceRole.OWNER });
-
-    return { spaceId: space.id, userId: user.id };
+  function api({ spaceId, token }: Member) {
+    const server = testApp.app.getHttpServer();
+    const base = `/api/v1/spaces/${spaceId}`;
+    const auth = { Authorization: `Bearer ${token}` };
+    return {
+      createLimit: (body: object) => request(server).post(`${base}/limits`).set(auth).send(body),
+      updateLimit: (limitId: number, body: object) =>
+        request(server).put(`${base}/limits/${limitId}`).set(auth).send(body),
+      archiveCategory: (categoryId: number) =>
+        request(server).put(`${base}/categories/${categoryId}`).set(auth).send({ is_active: 0 }),
+      deleteCategory: (categoryId: number) => request(server).delete(`${base}/categories/${categoryId}`).set(auth),
+    };
   }
 
   async function createCategory(spaceId: number): Promise<number> {
-    const category = await dataSource.getRepository(Category).save({
+    const category = await testApp.dataSource.getRepository(Category).save({
       space_id: spaceId,
       name: 'Linked',
       transaction_type: TransactionType.EXPENSE,
@@ -95,173 +58,194 @@ describe('Category changes and limit links (e2e)', () => {
       is_active: 1,
       is_system: 0,
     });
-
     return category.id;
   }
 
   async function linkedCategoryIds(limitId: number): Promise<number[]> {
-    const rows: { category_id: number }[] = await dataSource.query(
+    const rows: { category_id: number }[] = await testApp.dataSource.query(
       'SELECT category_id FROM limit_categories WHERE limit_id = ? ORDER BY category_id',
       [limitId],
     );
-
     return rows.map((row) => row.category_id);
   }
 
-  async function limitExists(limitId: number): Promise<boolean> {
-    const rows = await dataSource.query('SELECT id FROM limits WHERE id = ?', [limitId]);
-
-    return rows.length === 1;
+  async function limitIds(spaceId: number): Promise<number[]> {
+    const rows: { id: number }[] = await testApp.dataSource.query('SELECT id FROM limits WHERE space_id = ?', [
+      spaceId,
+    ]);
+    return rows.map((row) => row.id);
   }
 
+  async function categoryState(categoryId: number): Promise<{ is_active: number } | undefined> {
+    const [row] = await testApp.dataSource.query('SELECT is_active FROM categories WHERE id = ?', [categoryId]);
+    return row;
+  }
+
+  // no link to an archived or deleted category, and no category limit left without categories
   async function expectConsistentLinks(spaceId: number): Promise<void> {
-    const archivedOrMissingLinks = await dataSource.query(
+    const badLinks = await testApp.dataSource.query(
       `SELECT lc.category_id FROM limit_categories lc
        INNER JOIN limits l ON l.id = lc.limit_id
        LEFT JOIN categories c ON c.id = lc.category_id
        WHERE l.space_id = ? AND (c.id IS NULL OR c.is_active = 0)`,
       [spaceId],
     );
-    const emptyCategoryLimits = await dataSource.query(
+    const emptyLimits = await testApp.dataSource.query(
       `SELECT l.id FROM limits l
        LEFT JOIN limit_categories lc ON lc.limit_id = l.id
        WHERE l.space_id = ? AND l.limit_type = ? AND lc.limit_id IS NULL`,
       [spaceId, LimitType.CATEGORY],
     );
 
-    expect(archivedOrMissingLinks).toEqual([]);
-    expect(emptyCategoryLimits).toEqual([]);
+    expect(badLinks).toEqual([]);
+    expect(emptyLimits).toEqual([]);
   }
 
-  function expectOnlyBusinessErrors(results: PromiseSettledResult<unknown>[]): void {
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        expect(result.reason).toBeInstanceOf(HttpException);
-        expect((result.reason as HttpException).getStatus()).toBeLessThan(500);
-      }
-    }
+  function overlapOnSpaceLock<A, B>(first: () => PromiseLike<A>, second: () => PromiseLike<B>): Promise<[A, B]> {
+    const checkpoint = pauseAfterFirstCall(testApp.app.get(SpaceAccessService), 'lockSpace');
+    return overlap(testApp.dataSource, checkpoint, LOCK_SPACE, first, second);
   }
 
-  it('keeps a group limit when one of its categories is archived, and deletes it with the last one', async () => {
-    const { spaceId, userId } = await createSpaceWithOwner();
-    const [first, second] = [await createCategory(spaceId), await createCategory(spaceId)];
-    const limit = await limitsService.create(userId, spaceId, {
-      category_ids: [first, second],
-      name: 'Group',
-      amount: '100',
+  describe('one request at a time', () => {
+    it('keeps a group limit when one of its categories is archived, and deletes it with the last one', async () => {
+      const owner = await member();
+      const [first, second] = [await createCategory(owner.spaceId), await createCategory(owner.spaceId)];
+      const limit = (await api(owner).createLimit({ category_ids: [first, second], name: 'Group', amount: '100' }))
+        .body;
+
+      expect((await api(owner).archiveCategory(first)).status).toBe(200);
+      expect(await linkedCategoryIds(limit.id)).toEqual([second]);
+
+      expect((await api(owner).archiveCategory(second)).status).toBe(200);
+      expect(await limitIds(owner.spaceId)).toEqual([]);
     });
 
-    await categoriesService.update(userId, spaceId, first, { is_active: 0 });
+    it('deletes a category without history that is linked to a limit', async () => {
+      const owner = await member();
+      const [kept, deleted] = [await createCategory(owner.spaceId), await createCategory(owner.spaceId)];
+      const group = (await api(owner).createLimit({ category_ids: [kept, deleted], name: 'Group', amount: '100' }))
+        .body;
+      const single = await createCategory(owner.spaceId);
+      await api(owner).createLimit({ category_ids: [single], amount: '100' });
 
-    expect(await limitExists(limit.id)).toBe(true);
-    expect(await linkedCategoryIds(limit.id)).toEqual([second]);
+      const deletedFromGroup = await api(owner).deleteCategory(deleted);
+      const deletedSingle = await api(owner).deleteCategory(single);
 
-    await categoriesService.update(userId, spaceId, second, { is_active: 0 });
-
-    expect(await limitExists(limit.id)).toBe(false);
-  });
-
-  it('deletes a category without history that is linked to a limit', async () => {
-    const { spaceId, userId } = await createSpaceWithOwner();
-    const [kept, deleted] = [await createCategory(spaceId), await createCategory(spaceId)];
-    const group = await limitsService.create(userId, spaceId, {
-      category_ids: [kept, deleted],
-      name: 'Group',
-      amount: '100',
-    });
-    const single = await limitsService.create(userId, spaceId, {
-      category_ids: [await createCategory(spaceId)],
-      amount: '100',
-    });
-    const [singleCategory] = await linkedCategoryIds(single.id);
-
-    await expect(categoriesService.deleteOrArchive(userId, spaceId, deleted)).resolves.toEqual({ archived: false });
-    await expect(categoriesService.deleteOrArchive(userId, spaceId, singleCategory)).resolves.toEqual({
-      archived: false,
+      expect([deletedFromGroup.status, deletedFromGroup.body]).toEqual([200, { archived: false }]);
+      expect([deletedSingle.status, deletedSingle.body]).toEqual([200, { archived: false }]);
+      expect(await linkedCategoryIds(group.id)).toEqual([kept]);
+      expect(await limitIds(owner.spaceId)).toEqual([group.id]);
+      expect(await categoryState(deleted)).toBeUndefined();
+      expect(await categoryState(single)).toBeUndefined();
     });
 
-    expect(await linkedCategoryIds(group.id)).toEqual([kept]);
-    expect(await limitExists(single.id)).toBe(false);
-    const remaining = await dataSource.query('SELECT id FROM categories WHERE id IN (?)', [[deleted, singleCategory]]);
-    expect(remaining).toEqual([]);
-  });
-
-  it('rolls back the unlink and limit deletion when the archive write fails', async () => {
-    const { spaceId, userId } = await createSpaceWithOwner();
-    const categoryId = await createCategory(spaceId);
-    const limit = await limitsService.create(userId, spaceId, { category_ids: [categoryId], amount: '100' });
-
-    const failure = new Error('category write failed');
-    const save = Repository.prototype.save;
-    jest.spyOn(Repository.prototype, 'save').mockImplementation(function (this: Repository<object>, ...args) {
-      if (this.metadata.target === Category) {
-        return Promise.reject(failure);
-      }
-      return save.apply(this, args);
-    });
-
-    await expect(categoriesService.update(userId, spaceId, categoryId, { is_active: 0 })).rejects.toBe(failure);
-
-    expect(await limitExists(limit.id)).toBe(true);
-    expect(await linkedCategoryIds(limit.id)).toEqual([categoryId]);
-    const [category] = await dataSource.query('SELECT is_active FROM categories WHERE id = ?', [categoryId]);
-    expect(category.is_active).toBe(1);
-  });
-
-  it('archives both categories of a group at once and deletes the emptied limit', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
-      const [first, second] = [await createCategory(spaceId), await createCategory(spaceId)];
-      const limit = await limitsService.create(userId, spaceId, {
-        category_ids: [first, second],
-        name: 'Group',
-        amount: '100',
+    it('rolls back the unlink and the limit deletion when the archive write fails', async () => {
+      const owner = await member();
+      const categoryId = await createCategory(owner.spaceId);
+      const limit = (await api(owner).createLimit({ category_ids: [categoryId], amount: '100' })).body;
+      const originalSave = Repository.prototype.save;
+      jest.spyOn(Repository.prototype, 'save').mockImplementation(function (
+        this: Repository<ObjectLiteral>,
+        ...args: Parameters<typeof originalSave>
+      ) {
+        if (this.target === Category) {
+          return Promise.reject(new Error('injected category write failure'));
+        }
+        return Reflect.apply(originalSave, this, args);
       });
 
-      const results = await Promise.allSettled([
-        categoriesService.update(userId, spaceId, first, { is_active: 0 }),
-        categoriesService.update(userId, spaceId, second, { is_active: 0 }),
-      ]);
+      const response = await api(owner).archiveCategory(categoryId);
 
-      expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
-      expect(await limitExists(limit.id)).toBe(false);
-      await expectConsistentLinks(spaceId);
-    }
+      expect(response.status).toBe(500);
+      expect(await limitIds(owner.spaceId)).toEqual([limit.id]);
+      expect(await linkedCategoryIds(limit.id)).toEqual([categoryId]);
+      expect(await categoryState(categoryId)).toEqual({ is_active: 1 });
+    });
   });
 
-  it('never links an archived category when archiving races a limit update', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
-      const contested = await createCategory(spaceId);
-      const limit = await limitsService.create(userId, spaceId, {
-        category_ids: [await createCategory(spaceId)],
-        amount: '100',
-      });
+  describe('overlapping requests', () => {
+    it('archives both categories of a group and deletes the emptied limit', async () => {
+      const owner = await member();
+      const [first, second] = [await createCategory(owner.spaceId), await createCategory(owner.spaceId)];
+      await api(owner).createLimit({ category_ids: [first, second], name: 'Group', amount: '100' });
 
-      const results = await Promise.allSettled([
-        categoriesService.update(userId, spaceId, contested, { is_active: 0 }),
-        limitsService.update(userId, spaceId, limit.id, { category_ids: [contested] }),
-      ]);
+      const [a, b] = await overlapOnSpaceLock(
+        () => api(owner).archiveCategory(first),
+        () => api(owner).archiveCategory(second),
+      );
 
-      expect(results[0].status).toBe('fulfilled');
-      expectOnlyBusinessErrors(results);
-      await expectConsistentLinks(spaceId);
-    }
-  });
+      expect([a.status, b.status]).toEqual([200, 200]);
+      expect(await limitIds(owner.spaceId)).toEqual([]);
+      await expectConsistentLinks(owner.spaceId);
+    });
 
-  it('never leaves a dangling limit when deleting a category races a limit create', async () => {
-    for (let round = 0; round < ROUNDS; round++) {
-      const { spaceId, userId } = await createSpaceWithOwner();
-      const contested = await createCategory(spaceId);
+    it('rejects a limit update that picks a category archived just before it', async () => {
+      const owner = await member();
+      const contested = await createCategory(owner.spaceId);
+      const other = await createCategory(owner.spaceId);
+      const limit = (await api(owner).createLimit({ category_ids: [other], amount: '100' })).body;
 
-      const results = await Promise.allSettled([
-        categoriesService.deleteOrArchive(userId, spaceId, contested),
-        limitsService.create(userId, spaceId, { category_ids: [contested], amount: '100' }),
-      ]);
+      const [archive, update] = await overlapOnSpaceLock(
+        () => api(owner).archiveCategory(contested),
+        () => api(owner).updateLimit(limit.id, { category_ids: [contested] }),
+      );
 
-      expect(results[0].status).toBe('fulfilled');
-      expectOnlyBusinessErrors(results);
-      await expectConsistentLinks(spaceId);
-    }
+      expect(archive.status).toBe(200);
+      expect(update.status).toBe(400);
+      expect(update.body.message).toBe(ErrorMessages.CATEGORY_ARCHIVED);
+      expect(await categoryState(contested)).toEqual({ is_active: 0 });
+      expect(await linkedCategoryIds(limit.id)).toEqual([other]);
+      await expectConsistentLinks(owner.spaceId);
+    });
+
+    it('unlinks a category archived right after a limit update picked it', async () => {
+      const owner = await member();
+      const contested = await createCategory(owner.spaceId);
+      const limit = (
+        await api(owner).createLimit({ category_ids: [await createCategory(owner.spaceId)], amount: '100' })
+      ).body;
+
+      const [update, archive] = await overlapOnSpaceLock(
+        () => api(owner).updateLimit(limit.id, { category_ids: [contested] }),
+        () => api(owner).archiveCategory(contested),
+      );
+
+      expect([update.status, archive.status]).toEqual([200, 200]);
+      expect(await categoryState(contested)).toEqual({ is_active: 0 });
+      expect(await limitIds(owner.spaceId)).toEqual([]);
+      await expectConsistentLinks(owner.spaceId);
+    });
+
+    it('rejects a limit create for a category deleted just before it', async () => {
+      const owner = await member();
+      const contested = await createCategory(owner.spaceId);
+
+      const [deletion, create] = await overlapOnSpaceLock(
+        () => api(owner).deleteCategory(contested),
+        () => api(owner).createLimit({ category_ids: [contested], amount: '100' }),
+      );
+
+      expect([deletion.status, deletion.body]).toEqual([200, { archived: false }]);
+      expect(create.status).toBe(403);
+      expect(create.body.message).toBe(ErrorMessages.FORBIDDEN_CATEGORY);
+      expect(await limitIds(owner.spaceId)).toEqual([]);
+      await expectConsistentLinks(owner.spaceId);
+    });
+
+    it('deletes a category and the limit created for it just before', async () => {
+      const owner = await member();
+      const contested = await createCategory(owner.spaceId);
+
+      const [create, deletion] = await overlapOnSpaceLock(
+        () => api(owner).createLimit({ category_ids: [contested], amount: '100' }),
+        () => api(owner).deleteCategory(contested),
+      );
+
+      expect(create.status).toBe(201);
+      expect([deletion.status, deletion.body]).toEqual([200, { archived: false }]);
+      expect(await categoryState(contested)).toBeUndefined();
+      expect(await limitIds(owner.spaceId)).toEqual([]);
+      await expectConsistentLinks(owner.spaceId);
+    });
   });
 });
