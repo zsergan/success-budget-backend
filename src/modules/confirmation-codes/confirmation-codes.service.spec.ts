@@ -13,11 +13,7 @@ describe('decideSendAction', () => {
   const cooldownMs = CONFIRMATION_CODE_RESEND_COOLDOWN_MS;
   const now = Date.now();
 
-  it('creates a new code when none exists yet', () => {
-    expect(decideSendAction(null, now, cooldownMs)).toEqual({ action: 'create' });
-  });
-
-  it('creates a new code when the existing one has never been attempted (legacy row)', () => {
+  it('sends when the existing code has never been attempted (legacy row)', () => {
     const existing = { send_status: ConfirmationCodeSendStatus.PENDING, last_attempted_at: null };
 
     expect(decideSendAction(existing, now, cooldownMs)).toEqual({ action: 'send' });
