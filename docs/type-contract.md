@@ -4,8 +4,7 @@ Actual runtime types at the HTTP and MySQL boundaries, observed through the
 real `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`, no
 implicit conversion) and the `mysql2` driver as configured by TypeORM.
 Executable checks: `test/type-contract.e2e-spec.ts`. The mixed amount types
-across responses are a **gap** kept for API compatibility; the money rules
-below list what is not enforced yet.
+across responses are a **gap** kept for API compatibility.
 
 ## Money
 
@@ -24,10 +23,11 @@ The same transaction amount still leaves the API as a number, the echoed
 input string, or a normalized DECIMAL string depending on the endpoint
 (**gap**, kept for API compatibility).
 
-The derived wallet fields are computed in integer cents: `SUM` strings are
-parsed straight into cents, and they become numbers only when the response is
-built. A value a number cannot hold to the cent is a 500, never a rounded
-amount.
+Derived amounts (wallet balances and totals, limit `spent`,
+`over_allocation`) and percentages are computed in integer cents: `SUM`
+strings and `DECIMAL` columns are parsed straight into cents, and they become
+numbers only when the response is built. A value a number cannot hold to the
+cent is a 500, never a rounded amount.
 
 ### Money rules
 
@@ -52,10 +52,11 @@ products, so `29.00` spent of `100.00` is 29, never 28.
 | `GET /limits` `in_percent` | `floor(spent / amount * 100)` to an integer, not capped at 100; `0` when the limit amount is `0`                                                                                                           |
 | `delta_percent`            | `net / balance at period start * 100` to one decimal place, halves toward positive infinity (`2.25` → `2.3`, `-2.25` → `-2.2`); `0` when the start balance is `0`; a negative start balance flips the sign |
 
-Response field types stay as listed in the table above.
+`over_allocation` is reported only when the category limit amounts sum to
+strictly more than the monthly total (`0.10 + 0.20` against `0.30` is not
+over).
 
-**Gap** until the percentages are exact: `in_percent` is floored from a float
-product (`29.00` of `100.00` gives 28).
+Response field types stay as listed in the table above.
 
 ## Dates
 
