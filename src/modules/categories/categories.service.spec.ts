@@ -41,7 +41,11 @@ describe('CategoriesService', () => {
       getRawMany: jest.fn().mockResolvedValue([]),
     };
 
-    limitRelationBuilder = { of: jest.fn().mockReturnThis(), remove: jest.fn() };
+    limitRelationBuilder = {
+      of: jest.fn().mockReturnThis(),
+      remove: jest.fn(),
+      loadMany: jest.fn().mockResolvedValue([buildCategory({ id: 2 })]),
+    };
     limitQueryBuilder = {
       innerJoin: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
@@ -49,7 +53,6 @@ describe('CategoriesService', () => {
       addSelect: jest.fn().mockReturnThis(),
       getRawMany: jest.fn().mockResolvedValue([]),
       getOne: jest.fn().mockResolvedValue(null),
-      getCount: jest.fn().mockResolvedValue(2), // >1 by default; the ==1 case has its own test
       relation: jest.fn().mockReturnValue(limitRelationBuilder),
     };
 
@@ -367,17 +370,20 @@ describe('CategoriesService', () => {
     it('deletes the limit too when this was its only category', async () => {
       transactionQueryBuilder.getRawMany.mockResolvedValue([{ category_id: '1', count: '3' }]);
       limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
-      limitQueryBuilder.getCount.mockResolvedValue(1);
+      limitRelationBuilder.loadMany.mockResolvedValue([]);
 
       await service.deleteOrArchive(userId, spaceId, 1);
 
+      expect(limitRelationBuilder.remove.mock.invocationCallOrder[0]).toBeLessThan(
+        limitRelationBuilder.loadMany.mock.invocationCallOrder[0],
+      );
       expect(limitRepository.delete).toHaveBeenCalledWith(5);
     });
 
     it('keeps the limit when other categories still belong to it', async () => {
       transactionQueryBuilder.getRawMany.mockResolvedValue([{ category_id: '1', count: '3' }]);
       limitQueryBuilder.getOne.mockResolvedValue({ id: 5 });
-      limitQueryBuilder.getCount.mockResolvedValue(2);
+      limitRelationBuilder.loadMany.mockResolvedValue([buildCategory({ id: 2 })]);
 
       await service.deleteOrArchive(userId, spaceId, 1);
 

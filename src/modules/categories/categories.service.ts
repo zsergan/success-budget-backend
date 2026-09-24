@@ -220,16 +220,12 @@ export class CategoriesService {
       return;
     }
 
-    const categoryCount = await this.limitRepository
-      .createQueryBuilder('limit')
-      .innerJoin('limit.categories', 'category')
-      .where('limit.id = :limitId', { limitId: limit.id })
-      .getCount();
-
-    await this.limitRepository.createQueryBuilder().relation('categories').of(limit.id).remove([categoryId]);
+    const relation = this.limitRepository.createQueryBuilder().relation('categories').of(limit.id);
+    await relation.remove([categoryId]);
 
     // a category-type limit can't have zero categories - delete it with its last one
-    if (categoryCount === 1) {
+    const remaining = await relation.loadMany<Category>();
+    if (remaining.length === 0) {
       await this.limitRepository.delete(limit.id);
     }
   }
