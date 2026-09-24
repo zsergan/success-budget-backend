@@ -142,8 +142,8 @@ describe('TransactionQueriesService', () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       queryBuilder.getRawMany.mockResolvedValue([
-        { category_id: 10, spent: '350' },
-        { category_id: 20, spent: '50' },
+        { category_id: 10, spent: '350.29' },
+        { category_id: 20, spent: '50.00' },
       ]);
 
       const result = await service.getExpensesByCategory(9, from, to);
@@ -156,8 +156,8 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.category_id');
       expect(result).toEqual(
         new Map([
-          [10, 350],
-          [20, 50],
+          [10, 35029n],
+          [20, 5000n],
         ]),
       );
     });

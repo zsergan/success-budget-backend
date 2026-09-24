@@ -95,7 +95,8 @@ export class TransactionQueriesService {
   // expense spend for the period, grouped in SQL. Joined to wallet only to
   // scope by space_id (still includes deleted-wallet history, since limits
   // track space spend, not per-wallet); no wallet/category entities loaded.
-  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, number>> {
+  // Sums are in cents.
+  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, bigint>> {
     const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoin('transaction.wallet', 'wallet')
@@ -108,7 +109,7 @@ export class TransactionQueriesService {
       .groupBy('transaction.category_id')
       .getRawMany<{ category_id: number; spent: string }>();
 
-    return new Map(rows.map((row) => [Number(row.category_id), Number(row.spent)]));
+    return new Map(rows.map((row) => [Number(row.category_id), parseMoney(row.spent)]));
   }
 
   async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<LoadedTransaction[]> {

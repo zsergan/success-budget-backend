@@ -7,7 +7,16 @@ import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace, assertFound, getEndOfMonth, getStartOfMonth, withRelations } from '@shared/utils';
+import {
+  assertBelongsToSpace,
+  assertFound,
+  floorPercent,
+  getEndOfMonth,
+  getStartOfMonth,
+  moneyToNumber,
+  parseMoney,
+  withRelations,
+} from '@shared/utils';
 import type { WithRelations } from '@shared/types';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -145,13 +154,14 @@ export class LimitsService {
     await this.limitRepository.delete(limitId);
   }
 
-  calculateSpending(limits: LimitWithCategories[], categoryTotals: Map<number, number>) {
+  // categoryTotals are in cents
+  calculateSpending(limits: LimitWithCategories[], categoryTotals: Map<number, bigint>) {
     const totalLimit = limits.find((limit) => limit.limit_type === LimitType.OTHERS);
     const categoryLimits = limits.filter((limit) => limit.limit_type === LimitType.CATEGORY);
 
     // the monthly total tracks ALL expenses independently - one pass over
     // every category's spend, not just the sum of the category limits below it
-    let totalSpend = 0;
+    let totalSpend = 0n;
     for (const spent of categoryTotals.values()) {
       totalSpend += spent;
     }
@@ -159,30 +169,28 @@ export class LimitsService {
     const total = totalLimit ? this.buildLimitView(totalLimit, totalSpend) : null;
 
     const categories = categoryLimits.map((limit) => {
-      const spent = limit.categories.reduce((sum, category) => sum + (categoryTotals.get(category.id) ?? 0), 0);
+      const spent = limit.categories.reduce((sum, category) => sum + (categoryTotals.get(category.id) ?? 0n), 0n);
 
       return this.buildLimitView(limit, spent);
     });
 
-    const categoryTotal = categoryLimits.reduce((sum, limit) => sum + Number(limit.amount), 0);
+    const categoryTotal = categoryLimits.reduce((sum, limit) => sum + parseMoney(limit.amount), 0n);
+    const totalAmount = totalLimit && parseMoney(totalLimit.amount);
     const overAllocation =
-      totalLimit && categoryTotal > Number(totalLimit.amount)
-        ? { category_total: categoryTotal, difference: categoryTotal - Number(totalLimit.amount) }
+      totalAmount !== undefined && categoryTotal > totalAmount
+        ? { category_total: moneyToNumber(categoryTotal), difference: moneyToNumber(categoryTotal - totalAmount) }
         : null;
 
     return { total, categories, over_allocation: overAllocation };
   }
 
-  private buildLimitView(limit: LimitWithCategories, spent: number) {
-    const amount = Number(limit.amount);
-    const in_percent = amount > 0 ? Math.floor((spent / amount) * 100) : 0;
-
+  private buildLimitView(limit: LimitWithCategories, spent: bigint) {
     return {
       id: limit.id,
       name: limit.name,
       amount: limit.amount,
-      spent,
-      in_percent,
+      spent: moneyToNumber(spent),
+      in_percent: floorPercent(spent, parseMoney(limit.amount)),
       categories: limit.categories.map((category) => ({
         id: category.id,
         name: category.name,

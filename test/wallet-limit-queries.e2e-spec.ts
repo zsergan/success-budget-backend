@@ -236,9 +236,9 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const totalsA = await transactionQueriesService.getExpensesByCategory(spaceA, from, to);
       const totalsB = await transactionQueriesService.getExpensesByCategory(spaceB, from, to);
 
-      expect(totalsA.get(catA.id)).toBe(70);
+      expect(totalsA.get(catA.id)).toBe(7000n);
       expect(totalsA.has(catB.id)).toBe(false);
-      expect(totalsB.get(catB.id)).toBe(999);
+      expect(totalsB.get(catB.id)).toBe(99900n);
       expect(totalsB.has(catA.id)).toBe(false);
     });
   });
@@ -284,8 +284,8 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       // limits scope by space, not by wallet visibility - the deleted
       // wallet's history still counts against a category limit
       const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
-      expect(categoryTotals.get(catA.id)).toBe(100.25 + 15 + 60);
-      expect(categoryTotals.get(catB.id)).toBe(40);
+      expect(categoryTotals.get(catA.id)).toBe(17525n);
+      expect(categoryTotals.get(catB.id)).toBe(4000n);
       expect(categoryTotals.has(catIncome.id)).toBe(false);
     });
   });
@@ -319,13 +319,10 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const result = limitsService.calculateSpending(limits, categoryTotals);
 
       // total tracks ALL expenses, including catZ which no category limit covers
-      expect(result.total).toMatchObject({ amount: '50.00', spent: 12.34 + 0.01 + 45.65 + 100 });
+      expect(result.total).toMatchObject({ amount: '50.00', spent: 158, in_percent: 316 });
 
       expect(result.categories).toHaveLength(1);
-      // in_percent is floor((58 / 100) * 100); 58/100 isn't exactly
-      // representable in IEEE754, so this floors to 57, not 58 - a
-      // pre-existing quirk of the percent formula, not this stage's concern
-      expect(result.categories[0]).toMatchObject({ name: 'Fun', spent: 12.34 + 0.01 + 45.65, in_percent: 57 });
+      expect(result.categories[0]).toMatchObject({ name: 'Fun', spent: 58, in_percent: 58 });
 
       expect(result.over_allocation).toEqual({ category_total: 100, difference: 50 });
     });
