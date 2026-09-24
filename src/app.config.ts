@@ -38,6 +38,24 @@ export function isSwaggerEnabled(configService: ConfigService): boolean {
   return configService.get<string>('NODE_ENV') !== 'production';
 }
 
+export interface FieldError {
+  field: string;
+  error: string;
+}
+
+// Nested errors (e.g. from @ValidateNested) carry their messages on
+// `children`, not `constraints`.
+export function formatValidationErrors(errors: ValidationError[], parentPath = ''): FieldError[] {
+  return errors.flatMap((error) => {
+    const field = parentPath ? `${parentPath}.${error.property}` : error.property;
+    const messages = Object.values(error.constraints ?? {});
+    const own = messages.length ? [{ field, error: messages.join(', ') }] : [];
+    const nested = formatValidationErrors(error.children ?? [], field);
+
+    return own.length || nested.length ? [...own, ...nested] : [{ field, error: `${field} is invalid` }];
+  });
+}
+
 export function configureApp(app: INestApplication): void {
   const configService = app.get(ConfigService);
 
@@ -54,14 +72,8 @@ export function configureApp(app: INestApplication): void {
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
-      exceptionFactory: (validationErrors: ValidationError[] = []) => {
-        return new BadRequestException(
-          validationErrors.map((error) => ({
-            field: error.property,
-            error: Object.values(error.constraints).join(', '),
-          })),
-        );
-      },
+      exceptionFactory: (validationErrors: ValidationError[] = []) =>
+        new BadRequestException(formatValidationErrors(validationErrors)),
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
