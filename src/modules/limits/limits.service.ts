@@ -251,6 +251,10 @@ export class LimitsService {
       if (category.is_system) {
         throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
       }
+
+      if (category.is_active === 0) {
+        throw new HttpException(ErrorMessages.CATEGORY_ARCHIVED, HttpStatus.BAD_REQUEST);
+      }
     }
   }
 

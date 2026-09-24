@@ -367,6 +367,7 @@ describe('LimitsService', () => {
       ['missing', spaceCategories(), ErrorMessages.FORBIDDEN_CATEGORY, 403],
       ['foreign-space', spaceCategories({ id: 5, space_id: 20 }), ErrorMessages.FORBIDDEN_CATEGORY, 403],
       ['system', spaceCategories({ id: 5, space_id: spaceId, is_system: 1 }), ErrorMessages.CATEGORY_IS_SYSTEM, 400],
+      ['archived', spaceCategories({ id: 5, space_id: spaceId, is_active: 0 }), ErrorMessages.CATEGORY_ARCHIVED, 400],
     ])('create rejects a %s category before any limit rule runs', async (_, categories, message, status) => {
       categoriesService.getMany.mockResolvedValue(categories);
 
@@ -393,6 +394,7 @@ describe('LimitsService', () => {
     it.each([
       ['foreign-space', spaceCategories({ id: 6, space_id: 20 }), ErrorMessages.FORBIDDEN_CATEGORY, 403],
       ['system', spaceCategories({ id: 6, space_id: spaceId, is_system: 1 }), ErrorMessages.CATEGORY_IS_SYSTEM, 400],
+      ['archived', spaceCategories({ id: 6, space_id: spaceId, is_active: 0 }), ErrorMessages.CATEGORY_ARCHIVED, 400],
     ])('update rejects switching to a %s category', async (_, categories, message, status) => {
       repository.findOne.mockResolvedValue(limitWith({ id: 1, space_id: spaceId }, [5]));
       categoriesService.getMany.mockResolvedValue(categories);
