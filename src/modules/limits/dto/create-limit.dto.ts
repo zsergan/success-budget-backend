@@ -1,6 +1,7 @@
-import { IsNotEmpty, IsDecimal, IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
 
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
+import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
 
 export class CreateLimitDto {
   @IsOptionalNonNull()
@@ -14,6 +15,6 @@ export class CreateLimitDto {
   name?: string | null;
 
   @IsNotEmpty()
-  @IsDecimal()
+  @IsMoneyAmount()
   amount!: string;
 }

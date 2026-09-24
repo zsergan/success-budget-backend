@@ -161,6 +161,64 @@ describe('Boundary type contract (e2e)', () => {
       await api().post(`${base()}/wallets`).send({ wallet_name: 'n', initial_balance: 1, design: 'slate' }).expect(400);
     });
 
+    it.each(['-1', '-0.01', '+1', '1.234', '0.001', '1.230', '.5', '100000000', '100000000.00', '99999999.991'])(
+      'rejects %p on every money field without writing anything',
+      async (amount) => {
+        const counts = () =>
+          Promise.all([
+            countRows(
+              'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
+              [spaceId],
+            ),
+            countRows('SELECT COUNT(*) AS count FROM wallets WHERE space_id = ?', [spaceId]),
+            countRows('SELECT COUNT(*) AS count FROM limits WHERE space_id = ?', [spaceId]),
+          ]);
+        const limit = await api().post(`${base()}/limits`).send({ amount: '10' }).expect(201);
+        const before = await counts();
+
+        expectFieldError(await createTransaction({ amount }).expect(400), 'amount');
+        expectFieldError(await api().post(`${base()}/limits`).send({ amount }).expect(400), 'amount');
+        expectFieldError(await api().put(`${base()}/limits/${limit.body.id}`).send({ amount }).expect(400), 'amount');
+        expectFieldError(
+          await api()
+            .post(`${base()}/wallets`)
+            .send({ wallet_name: 'Rejected', initial_balance: amount, design: 'slate' })
+            .expect(400),
+          'initial_balance',
+        );
+
+        expect(await counts()).toEqual(before);
+        expect(await readLimit(limit.body.id)).toMatchObject({ amount: '10.00' });
+
+        await api().delete(`${base()}/limits/${limit.body.id}`).expect(200);
+      },
+    );
+
+    it('accepts zero and the upper bound on every money field', async () => {
+      for (const [amount, stored] of [
+        ['0', '0.00'],
+        ['99999999.99', '99999999.99'],
+      ]) {
+        const transaction = await createTransaction({ amount }).expect(201);
+        expect((await readTransaction(transaction.body.transaction.id)).amount).toBe(stored);
+        await api().delete(`${base()}/transactions/${transaction.body.transaction.id}`).expect(200);
+      }
+
+      const limit = await api().post(`${base()}/limits`).send({ amount: '0' }).expect(201);
+      expect(limit.body.amount).toBe('0.00');
+      await api().put(`${base()}/limits/${limit.body.id}`).send({ amount: '99999999.99' }).expect(200);
+      expect(await readLimit(limit.body.id)).toMatchObject({ amount: '99999999.99' });
+      await api().delete(`${base()}/limits/${limit.body.id}`).expect(200);
+
+      const wallet = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Max', initial_balance: '99999999.99', design: 'slate' })
+        .expect(201);
+      expect(wallet.body.wallet.balance).toBe(99999999.99);
+      expect((await readTransaction(wallet.body.transaction.id)).amount).toBe('99999999.99');
+      await api().delete(`${base()}/wallets/${wallet.body.wallet.id}`).expect(200);
+    });
+
     it('returns the initial wallet transaction amount as a number, but reads it back as a DECIMAL string', async () => {
       const created = await api()
         .post(`${base()}/wallets`)

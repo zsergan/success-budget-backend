@@ -1,6 +1,7 @@
-import { IsDecimal, IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
 
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
+import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
 
 // Not PartialType(CreateLimitDto): its added @IsOptional() would let null
 // through for category_ids and amount.
@@ -17,6 +18,6 @@ export class UpdateLimitDto {
   name?: string | null;
 
   @IsOptionalNonNull()
-  @IsDecimal()
+  @IsMoneyAmount()
   amount?: string;
 }
