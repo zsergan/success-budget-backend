@@ -3,21 +3,22 @@
 Actual runtime types at the HTTP and MySQL boundaries, observed through the
 real `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`, no
 implicit conversion) and the `mysql2` driver as configured by TypeORM.
-Executable checks: `test/type-contract.e2e-spec.ts`. The mixed amount types
-across responses are a **gap** kept for API compatibility.
+Executable checks: `test/type-contract.e2e-spec.ts`, and for money end to end
+(request → MySQL row → read → summaries) `test/money-flow.e2e-spec.ts`. The
+mixed amount types across responses are a **gap** kept for API compatibility.
 
 ## Money
 
-| Where                                                                                                          | Declared                               | Actual                                                                         |
-| -------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------ |
-| Request `amount`, `initial_balance` (`@IsMoneyAmount`)                                                         | `string`                               | decimal `string` only; a JSON number is a 400                                  |
-| `DECIMAL(10,2)` column (`Transaction.amount`, `Limit.amount`)                                                  | `string`                               | written as the validated request string, read back with 2 decimals (`"12.30"`) |
-| `POST /wallets` → `transaction.amount`                                                                         | `number` (`InitialBalanceTransaction`) | `number` (`Number(initial_balance)`)                                           |
-| `POST /transactions` → `transaction.amount`                                                                    | `string`                               | the request string echoed as sent (`"12.3"`)                                   |
-| `POST/PUT /limits` → `amount`                                                                                  | `string`                               | `string` (re-read from DB)                                                     |
-| `GET /limits` → `amount` / `spent`, `in_percent`, `over_allocation.*`                                          | —                                      | `string` / `number`                                                            |
-| Derived: `wallet.balance`, `previous_balance`, `total_balance`, `total_income`, `total_spend`, `delta_percent` | `number`                               | `number`                                                                       |
-| Raw `SUM(...)`, `COUNT(*)` (`getRawMany`)                                                                      | `string`                               | `string` (TypeORM enables `bigNumberStrings`); raw `INT` columns are `number`  |
+| Where                                                                                                          | Declared                               | Actual                                                                                                      |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Request `amount`, `initial_balance` (`@IsMoneyAmount`)                                                         | `string`                               | decimal `string` only; a JSON number is a 400                                                               |
+| `DECIMAL(10,2)` column (`Transaction.amount`, `Limit.amount`)                                                  | `string`                               | written as the validated request string, read back with 2 decimals (`"12.30"`)                              |
+| `POST /wallets` → `transaction.amount`                                                                         | `number` (`InitialBalanceTransaction`) | `number`, converted from cents                                                                              |
+| `POST /transactions` → `transaction.amount`                                                                    | `string`                               | the request string echoed as sent (`"12.3"`)                                                                |
+| `POST/PUT /limits` → `amount`                                                                                  | `string`                               | `string` (re-read from DB)                                                                                  |
+| `GET /limits` → `amount` / `spent`, `in_percent`, `over_allocation.*`                                          | —                                      | `string` / `number`                                                                                         |
+| Derived: `wallet.balance`, `previous_balance`, `total_balance`, `total_income`, `total_spend`, `delta_percent` | `number`                               | `number`                                                                                                    |
+| Raw `SUM(...)`, `COUNT(*)` (`getRawMany`)                                                                      | `string`                               | `string` (TypeORM enables `bigNumberStrings`), money sums parsed into cents; raw `INT` columns are `number` |
 
 The same transaction amount still leaves the API as a number, the echoed
 input string, or a normalized DECIMAL string depending on the endpoint
@@ -27,7 +28,9 @@ Derived amounts (wallet balances and totals, limit `spent`,
 `over_allocation`) and percentages are computed in integer cents: `SUM`
 strings and `DECIMAL` columns are parsed straight into cents, and they become
 numbers only when the response is built. A value a number cannot hold to the
-cent is a 500, never a rounded amount.
+cent is a 500, never a rounded amount. Parsing, formatting and percentages
+live in `@shared/utils` (`money.ts`); no service adds or divides money as a
+`number`, and every request amount goes through `@IsMoneyAmount`.
 
 ### Money rules
 
