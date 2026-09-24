@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { ConfirmationCodesService, decideSendAction } from './confirmation-codes.service';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
@@ -64,7 +64,6 @@ describe('ConfirmationCodesService', () => {
   let service: ConfirmationCodesService;
   let repository: jest.Mocked<Repository<ConfirmationCode>>;
   let dataSource: { transaction: jest.Mock };
-  let codeLookup: { where: jest.Mock; andWhere: jest.Mock; getOne: jest.Mock };
 
   const buildQueryBuilder = (result: unknown) => ({
     setLock: jest.fn().mockReturnThis(),
@@ -92,12 +91,6 @@ describe('ConfirmationCodesService', () => {
   };
 
   beforeEach(async () => {
-    codeLookup = {
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      getOne: jest.fn(),
-    };
-
     dataSource = { transaction: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -111,7 +104,6 @@ describe('ConfirmationCodesService', () => {
             findOne: jest.fn(),
             update: jest.fn(),
             increment: jest.fn(),
-            createQueryBuilder: jest.fn().mockReturnValue(codeLookup),
           },
         },
         { provide: DataSource, useValue: dataSource },
@@ -122,14 +114,20 @@ describe('ConfirmationCodesService', () => {
     repository = module.get(getRepositoryToken(ConfirmationCode));
   });
 
-  describe('getOne', () => {
-    it('looks up a non-expired code for the user and type', async () => {
+  describe('lockActive', () => {
+    it('reads the active code for the user and type with a write lock', async () => {
       const code = buildConfirmationCode({ id: 1, confirmation_code: '1234' });
-      codeLookup.getOne.mockResolvedValue(code);
+      const queryBuilder = buildQueryBuilder(code);
+      const manager = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) } as unknown as EntityManager;
 
-      const result = await service.getOne(1, ConfirmationType.EMAIL);
+      const result = await service.lockActive(1, ConfirmationType.EMAIL, manager);
 
-      expect(codeLookup.where).toHaveBeenCalledWith({ user_id: 1, confirmation_type: ConfirmationType.EMAIL });
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(ConfirmationCode, 'confirmation_code');
+      expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(queryBuilder.where).toHaveBeenCalledWith({ user_id: 1, confirmation_type: ConfirmationType.EMAIL });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('confirmation_code.expired_at >= :now', {
+        now: expect.any(Date),
+      });
       expect(result).toBe(code);
     });
   });
@@ -312,29 +310,28 @@ describe('ConfirmationCodesService', () => {
   });
 
   describe('incrementAttempts', () => {
-    it('atomically increments the attempts counter by id', async () => {
-      await service.incrementAttempts(7);
+    it('atomically increments the attempts counter by id through the given manager', async () => {
+      const managerRepository = { increment: jest.fn() };
+      const manager = { getRepository: jest.fn().mockReturnValue(managerRepository) } as unknown as EntityManager;
 
-      expect(repository.increment).toHaveBeenCalledWith({ id: 7 }, 'attempts', 1);
+      await service.incrementAttempts(7, manager);
+
+      expect(manager.getRepository).toHaveBeenCalledWith(ConfirmationCode);
+      expect(managerRepository.increment).toHaveBeenCalledWith({ id: 7 }, 'attempts', 1);
+      expect(repository.increment).not.toHaveBeenCalled();
     });
   });
 
   describe('expire', () => {
-    it('does nothing when no matching code exists', async () => {
-      repository.findOne.mockResolvedValue(null);
+    it('sets expired_at back to created_at through the given manager', async () => {
+      const managerRepository = { update: jest.fn() };
+      const manager = { getRepository: jest.fn().mockReturnValue(managerRepository) } as unknown as EntityManager;
 
-      await service.expire(1, ConfirmationType.EMAIL);
+      await service.expire(5, manager);
 
+      expect(managerRepository.update).toHaveBeenCalledWith(5, { expired_at: expect.any(Function) });
+      expect(managerRepository.update.mock.calls[0][1].expired_at()).toBe('created_at');
       expect(repository.update).not.toHaveBeenCalled();
-    });
-
-    it('sets expired_at back to created_at for an existing code', async () => {
-      const createdAt = new Date('2026-01-01T00:00:00Z');
-      repository.findOne.mockResolvedValue(buildConfirmationCode({ id: 5, created_at: createdAt }));
-
-      await service.expire(1, ConfirmationType.EMAIL);
-
-      expect(repository.update).toHaveBeenCalledWith(5, { expired_at: createdAt });
     });
   });
 });

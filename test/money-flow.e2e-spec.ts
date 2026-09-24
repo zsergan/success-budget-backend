@@ -34,14 +34,16 @@ describe('Money flow (e2e)', () => {
 
     const [currency] = await dataSource.query('SELECT id FROM currencies LIMIT 1');
     currencyId = currency.id;
+    const email = `e2e-money-${Date.now()}@example.com`;
     const user = await usersService.register({
       name: 'Money',
-      email: `e2e-money-${Date.now()}@example.com`,
+      email,
       password: 'DevTest#2026',
       base_currency_id: currencyId,
     });
     userId = user.id;
-    token = await usersService.completeEmailVerification(user);
+    await usersService.completeEmailVerification(user.id);
+    token = await usersService.login({ email, password: 'DevTest#2026' });
 
     const [membership] = await dataSource.query('SELECT space_id FROM space_members WHERE user_id = ?', [userId]);
     spaceIds.push(membership.space_id);

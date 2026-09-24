@@ -1,13 +1,12 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
 
 import { User } from '@entities/user.entity';
 import { Wallet } from '@entities/wallet.entity';
-import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import type { CreateUserDto } from './dto/create-user.dto';
@@ -108,58 +107,58 @@ export class UsersService {
     return user;
   }
 
-  async completeEmailVerification(user: User, confirmationCodeId?: number): Promise<string> {
-    await this.dataSource.transaction(async (manager) => {
-      await manager.getRepository(User).update(user.id, { email_verified: 1 });
-
-      if (confirmationCodeId !== undefined) {
-        await manager.getRepository(ConfirmationCode).update(confirmationCodeId, { expired_at: new Date() });
-      }
-
-      // exactly one personal space is guaranteed here: it's created
-      // transactionally in register(), and an unverified user has no JWT
-      // (login() blocks unverified accounts), so there's no way to reach
-      // POST /spaces and create another one before this point
-      const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: user.id } });
-      const space = await manager.getRepository(Space).findOneOrFail({ where: { id: spaceMember.space_id } });
-
-      const wallet = manager.getRepository(Wallet).create({
-        space_id: space.id,
-        wallet_name: 'Cash',
-        design: AppColor.SLATE,
-      });
-      await manager.getRepository(Wallet).save(wallet);
-
-      await createDefaultCategories(manager, space.id);
-    });
-
-    return this.generateAccessToken(user);
+  // Internal entry point (seed, tests): verifies the user without a code.
+  async completeEmailVerification(userId: number): Promise<void> {
+    await this.dataSource.transaction((manager) => this.initializeVerifiedUser(manager, userId));
   }
 
   async verifyEmail(verifyUserDto: VerifyUserDto): Promise<string> {
-    const user = await this.findByEmail(verifyUserDto.email);
+    const found = await this.findByEmail(verifyUserDto.email);
 
-    if (!user) {
+    if (!found) {
       throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    const confirmationCode = await this.confirmationCodesService.getOne(user.id, ConfirmationType.EMAIL);
+    // A rejected code is returned rather than thrown so the transaction
+    // commits the attempt counter / expiry before the error reaches the client.
+    const rejection = await this.dataSource.transaction(async (manager): Promise<HttpException | null> => {
+      const user = await this.lockUser(manager, found.id);
 
-    if (!confirmationCode) {
-      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+      if (!user) {
+        throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+      }
+
+      if (user.email_verified) {
+        throw new HttpException(ErrorMessages.EMAIL_ALREADY_VERIFIED, HttpStatus.CONFLICT);
+      }
+
+      const confirmationCode = await this.confirmationCodesService.lockActive(user.id, ConfirmationType.EMAIL, manager);
+
+      if (!confirmationCode) {
+        throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+      }
+
+      if (confirmationCode.attempts >= MAX_CONFIRMATION_CODE_ATTEMPTS) {
+        await this.confirmationCodesService.expire(confirmationCode.id, manager);
+        return new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+      }
+
+      if (!constantTimeEquals(confirmationCode.confirmation_code, verifyUserDto.code)) {
+        await this.confirmationCodesService.incrementAttempts(confirmationCode.id, manager);
+        return new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
+      }
+
+      await this.confirmationCodesService.expire(confirmationCode.id, manager);
+      await this.initializeVerifiedUser(manager, user.id);
+
+      return null;
+    });
+
+    if (rejection) {
+      throw rejection;
     }
 
-    if (confirmationCode.attempts >= MAX_CONFIRMATION_CODE_ATTEMPTS) {
-      await this.confirmationCodesService.expire(user.id, ConfirmationType.EMAIL);
-      throw new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
-    }
-
-    if (!constantTimeEquals(confirmationCode.confirmation_code, verifyUserDto.code)) {
-      await this.confirmationCodesService.incrementAttempts(confirmationCode.id);
-      throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
-    }
-
-    return this.completeEmailVerification(user, confirmationCode.id);
+    return this.generateAccessToken(found);
   }
 
   async login(loginUserDto: LoginUserDto): Promise<string> {
@@ -197,5 +196,43 @@ export class UsersService {
   async exists(id: number): Promise<boolean> {
     const count = await this.userRepository.count({ where: { id } });
     return count > 0;
+  }
+
+  private async lockUser(manager: EntityManager, userId: number): Promise<User | null> {
+    return manager
+      .createQueryBuilder(User, 'user')
+      .setLock('pessimistic_write')
+      .where('user.id = :userId', { userId })
+      .getOne();
+  }
+
+  // email_verified is set in the same transaction as the starter data, so
+  // under the user lock it doubles as the "already initialized" marker.
+  private async initializeVerifiedUser(manager: EntityManager, userId: number): Promise<void> {
+    const user = await this.lockUser(manager, userId);
+    assertFound(user);
+
+    if (user.email_verified) {
+      return;
+    }
+
+    await manager.getRepository(User).update(userId, { email_verified: 1 });
+
+    // exactly one personal space is guaranteed here: it's created
+    // transactionally in register(), and an unverified user has no JWT
+    // (login() blocks unverified accounts), so there's no way to reach
+    // POST /spaces and create another one before this point
+    const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: userId } });
+    const space = await manager.getRepository(Space).findOneOrFail({ where: { id: spaceMember.space_id } });
+
+    await manager.getRepository(Wallet).save(
+      manager.getRepository(Wallet).create({
+        space_id: space.id,
+        wallet_name: 'Cash',
+        design: AppColor.SLATE,
+      }),
+    );
+
+    await createDefaultCategories(manager, space.id);
   }
 }

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { User } from '@entities/user.entity';
@@ -55,11 +55,18 @@ export class ConfirmationCodesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async getOne(userId: number, confirmationType: ConfirmationType): Promise<ConfirmationCode | null> {
-    return this.confirmationCodeRepository
-      .createQueryBuilder('confirmation_code')
+  // The caller must already hold the user's row lock (see reserveSend) -
+  // user first, then code, so lock order is the same everywhere.
+  async lockActive(
+    userId: number,
+    confirmationType: ConfirmationType,
+    manager: EntityManager,
+  ): Promise<ConfirmationCode | null> {
+    return manager
+      .createQueryBuilder(ConfirmationCode, 'confirmation_code')
+      .setLock('pessimistic_write')
       .where({ user_id: userId, confirmation_type: confirmationType })
-      .andWhere('confirmation_code.expired_at >= :current_date', { current_date: new Date() })
+      .andWhere('confirmation_code.expired_at >= :now', { now: new Date() })
       .getOne();
   }
 
@@ -82,12 +89,7 @@ export class ConfirmationCodesService {
         .where('user.id = :userId', { userId })
         .getOne();
 
-      const existing = await manager
-        .createQueryBuilder(ConfirmationCode, 'confirmation_code')
-        .setLock('pessimistic_write')
-        .where({ user_id: userId, confirmation_type: confirmationType })
-        .andWhere('confirmation_code.expired_at >= :now', { now: new Date() })
-        .getOne();
+      const existing = await this.lockActive(userId, confirmationType, manager);
 
       const now = new Date();
       const repository = manager.getRepository(ConfirmationCode);
@@ -169,17 +171,14 @@ export class ConfirmationCodesService {
     );
   }
 
-  async incrementAttempts(id: number): Promise<void> {
-    await this.confirmationCodeRepository.increment({ id }, 'attempts', 1);
+  async incrementAttempts(id: number, manager: EntityManager): Promise<void> {
+    await manager.getRepository(ConfirmationCode).increment({ id }, 'attempts', 1);
   }
 
-  async expire(userId: number, confirmationType: ConfirmationType): Promise<void> {
-    const confirmationCode = await this.confirmationCodeRepository.findOne({
-      where: { user_id: userId, confirmation_type: confirmationType },
-    });
-
-    if (confirmationCode) {
-      await this.confirmationCodeRepository.update(confirmationCode.id, { expired_at: confirmationCode.created_at });
-    }
+  // created_at rather than now: expired_at is a second-precision timestamp,
+  // and a rounded-up "now" would keep the code active for the rest of that
+  // second.
+  async expire(id: number, manager: EntityManager): Promise<void> {
+    await manager.getRepository(ConfirmationCode).update(id, { expired_at: () => 'created_at' });
   }
 }

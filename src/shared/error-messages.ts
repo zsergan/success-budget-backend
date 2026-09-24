@@ -1,6 +1,7 @@
 export const ErrorMessages = {
   INVALID_CREDENTIALS: 'Invalid credentials',
   EMAIL_NOT_VERIFIED: 'Email is not verified',
+  EMAIL_ALREADY_VERIFIED: 'Email is already verified',
   FORBIDDEN_WALLET: 'Wallet does not exist or you do not have access to this wallet',
   FORBIDDEN_CATEGORY: 'Category does not exist or you do not have access to this category',
   CATEGORY_IS_SYSTEM: 'This category is managed by the system and cannot be modified',

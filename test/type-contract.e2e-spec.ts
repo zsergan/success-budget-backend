@@ -23,6 +23,7 @@ describe('Boundary type contract (e2e)', () => {
   let currencyId: number;
   let email: string;
   const extraSpaceIds: number[] = [];
+  const extraUserIds: number[] = [];
 
   const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -49,7 +50,8 @@ describe('Boundary type contract (e2e)', () => {
       base_currency_id: currency.id,
     });
     userId = user.id;
-    token = await usersService.completeEmailVerification(user);
+    await usersService.completeEmailVerification(user.id);
+    token = await usersService.login({ email, password: 'DevTest#2026' });
 
     const [membership] = await dataSource.query('SELECT space_id FROM space_members WHERE user_id = ?', [userId]);
     spaceId = membership.space_id;
@@ -84,8 +86,8 @@ describe('Boundary type contract (e2e)', () => {
         await dataSource.query('DELETE FROM spaces WHERE id = ?', [id]);
       }
 
-      if (userId) {
-        await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
+      for (const id of [userId, ...extraUserIds].filter(Boolean)) {
+        await dataSource.query('DELETE FROM users WHERE id = ?', [id]);
       }
     } finally {
       await app.close();
@@ -696,7 +698,21 @@ describe('Boundary type contract (e2e)', () => {
 
       const verify = (body: object) => request(app.getHttpServer()).post('/api/v1/users/verify-email').send(body);
       expectError(await verify({ email: `missing-${Date.now()}@example.com`, code: '000000' }), 404, 'Not found');
-      expectError(await verify({ email, code: '000000' }), 404, 'Not found');
+      expectError(await verify({ email, code: '000000' }), 409, 'Email is already verified');
+
+      const unverifiedEmail = `e2e-contract-unverified-${Date.now()}@example.com`;
+      const unverified = await app.get(UsersService).register({
+        name: 'Unverified',
+        email: unverifiedEmail,
+        password: 'DevTest#2026',
+        base_currency_id: currencyId,
+      });
+      extraUserIds.push(unverified.id);
+      const [membership] = await dataSource.query('SELECT space_id FROM space_members WHERE user_id = ?', [
+        unverified.id,
+      ]);
+      extraSpaceIds.push(membership.space_id);
+      expectError(await verify({ email: unverifiedEmail, code: '000000' }), 404, 'Not found');
     });
   });
 

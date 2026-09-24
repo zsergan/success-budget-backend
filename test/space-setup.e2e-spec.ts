@@ -137,7 +137,7 @@ describe('Space setup across registration, verification and space creation (e2e)
   it('email verification adds one Cash wallet and the default categories to the personal space', async () => {
     const user = await register();
 
-    await usersService.completeEmailVerification(user);
+    await usersService.completeEmailVerification(user.id);
 
     const memberships = await dataSource.getRepository(SpaceMember).findBy({ user_id: user.id });
     expect(memberships).toHaveLength(1);
@@ -189,7 +189,7 @@ describe('Space setup across registration, verification and space creation (e2e)
     const [membership] = await dataSource.getRepository(SpaceMember).findBy({ user_id: user.id });
     failSavesOf(Category);
 
-    await expect(usersService.completeEmailVerification(user)).rejects.toThrow('injected failure');
+    await expect(usersService.completeEmailVerification(user.id)).rejects.toThrow('injected failure');
 
     jest.restoreAllMocks();
     const data = await spaceData(membership.space_id);
