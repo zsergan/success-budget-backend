@@ -15,6 +15,6 @@ import { SpaceInvite } from '@entities/space-invite.entity';
   imports: [TypeOrmModule.forFeature([Space, SpaceMember, SpaceInvite]), SpaceAccessModule, UsersModule],
   controllers: [SpacesController],
   providers: [SpacesService, SpaceMembersService, SpaceInvitesService],
-  exports: [SpacesService, SpaceInvitesService],
+  exports: [SpacesService],
 })
 export class SpacesModule {}

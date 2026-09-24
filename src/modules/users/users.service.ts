@@ -104,13 +104,6 @@ export class UsersService {
     return this.findById(id);
   }
 
-  async verify(id: number): Promise<string> {
-    await this.userRepository.update(id, { email_verified: 1 });
-    const user = await this.findById(id);
-
-    return this.generateAccessToken(user);
-  }
-
   async completeEmailVerification(user: User, confirmationCodeId?: number): Promise<string> {
     await this.dataSource.transaction(async (manager) => {
       await manager.getRepository(User).update(user.id, { email_verified: 1 });

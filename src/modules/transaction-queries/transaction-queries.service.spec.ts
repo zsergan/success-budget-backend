@@ -84,20 +84,6 @@ describe('TransactionQueriesService', () => {
     });
   });
 
-  describe('getAll', () => {
-    it('filters transactions by wallet and date range', async () => {
-      const from = new Date('2026-01-01');
-      const to = new Date('2026-01-31');
-      queryBuilder.getMany.mockResolvedValue([]);
-
-      await service.getAll(5, from, to);
-
-      expect(queryBuilder.where).toHaveBeenCalledWith({ wallet_id: 5 });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
-    });
-  });
-
   describe('getPeriodTotals', () => {
     it('returns an all-zero map without querying when there are no wallets', async () => {
       const result = await service.getPeriodTotals([], new Date(), new Date());

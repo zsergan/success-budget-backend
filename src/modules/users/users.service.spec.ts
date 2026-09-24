@@ -150,19 +150,6 @@ describe('UsersService', () => {
     });
   });
 
-  describe('verify', () => {
-    it('marks the user verified and returns a fresh access token', async () => {
-      const user = { id: 7, email: 'a@b.com' } as User;
-      repository.findOne.mockResolvedValue(user);
-
-      const token = await service.verify(7);
-
-      expect(repository.update).toHaveBeenCalledWith(7, { email_verified: 1 });
-      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
-      expect(decoded.id).toBe(7);
-    });
-  });
-
   describe('registerAndSendConfirmation', () => {
     const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
     const reservation = (overrides = {}) => ({

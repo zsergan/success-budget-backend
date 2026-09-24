@@ -53,18 +53,6 @@ export class TransactionQueriesService {
       .getOne();
   }
 
-  async getAll(walletId: number, from: Date, to: Date): Promise<Transaction[]> {
-    return this.transactionRepository
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
-      .where({ wallet_id: walletId })
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to })
-      .orderBy('transaction.timestamp', 'DESC')
-      .getMany();
-  }
-
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
   // income/spend per wallet, grouped in SQL instead of filtering a raw
   // transaction-row fetch in JS. All-time balance is a separate concern,
