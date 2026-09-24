@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.config';
 import { UsersService } from '@modules/users/users.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+import { moneyToNumber, parseMoney } from '@shared/utils';
 
 // Pins the runtime types at the HTTP/DB boundary described in
 // docs/type-contract.md.
@@ -21,6 +22,7 @@ describe('Boundary type contract (e2e)', () => {
   let walletId: number;
   let currencyId: number;
   let email: string;
+  const extraSpaceIds: number[] = [];
 
   const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -68,18 +70,18 @@ describe('Boundary type contract (e2e)', () => {
 
   afterAll(async () => {
     try {
-      if (spaceId) {
+      for (const id of [spaceId, ...extraSpaceIds].filter(Boolean)) {
         await dataSource.query(
           'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.space_id = ?',
-          [spaceId],
+          [id],
         );
-        await dataSource.query('DELETE FROM limits WHERE space_id = ?', [spaceId]);
+        await dataSource.query('DELETE FROM limits WHERE space_id = ?', [id]);
         await dataSource.query(
           'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
-          [spaceId],
+          [id],
         );
-        await dataSource.query('DELETE FROM space_members WHERE space_id = ?', [spaceId]);
-        await dataSource.query('DELETE FROM spaces WHERE id = ?', [spaceId]);
+        await dataSource.query('DELETE FROM space_members WHERE space_id = ?', [id]);
+        await dataSource.query('DELETE FROM spaces WHERE id = ?', [id]);
       }
 
       if (userId) {
@@ -146,6 +148,16 @@ describe('Boundary type contract (e2e)', () => {
     expect(res.body.message).toEqual(expect.arrayContaining([{ field, error: expect.any(String) }]));
   }
 
+  async function createExtraSpace(name: string): Promise<string> {
+    const space = await api()
+      .post('/api/v1/spaces')
+      .send({ name, currency_id: currencyId, type: 'personal' })
+      .expect(201);
+    extraSpaceIds.push(space.body.id);
+
+    return `/api/v1/spaces/${space.body.id}`;
+  }
+
   async function readTransaction(id: string) {
     const res = await api().get(`${base()}/transactions?from=2000-01-01&to=2100-01-01`).expect(200);
 
@@ -159,6 +171,107 @@ describe('Boundary type contract (e2e)', () => {
 
       await api().post(`${base()}/limits`).send({ amount: 500 }).expect(400);
       await api().post(`${base()}/wallets`).send({ wallet_name: 'n', initial_balance: 1, design: 'slate' }).expect(400);
+    });
+
+    it.each(['-1', '-0.01', '+1', '1.234', '0.001', '1.230', '.5', '100000000', '100000000.00', '99999999.991'])(
+      'rejects %p on every money field without writing anything',
+      async (amount) => {
+        const counts = () =>
+          Promise.all([
+            countRows(
+              'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
+              [spaceId],
+            ),
+            countRows('SELECT COUNT(*) AS count FROM wallets WHERE space_id = ?', [spaceId]),
+            countRows('SELECT COUNT(*) AS count FROM limits WHERE space_id = ?', [spaceId]),
+          ]);
+        const limit = await api().post(`${base()}/limits`).send({ amount: '10' }).expect(201);
+        const before = await counts();
+
+        expectFieldError(await createTransaction({ amount }).expect(400), 'amount');
+        expectFieldError(await api().post(`${base()}/limits`).send({ amount }).expect(400), 'amount');
+        expectFieldError(await api().put(`${base()}/limits/${limit.body.id}`).send({ amount }).expect(400), 'amount');
+        expectFieldError(
+          await api()
+            .post(`${base()}/wallets`)
+            .send({ wallet_name: 'Rejected', initial_balance: amount, design: 'slate' })
+            .expect(400),
+          'initial_balance',
+        );
+
+        expect(await counts()).toEqual(before);
+        expect(await readLimit(limit.body.id)).toMatchObject({ amount: '10.00' });
+
+        await api().delete(`${base()}/limits/${limit.body.id}`).expect(200);
+      },
+    );
+
+    it('accepts zero and the upper bound on every money field', async () => {
+      for (const [amount, stored] of [
+        ['0', '0.00'],
+        ['99999999.99', '99999999.99'],
+      ]) {
+        const transaction = await createTransaction({ amount }).expect(201);
+        expect((await readTransaction(transaction.body.transaction.id)).amount).toBe(stored);
+        await api().delete(`${base()}/transactions/${transaction.body.transaction.id}`).expect(200);
+      }
+
+      const limit = await api().post(`${base()}/limits`).send({ amount: '0' }).expect(201);
+      expect(limit.body.amount).toBe('0.00');
+      await api().put(`${base()}/limits/${limit.body.id}`).send({ amount: '99999999.99' }).expect(200);
+      expect(await readLimit(limit.body.id)).toMatchObject({ amount: '99999999.99' });
+      await api().delete(`${base()}/limits/${limit.body.id}`).expect(200);
+
+      const wallet = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Max', initial_balance: '99999999.99', design: 'slate' })
+        .expect(201);
+      expect(wallet.body.wallet.balance).toBe(99999999.99);
+      expect((await readTransaction(wallet.body.transaction.id)).amount).toBe('99999999.99');
+      await api().delete(`${base()}/wallets/${wallet.body.wallet.id}`).expect(200);
+    });
+
+    it('computes balances, totals and delta_percent in exact cents', async () => {
+      const spaceBase = await createExtraSpace('Exact');
+      const categories = await api().get(`${spaceBase}/categories`).expect(200);
+      const incomeCategoryId = categories.body.incomes[0].id;
+      const createWallet = (initial_balance: string) =>
+        api().post(`${spaceBase}/wallets`).send({ wallet_name: 'Exact', initial_balance, design: 'slate' }).expect(201);
+
+      const first = await createWallet('0.10');
+      const second = await createWallet('0.20');
+      expect(first.body).toMatchObject({ wallet: { balance: 0.1 }, transaction: { amount: 0.1 } });
+
+      const overview = await api().get(`${spaceBase}/wallets`).expect(200);
+      expect(overview.body.total_balance).toBe(0.3);
+
+      const income = await api()
+        .post(`${spaceBase}/transactions`)
+        .send({
+          wallet_id: first.body.wallet.id,
+          category_id: incomeCategoryId,
+          transaction_type: 'income',
+          amount: '0.2',
+          timestamp: '2030-01-15T12:00:00.000Z',
+        })
+        .expect(201);
+      expect(income.body.previous_balance).toBe(0.1);
+      expect(income.body.wallet.balance).toBe(0.3);
+
+      const period = await api().get(`${spaceBase}/wallets?from=2030-01-01&to=2030-01-31`).expect(200);
+      expect(period.body).toMatchObject({ total_balance: 0.5, delta_percent: 66.7 });
+      expect(period.body.wallets).toEqual([
+        expect.objectContaining({
+          wallet: expect.objectContaining({ id: first.body.wallet.id, balance: 0.3 }),
+          total_income: 0.2,
+          total_spend: 0,
+        }),
+        expect.objectContaining({
+          wallet: expect.objectContaining({ id: second.body.wallet.id, balance: 0.2 }),
+          total_income: 0,
+          total_spend: 0,
+        }),
+      ]);
     });
 
     it('returns the initial wallet transaction amount as a number, but reads it back as a DECIMAL string', async () => {
@@ -179,7 +292,9 @@ describe('Boundary type contract (e2e)', () => {
 
       expect(created.body.transaction.amount).toBe('12.3');
       expect(typeof created.body.previous_balance).toBe('number');
-      expect(created.body.wallet.balance).toBeCloseTo(created.body.previous_balance - 12.3, 2);
+      expect(created.body.wallet.balance).toBe(
+        moneyToNumber(parseMoney(created.body.previous_balance.toFixed(2)) - 1230n),
+      );
 
       const read = await readTransaction(created.body.transaction.id);
       expect(read.amount).toBe('12.30');
@@ -188,6 +303,54 @@ describe('Boundary type contract (e2e)', () => {
       expect(typeof overview.body.total_balance).toBe('number');
       expect(typeof overview.body.wallets[0].wallet.balance).toBe('number');
       expect(typeof overview.body.wallets[0].total_spend).toBe('number');
+    });
+
+    it('computes limit spending, percentages and over_allocation in exact cents', async () => {
+      const spaceBase = await createExtraSpace('Exact limits');
+      const categories = await api().get(`${spaceBase}/categories`).expect(200);
+      const [first, second, unlimited] = categories.body.expenses.map((category: { id: number }) => category.id);
+      const wallet = await api()
+        .post(`${spaceBase}/wallets`)
+        .send({ wallet_name: 'Limits', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const spend = (category_id: number, amount: string) =>
+        api()
+          .post(`${spaceBase}/transactions`)
+          .send({
+            wallet_id: wallet.body.wallet.id,
+            category_id,
+            transaction_type: 'expense',
+            amount,
+            timestamp: new Date().toISOString(),
+          })
+          .expect(201);
+      const summary = async () => (await api().get(`${spaceBase}/limits`).expect(200)).body;
+
+      const total = await api().post(`${spaceBase}/limits`).send({ amount: '0.30' }).expect(201);
+      await api()
+        .post(`${spaceBase}/limits`)
+        .send({ amount: '0.10', category_ids: [first] })
+        .expect(201);
+      const zero = await api()
+        .post(`${spaceBase}/limits`)
+        .send({ amount: '0.20', category_ids: [second] })
+        .expect(201);
+      expect((await summary()).over_allocation).toBeNull();
+
+      await spend(unlimited, '0.29');
+      await api().put(`${spaceBase}/limits/${total.body.id}`).send({ amount: '1.00' }).expect(200);
+      expect((await summary()).total).toMatchObject({ amount: '1.00', spent: 0.29, in_percent: 29 });
+
+      await spend(first, '0.29');
+      await spend(second, '0.05');
+      await api().put(`${spaceBase}/limits/${zero.body.id}`).send({ amount: '0' }).expect(200);
+      const result = await summary();
+      expect(result.total).toMatchObject({ spent: 0.63, in_percent: 63 });
+      expect(result.categories).toEqual([
+        expect.objectContaining({ amount: '0.10', spent: 0.29, in_percent: 290 }),
+        expect.objectContaining({ amount: '0.00', spent: 0.05, in_percent: 0 }),
+      ]);
+      expect(result.over_allocation).toBeNull();
     });
 
     it('returns limit amounts as DECIMAL strings and spent/percent as numbers', async () => {

@@ -192,14 +192,14 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const walletIds = [w1.id, w2.id, w3.id];
 
       const balances = await transactionQueriesService.getBalances(walletIds);
-      expect(balances.get(w1.id)).toBe(1000 + 500 - 120.5 - 50 + 200);
-      expect(balances.get(w2.id)).toBe(-30);
-      expect(balances.get(w3.id)).toBe(0);
+      expect(balances.get(w1.id)).toBe(152950n);
+      expect(balances.get(w2.id)).toBe(-3000n);
+      expect(balances.get(w3.id)).toBe(0n);
 
       const periodTotals = await transactionQueriesService.getPeriodTotals(walletIds, from, to);
-      expect(periodTotals.get(w1.id)).toEqual({ income: 500, spend: 170.5 });
-      expect(periodTotals.get(w2.id)).toEqual({ income: 0, spend: 30 });
-      expect(periodTotals.get(w3.id)).toEqual({ income: 0, spend: 0 });
+      expect(periodTotals.get(w1.id)).toEqual({ income: 50000n, spend: 17050n });
+      expect(periodTotals.get(w2.id)).toEqual({ income: 0n, spend: 3000n });
+      expect(periodTotals.get(w3.id)).toEqual({ income: 0n, spend: 0n });
     });
 
     it('builds the full wallets overview from the aggregated maps, including total_balance and delta_percent', async () => {
@@ -236,9 +236,9 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const totalsA = await transactionQueriesService.getExpensesByCategory(spaceA, from, to);
       const totalsB = await transactionQueriesService.getExpensesByCategory(spaceB, from, to);
 
-      expect(totalsA.get(catA.id)).toBe(70);
+      expect(totalsA.get(catA.id)).toBe(7000n);
       expect(totalsA.has(catB.id)).toBe(false);
-      expect(totalsB.get(catB.id)).toBe(999);
+      expect(totalsB.get(catB.id)).toBe(99900n);
       expect(totalsB.has(catA.id)).toBe(false);
     });
   });
@@ -271,7 +271,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       expect(visibleWallets.map((w) => w.id)).toEqual([kept.id]);
 
       const balances = await transactionQueriesService.getBalances(visibleWallets.map((w) => w.id));
-      expect(balances.get(kept.id)).toBe(500 - 100.25 - 40 - 15 - 5 - 7);
+      expect(balances.get(kept.id)).toBe(33275n);
       expect(balances.has(deleted.id)).toBe(false);
 
       const periodTotals = await transactionQueriesService.getPeriodTotals(
@@ -279,13 +279,13 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
         from,
         to,
       );
-      expect(periodTotals.get(kept.id)).toEqual({ income: 500, spend: 100.25 + 40 + 15 });
+      expect(periodTotals.get(kept.id)).toEqual({ income: 50000n, spend: 15525n });
 
       // limits scope by space, not by wallet visibility - the deleted
       // wallet's history still counts against a category limit
       const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
-      expect(categoryTotals.get(catA.id)).toBe(100.25 + 15 + 60);
-      expect(categoryTotals.get(catB.id)).toBe(40);
+      expect(categoryTotals.get(catA.id)).toBe(17525n);
+      expect(categoryTotals.get(catB.id)).toBe(4000n);
       expect(categoryTotals.has(catIncome.id)).toBe(false);
     });
   });
@@ -319,13 +319,10 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const result = limitsService.calculateSpending(limits, categoryTotals);
 
       // total tracks ALL expenses, including catZ which no category limit covers
-      expect(result.total).toMatchObject({ amount: '50.00', spent: 12.34 + 0.01 + 45.65 + 100 });
+      expect(result.total).toMatchObject({ amount: '50.00', spent: 158, in_percent: 316 });
 
       expect(result.categories).toHaveLength(1);
-      // in_percent is floor((58 / 100) * 100); 58/100 isn't exactly
-      // representable in IEEE754, so this floors to 57, not 58 - a
-      // pre-existing quirk of the percent formula, not this stage's concern
-      expect(result.categories[0]).toMatchObject({ name: 'Fun', spent: 12.34 + 0.01 + 45.65, in_percent: 57 });
+      expect(result.categories[0]).toMatchObject({ name: 'Fun', spent: 58, in_percent: 58 });
 
       expect(result.over_allocation).toEqual({ category_total: 100, difference: 50 });
     });

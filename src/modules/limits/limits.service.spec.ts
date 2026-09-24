@@ -252,7 +252,7 @@ describe('LimitsService', () => {
     it('getSummary checks membership once and calculates spending from the current month totals', async () => {
       const limits = [limitWith({ id: 1, limit_type: LimitType.OTHERS, amount: '100.00' })];
       queryBuilder.getMany.mockResolvedValue(limits);
-      transactionQueriesService.getExpensesByCategory.mockResolvedValue(new Map([[5, 30]]));
+      transactionQueriesService.getExpensesByCategory.mockResolvedValue(new Map([[5, 3000n]]));
 
       const result = await service.getSummary(userId, spaceId);
 
@@ -372,8 +372,8 @@ describe('LimitsService', () => {
       // total = ALL expenses (350 + 50), not just the unclaimed 50 -
       // income never enters this aggregate in the first place
       const categoryTotals = new Map([
-        [10, 350],
-        [99, 50],
+        [10, 35000n],
+        [99, 5000n],
       ]);
 
       const result = service.calculateSpending(limits, categoryTotals);
@@ -386,8 +386,8 @@ describe('LimitsService', () => {
     it('sums spend across every category in a group limit', () => {
       const limits = [loadedLimit({ id: 1, limit_type: LimitType.CATEGORY, amount: '220', name: 'Fun' }, [1, 2])];
       const categoryTotals = new Map([
-        [1, 80],
-        [2, 40],
+        [1, 8000n],
+        [2, 4000n],
       ]);
 
       const result = service.calculateSpending(limits, categoryTotals);
@@ -409,11 +409,80 @@ describe('LimitsService', () => {
 
     it('returns 0 percent instead of Infinity/NaN when a limit amount is 0', () => {
       const limits = [loadedLimit({ id: 1, limit_type: LimitType.CATEGORY, amount: '0', name: null }, [1])];
-      const categoryTotals = new Map([[1, 40]]);
+      const categoryTotals = new Map([[1, 4000n]]);
 
       const result = service.calculateSpending(limits, categoryTotals);
 
       expect(result.categories[0]).toMatchObject({ spent: 40, in_percent: 0 });
+    });
+
+    it('returns 0 percent for a zero monthly total and flags every category amount above it', () => {
+      const limits = [
+        loadedLimit({ id: 1, limit_type: LimitType.OTHERS, amount: '0.00', name: null }),
+        loadedLimit({ id: 2, limit_type: LimitType.CATEGORY, amount: '0.01', name: null }, [1]),
+      ];
+
+      const result = service.calculateSpending(limits, new Map([[1, 500n]]));
+
+      expect(result.total).toMatchObject({ spent: 5, in_percent: 0 });
+      expect(result.over_allocation).toEqual({ category_total: 0.01, difference: 0.01 });
+    });
+
+    it('floors the percentage from exact cents: 0.29 of 1.00 is 29, not 28', () => {
+      const limits = [
+        loadedLimit({ id: 1, limit_type: LimitType.OTHERS, amount: '1.00', name: null }),
+        loadedLimit({ id: 2, limit_type: LimitType.CATEGORY, amount: '1.00', name: null }, [1]),
+      ];
+
+      const result = service.calculateSpending(limits, new Map([[1, 29n]]));
+
+      expect(result.total).toMatchObject({ spent: 0.29, in_percent: 29 });
+      expect(result.categories[0]).toMatchObject({ spent: 0.29, in_percent: 29 });
+    });
+
+    it('keeps a percentage above 100 when the limit is exceeded', () => {
+      const limits = [loadedLimit({ id: 1, limit_type: LimitType.CATEGORY, amount: '100.00', name: null }, [1, 2])];
+
+      const result = service.calculateSpending(
+        limits,
+        new Map([
+          [1, 10010n],
+          [2, 5000n],
+        ]),
+      );
+
+      expect(result.categories[0]).toMatchObject({ spent: 150.1, in_percent: 150 });
+    });
+
+    it('sums spend and amounts in cents without float error', () => {
+      const limits = [
+        loadedLimit({ id: 1, limit_type: LimitType.OTHERS, amount: '0.30', name: null }),
+        loadedLimit({ id: 2, limit_type: LimitType.CATEGORY, amount: '0.10', name: null }, [1]),
+        loadedLimit({ id: 3, limit_type: LimitType.CATEGORY, amount: '0.20', name: null }, [2, 3]),
+      ];
+      const categoryTotals = new Map([
+        [1, 10n],
+        [2, 10n],
+        [3, 10n],
+      ]);
+
+      const result = service.calculateSpending(limits, categoryTotals);
+
+      expect(result.over_allocation).toBeNull();
+      expect(result.total).toMatchObject({ spent: 0.3, in_percent: 100 });
+      expect(result.categories[1]).toMatchObject({ spent: 0.2, in_percent: 100 });
+    });
+
+    it('reports over_allocation in exact cents', () => {
+      const limits = [
+        loadedLimit({ id: 1, limit_type: LimitType.OTHERS, amount: '0.30', name: null }),
+        loadedLimit({ id: 2, limit_type: LimitType.CATEGORY, amount: '0.10', name: null }, [1]),
+        loadedLimit({ id: 3, limit_type: LimitType.CATEGORY, amount: '0.21', name: null }, [2]),
+      ];
+
+      const result = service.calculateSpending(limits, new Map());
+
+      expect(result.over_allocation).toEqual({ category_total: 0.31, difference: 0.01 });
     });
 
     it('treats a category with no expenses in the period as zero spend', () => {

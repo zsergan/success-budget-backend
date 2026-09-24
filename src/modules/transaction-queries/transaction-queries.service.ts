@@ -5,13 +5,14 @@ import { Repository } from 'typeorm';
 import { Transaction } from '@entities/transaction.entity';
 import { TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
-import { withRelations } from '@shared/utils';
+import { parseMoney, withRelations } from '@shared/utils';
 
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
+// in cents
 export interface WalletPeriodTotals {
-  income: number;
-  spend: number;
+  income: bigint;
+  spend: bigint;
 }
 
 @Injectable()
@@ -24,9 +25,9 @@ export class TransactionQueriesService {
   // shared by GET /spaces/:spaceId/wallets and TransactionsService.create()'s
   // previous_balance - no lock, informational only: the balance is always
   // recomputed from history and never depends on the order concurrent
-  // requests resolve in
-  async getBalances(walletIds: number[]): Promise<Map<number, number>> {
-    const balances = new Map(walletIds.map((id) => [id, 0]));
+  // requests resolve in. Balances are in cents.
+  async getBalances(walletIds: number[]): Promise<Map<number, bigint>> {
+    const balances = new Map(walletIds.map((id) => [id, 0n]));
 
     if (walletIds.length === 0) {
       return balances;
@@ -44,7 +45,7 @@ export class TransactionQueriesService {
       .groupBy('transaction.wallet_id')
       .getRawMany<{ wallet_id: string; balance: string }>();
 
-    rows.forEach((row) => balances.set(Number(row.wallet_id), Number(row.balance)));
+    rows.forEach((row) => balances.set(Number(row.wallet_id), parseMoney(row.balance)));
 
     return balances;
   }
@@ -64,7 +65,7 @@ export class TransactionQueriesService {
   // transaction-row fetch in JS. All-time balance is a separate concern,
   // still served by getBalances().
   async getPeriodTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletPeriodTotals>> {
-    const totals = new Map(walletIds.map((id) => [id, { income: 0, spend: 0 }]));
+    const totals = new Map<number, WalletPeriodTotals>(walletIds.map((id) => [id, { income: 0n, spend: 0n }]));
 
     if (walletIds.length === 0) {
       return totals;
@@ -83,7 +84,9 @@ export class TransactionQueriesService {
       .groupBy('transaction.wallet_id')
       .getRawMany<{ wallet_id: string; income: string; spend: string }>();
 
-    rows.forEach((row) => totals.set(Number(row.wallet_id), { income: Number(row.income), spend: Number(row.spend) }));
+    rows.forEach((row) =>
+      totals.set(Number(row.wallet_id), { income: parseMoney(row.income), spend: parseMoney(row.spend) }),
+    );
 
     return totals;
   }
@@ -92,7 +95,8 @@ export class TransactionQueriesService {
   // expense spend for the period, grouped in SQL. Joined to wallet only to
   // scope by space_id (still includes deleted-wallet history, since limits
   // track space spend, not per-wallet); no wallet/category entities loaded.
-  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, number>> {
+  // Sums are in cents.
+  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, bigint>> {
     const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoin('transaction.wallet', 'wallet')
@@ -105,7 +109,7 @@ export class TransactionQueriesService {
       .groupBy('transaction.category_id')
       .getRawMany<{ category_id: number; spent: string }>();
 
-    return new Map(rows.map((row) => [Number(row.category_id), Number(row.spent)]));
+    return new Map(rows.map((row) => [Number(row.category_id), parseMoney(row.spent)]));
   }
 
   async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<LoadedTransaction[]> {
