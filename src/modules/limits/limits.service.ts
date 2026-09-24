@@ -7,10 +7,13 @@ import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace, getEndOfMonth, getStartOfMonth } from '@shared/utils';
+import { assertBelongsToSpace, getEndOfMonth, getStartOfMonth, withRelations } from '@shared/utils';
+import type { WithRelations } from '@shared/types';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+
+export type LimitWithCategories = WithRelations<Limit, 'categories'>;
 
 @Injectable()
 export class LimitsService {
@@ -22,16 +25,20 @@ export class LimitsService {
     private readonly transactionQueriesService: TransactionQueriesService,
   ) {}
 
-  async getOne(limitId: number) {
-    return this.limitRepository.findOne({ where: { id: limitId }, relations: { categories: true } });
+  async getOne(limitId: number): Promise<LimitWithCategories | null> {
+    const limit = await this.limitRepository.findOne({ where: { id: limitId }, relations: { categories: true } });
+
+    return limit && withRelations(limit, 'categories');
   }
 
-  async getAll(spaceId: number) {
-    return this.limitRepository
+  async getAll(spaceId: number): Promise<LimitWithCategories[]> {
+    const limits = await this.limitRepository
       .createQueryBuilder('limit')
       .where('limit.space_id = :spaceId', { spaceId })
       .leftJoinAndSelect('limit.categories', 'categories')
       .getMany();
+
+    return limits.map((limit) => withRelations(limit, 'categories'));
   }
 
   async getSummary(userId: number, spaceId: number) {
@@ -133,7 +140,7 @@ export class LimitsService {
     await this.limitRepository.delete(limitId);
   }
 
-  calculateSpending(limits: Limit[], categoryTotals: Map<number, number>) {
+  calculateSpending(limits: LimitWithCategories[], categoryTotals: Map<number, number>) {
     const totalLimit = limits.find((limit) => limit.limit_type === LimitType.OTHERS);
     const categoryLimits = limits.filter((limit) => limit.limit_type === LimitType.CATEGORY);
 
@@ -161,7 +168,7 @@ export class LimitsService {
     return { total, categories, over_allocation: overAllocation };
   }
 
-  private buildLimitView(limit: Limit, spent: number) {
+  private buildLimitView(limit: LimitWithCategories, spent: number) {
     const amount = Number(limit.amount);
     const in_percent = amount > 0 ? Math.floor((spent / amount) * 100) : 0;
 
@@ -180,7 +187,7 @@ export class LimitsService {
     };
   }
 
-  private async getSpaceLimit(spaceId: number, limitId: number): Promise<Limit> {
+  private async getSpaceLimit(spaceId: number, limitId: number): Promise<LimitWithCategories> {
     const limit = await this.getOne(limitId);
     assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
 

@@ -50,5 +50,5 @@ export class ConfirmationCode {
 
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user?: User;
 }

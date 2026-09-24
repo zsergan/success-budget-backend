@@ -4,6 +4,8 @@ import { DataSource, Not, Repository } from 'typeorm';
 
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
+import type { WithRelations } from '@shared/types';
+import { withRelations } from '@shared/utils';
 import { ErrorMessages } from '@shared/error-messages';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
@@ -34,12 +36,14 @@ export class SpaceMembersService {
     private readonly spaceInvitesService: SpaceInvitesService,
   ) {}
 
-  async getAll(spaceId: number): Promise<SpaceMember[]> {
-    return this.spaceMemberRepository.find({
+  async getAll(spaceId: number): Promise<WithRelations<SpaceMember, 'user'>[]> {
+    const members = await this.spaceMemberRepository.find({
       where: { space_id: spaceId },
       relations: { user: true },
       order: { created_at: 'ASC' },
     });
+
+    return members.map((member) => withRelations(member, 'user'));
   }
 
   async getMembersWithInvites(userId: number, spaceId: number): Promise<SpaceMemberView[]> {

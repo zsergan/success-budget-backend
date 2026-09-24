@@ -29,7 +29,7 @@ export class Space {
 
   @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'currency_id' })
-  currency: Currency;
+  currency?: Currency;
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;

@@ -39,7 +39,7 @@ export class Limit {
   @Exclude()
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
-  space: Space;
+  space?: Space;
 
   // 0 categories = monthly total limit, 1 = single-category, 2+ = group
   @ManyToMany(() => Category, { onDelete: 'RESTRICT' })
@@ -48,7 +48,7 @@ export class Limit {
     joinColumn: { name: 'limit_id' },
     inverseJoinColumn: { name: 'category_id' },
   })
-  categories: Category[];
+  categories?: Category[];
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;

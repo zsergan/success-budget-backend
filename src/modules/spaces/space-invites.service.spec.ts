@@ -167,7 +167,7 @@ describe('SpaceInvitesService', () => {
     it('creates the membership and stamps accepted_at in one transaction', async () => {
       spaceInviteRepository.findOne.mockResolvedValue({ id: 1, space_id: 10, role: SpaceRole.MEMBER } as SpaceInvite);
       spaceMemberRepository.count.mockResolvedValue(1);
-      const space = { id: 10 } as Space;
+      const space = { id: 10, currency: { id: 1, code: 'USD', name: 'US Dollar' } } as Space;
       spaceRepositoryInTx.findOne.mockResolvedValue(space);
 
       const result = await service.accept(2, '123456');

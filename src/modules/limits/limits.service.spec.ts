@@ -208,7 +208,7 @@ describe('LimitsService', () => {
 
   describe('remove', () => {
     it('deletes the limit by id', async () => {
-      repository.findOne.mockResolvedValue({ id: 1, space_id: 1 } as Limit);
+      repository.findOne.mockResolvedValue({ id: 1, space_id: 1, categories: [] } as Limit);
 
       await service.remove(userId, 1, 1);
 
@@ -332,7 +332,7 @@ describe('LimitsService', () => {
 
     it.each([
       ['missing', null],
-      ['foreign-space', { id: 1, space_id: 20 }],
+      ['foreign-space', { id: 1, space_id: 20, categories: [] }],
     ])('remove rejects a %s limit', async (_, limit) => {
       repository.findOne.mockResolvedValue(limit as any);
 

@@ -9,9 +9,12 @@ import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
-import { generateRandomNumberString } from '@shared/utils';
+import { generateRandomNumberString, withRelations } from '@shared/utils';
+import type { WithRelations } from '@shared/types';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
+
+export type SpaceWithCurrency = WithRelations<Space, 'currency'>;
 
 export interface SpaceListItem {
   id: number;
@@ -34,7 +37,7 @@ export class SpacesService {
     private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
-  async create(userId: number, dto: CreateSpaceDto): Promise<Space> {
+  async create(userId: number, dto: CreateSpaceDto): Promise<SpaceWithCurrency | null> {
     const invites = dto.invites ?? [];
 
     if (dto.type === SpaceType.PERSONAL && invites.length) {
@@ -80,10 +83,12 @@ export class SpacesService {
     }
 
     const spaceIds = memberships.map((membership) => membership.space_id);
-    const spaces = await this.spaceRepository.find({
-      where: { id: In(spaceIds) },
-      relations: { currency: true },
-    });
+    const spaces = (
+      await this.spaceRepository.find({
+        where: { id: In(spaceIds) },
+        relations: { currency: true },
+      })
+    ).map((space) => withRelations(space, 'currency'));
 
     const counts = await this.spaceMemberRepository
       .createQueryBuilder('member')
@@ -106,11 +111,13 @@ export class SpacesService {
     }));
   }
 
-  async getOne(spaceId: number): Promise<Space> {
-    return this.spaceRepository.findOne({ where: { id: spaceId }, relations: { currency: true } });
+  async getOne(spaceId: number): Promise<SpaceWithCurrency | null> {
+    const space = await this.spaceRepository.findOne({ where: { id: spaceId }, relations: { currency: true } });
+
+    return space && withRelations(space, 'currency');
   }
 
-  async getForMember(userId: number, spaceId: number): Promise<Space> {
+  async getForMember(userId: number, spaceId: number): Promise<SpaceWithCurrency | null> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
     return this.getOne(spaceId);

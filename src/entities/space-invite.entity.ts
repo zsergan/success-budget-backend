@@ -37,7 +37,7 @@ export class SpaceInvite {
 
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
-  space: Space;
+  space?: Space;
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;

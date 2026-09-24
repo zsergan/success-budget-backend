@@ -8,10 +8,10 @@ import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
 import { ErrorMessages } from '@shared/error-messages';
-import { generateRandomNumberString } from '@shared/utils';
+import { generateRandomNumberString, withRelations } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
-import { SpacesService } from './spaces.service';
+import { SpacesService, type SpaceWithCurrency } from './spaces.service';
 
 export interface CreatedSpaceInvite {
   id: number;
@@ -83,7 +83,7 @@ export class SpaceInvitesService {
     await this.spaceInviteRepository.update(invite.id, { revoked_at: new Date() });
   }
 
-  async accept(userId: number, code: string): Promise<Space> {
+  async accept(userId: number, code: string): Promise<SpaceWithCurrency | null> {
     const user = await this.usersService.findById(userId);
 
     const invite = await this.spaceInviteRepository.findOne({
@@ -116,7 +116,11 @@ export class SpaceInvitesService {
       );
       await manager.getRepository(SpaceInvite).update(invite.id, { accepted_at: new Date() });
 
-      return manager.getRepository(Space).findOne({ where: { id: invite.space_id }, relations: { currency: true } });
+      const space = await manager
+        .getRepository(Space)
+        .findOne({ where: { id: invite.space_id }, relations: { currency: true } });
+
+      return space && withRelations(space, 'currency');
     });
   }
 }

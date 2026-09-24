@@ -24,11 +24,11 @@ export class SpaceMember {
 
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })
-  space: Space;
+  space?: Space;
 
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user?: User;
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;
