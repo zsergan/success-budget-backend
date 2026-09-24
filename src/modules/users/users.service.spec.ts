@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { HttpException } from '@nestjs/common';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 
 import { UsersService } from './users.service';
@@ -158,6 +158,18 @@ describe('UsersService', () => {
       expect(spaceRepositoryInTx.update).toHaveBeenCalledWith(20, { currency_id: 2 });
       expect(result).toMatchObject({ id: 4, name: 'New Name' });
     });
+
+    it('locks the user and leaves an account verified in the meantime untouched', async () => {
+      lockedUser.getOne.mockResolvedValue(buildUser({ id: 4, email_verified: 1 }));
+
+      await expect(
+        service.updateUnverified(4, { email: 'a@b.com', name: 'New', password: 'pw', base_currency_id: 2 }),
+      ).rejects.toMatchObject(new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400));
+
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(User, 'user');
+      expect(userRepositoryInTx.update).not.toHaveBeenCalled();
+      expect(spaceRepositoryInTx.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('registerAndSendConfirmation', () => {
@@ -266,6 +278,59 @@ describe('UsersService', () => {
 
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(3, expect.objectContaining({ name: 'New' }));
       expect(result).toMatchObject({ id: 3, name: 'New' });
+    });
+
+    describe('when a concurrent registration inserts the same email first', () => {
+      const dto: CreateUserDto = { email: 'a@b.com', name: 'Late', password: 'pw', base_currency_id: 1 };
+      const duplicateEmail = () =>
+        new QueryFailedError('INSERT INTO users', [], {
+          code: 'ER_DUP_ENTRY',
+          sqlMessage: "Duplicate entry 'a@b.com' for key 'users.UQ_users_email'",
+        } as unknown as Error);
+
+      beforeEach(() => {
+        userRepositoryInTx.save.mockRejectedValue(duplicateEmail());
+        mockHash.mockResolvedValue('hashed');
+        spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      });
+
+      it('re-reads the winner and refreshes it instead of creating another user', async () => {
+        const winner = buildUser({ id: 9, email: 'a@b.com', email_verified: 0 });
+        repository.findOne
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(winner)
+          .mockResolvedValueOnce(buildUser({ id: 9, name: 'Late' }));
+        lockedUser.getOne.mockResolvedValue(winner);
+
+        const result = await service.registerOrRefresh(dto);
+
+        expect(spaceRepositoryInTx.save).not.toHaveBeenCalled();
+        expect(userRepositoryInTx.update).toHaveBeenCalledWith(9, expect.objectContaining({ name: 'Late' }));
+        expect(result).toMatchObject({ id: 9, name: 'Late' });
+      });
+
+      it('rejects when the winner is already verified', async () => {
+        repository.findOne
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(buildUser({ id: 9, email: 'a@b.com', email_verified: 1 }));
+
+        await expect(service.registerOrRefresh(dto)).rejects.toMatchObject(
+          new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
+        );
+        expect(userRepositoryInTx.update).not.toHaveBeenCalled();
+      });
+
+      it('rethrows any other insert failure', async () => {
+        const failure = new QueryFailedError('INSERT INTO users', [], {
+          code: 'ER_DUP_ENTRY',
+          sqlMessage: "Duplicate entry '1' for key 'users.PRIMARY'",
+        } as unknown as Error);
+        userRepositoryInTx.save.mockRejectedValue(failure);
+        repository.findOne.mockResolvedValue(null);
+
+        await expect(service.registerOrRefresh(dto)).rejects.toBe(failure);
+        expect(repository.findOne).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

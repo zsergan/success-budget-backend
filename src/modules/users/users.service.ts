@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
 
@@ -22,6 +22,16 @@ import { assertFound, constantTimeEquals } from '@shared/utils';
 import type { EnvironmentVariables } from '@config/env.validation';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
+
+function isDuplicateEmail(error: unknown): boolean {
+  if (!(error instanceof QueryFailedError)) {
+    return false;
+  }
+
+  const driverError = error.driverError as { code?: string; sqlMessage?: string };
+
+  return driverError.code === 'ER_DUP_ENTRY' && (driverError.sqlMessage ?? '').includes('UQ_users_email');
+}
 
 @Injectable()
 export class UsersService {
@@ -84,17 +94,37 @@ export class UsersService {
   async registerOrRefresh(createUserDto: CreateUserDto): Promise<User> {
     const existing = await this.findByEmail(createUserDto.email);
 
-    if (existing && existing.email_verified) {
-      throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+    if (existing) {
+      return this.refreshUnverified(existing, createUserDto);
     }
 
-    return existing ? this.updateUnverified(existing.id, createUserDto) : this.register(createUserDto);
+    try {
+      return await this.register(createUserDto);
+    } catch (error) {
+      if (!isDuplicateEmail(error)) {
+        throw error;
+      }
+    }
+
+    // a concurrent registration for this email committed first
+    const winner = await this.findByEmail(createUserDto.email);
+    assertFound(winner);
+
+    return this.refreshUnverified(winner, createUserDto);
   }
 
   async updateUnverified(id: number, createUserDto: CreateUserDto): Promise<User> {
     const password = await bcrypt.hash(createUserDto.password, 10);
 
     await this.dataSource.transaction(async (manager) => {
+      const user = await this.lockUser(manager, id);
+      assertFound(user);
+
+      // the caller's check ran before the lock; a verification may have committed since
+      if (user.email_verified) {
+        throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+      }
+
       await manager.getRepository(User).update(id, { name: createUserDto.name, password });
 
       const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: id } });
@@ -191,6 +221,14 @@ export class UsersService {
 
   async findByEmail(email: string): Promise<User | null> {
     return this.userRepository.findOne({ where: { email } });
+  }
+
+  private async refreshUnverified(existing: User, createUserDto: CreateUserDto): Promise<User> {
+    if (existing.email_verified) {
+      throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+    }
+
+    return this.updateUnverified(existing.id, createUserDto);
   }
 
   async exists(id: number): Promise<boolean> {
