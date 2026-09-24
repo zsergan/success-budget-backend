@@ -22,6 +22,7 @@ describe('Boundary type contract (e2e)', () => {
   let expenseCategoryId: number;
   let walletId: number;
   let currencyId: number;
+  let email: string;
 
   const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -40,9 +41,10 @@ describe('Boundary type contract (e2e)', () => {
 
     const [currency] = await dataSource.query('SELECT id FROM currencies LIMIT 1');
     currencyId = currency.id;
+    email = `e2e-contract-${Date.now()}@example.com`;
     const user = await usersService.register({
       name: 'Contract',
-      email: `e2e-contract-${Date.now()}@example.com`,
+      email,
       password: 'DevTest#2026',
       base_currency_id: currency.id,
     });
@@ -471,6 +473,64 @@ describe('Boundary type contract (e2e)', () => {
   });
 
   // Exact key sets: a changed, leaked (@Exclude) or dropped field fails here.
+  describe('missing entities', () => {
+    const MISSING_ID = 2_000_000_000;
+
+    function expectError(res: request.Response, status: number, message: string): void {
+      expect(res.status).toBe(status);
+      expect(res.body.message).toBe(message);
+    }
+
+    it('reports a missing wallet, category, limit or transaction as the same 403 as a foreign one', async () => {
+      const wallet = 'Wallet does not exist or you do not have access to this wallet';
+      const category = 'Category does not exist or you do not have access to this category';
+      const limit = 'Limit does not exist or you do not have access to this limit';
+
+      expectError(await api().put(`${base()}/wallets/${MISSING_ID}`).send({ wallet_name: 'x' }), 403, wallet);
+      expectError(await api().delete(`${base()}/wallets/${MISSING_ID}`), 403, wallet);
+      expectError(await createTransaction({ wallet_id: MISSING_ID }), 403, wallet);
+      expectError(await createTransaction({ category_id: MISSING_ID }), 403, category);
+      expectError(await api().delete(`${base()}/transactions/${MISSING_ID}`), 403, wallet);
+      expectError(await api().put(`${base()}/categories/${MISSING_ID}`).send({ name: 'x' }), 403, category);
+      expectError(await api().delete(`${base()}/categories/${MISSING_ID}`), 403, category);
+      expectError(
+        await api()
+          .put(`${base()}/categories/reorder`)
+          .send({ category_ids: [MISSING_ID] }),
+        403,
+        category,
+      );
+      expectError(await api().put(`${base()}/limits/${MISSING_ID}`).send({ amount: '1' }), 403, limit);
+      expectError(await api().delete(`${base()}/limits/${MISSING_ID}`), 403, limit);
+      expectError(
+        await api()
+          .post(`${base()}/limits`)
+          .send({ amount: '1', category_ids: [MISSING_ID] }),
+        403,
+        category,
+      );
+    });
+
+    it('reports a missing space as 403 and a missing invite, member or code as 404', async () => {
+      const space = 'Space does not exist or you do not have access to this space';
+
+      expectError(await api().get(`/api/v1/spaces/${MISSING_ID}`), 403, space);
+      expectError(await api().get(`/api/v1/spaces/${MISSING_ID}/wallets`), 403, space);
+      expectError(
+        await api().post(`/api/v1/spaces/${MISSING_ID}/invites`).send({ email: 'x@example.com' }),
+        403,
+        space,
+      );
+      expectError(await api().delete(`${base()}/invites/${MISSING_ID}`), 404, 'Not found');
+      expectError(await api().delete(`${base()}/members/${MISSING_ID}`), 404, 'Not found');
+      expectError(await api().post('/api/v1/spaces/invites/accept').send({ code: '000000' }), 404, 'Not found');
+
+      const verify = (body: object) => request(app.getHttpServer()).post('/api/v1/users/verify-email').send(body);
+      expectError(await verify({ email: `missing-${Date.now()}@example.com`, code: '000000' }), 404, 'Not found');
+      expectError(await verify({ email, code: '000000' }), 404, 'Not found');
+    });
+  });
+
   describe('response shapes', () => {
     const keys = (value: object): string[] => Object.keys(value).sort();
     const WALLET = ['created_at', 'design', 'id', 'updated_at', 'wallet_name'];
