@@ -307,12 +307,12 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       await createTransaction(wallet.id, catZ.id, TransactionType.EXPENSE, '100', new Date(2026, 3, 8));
 
       const userId = await createUserWithMembership(spaceId);
-      await limitsService.create(userId, spaceId, { amount: 50 } as any); // monthly total, less than the group's own amount
+      await limitsService.create(userId, spaceId, { amount: '50' }); // monthly total, less than the group's own amount
       await limitsService.create(userId, spaceId, {
         category_ids: [catX.id, catY.id],
         name: 'Fun',
-        amount: 100,
-      } as any);
+        amount: '100',
+      });
 
       const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
       const limits = await limitsService.getAll(spaceId);
@@ -336,7 +336,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const spaceId = await createSpace();
       const otherSpaceId = await createSpace();
       const userId = await createUserWithMembership(spaceId);
-      const req = { user: { id: userId } } as unknown as AuthedRequest;
+      const req: AuthedRequest = { user: { id: userId } };
 
       const valid = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'Valid' });
       const systemCategory = await createCategory(spaceId, TransactionType.EXPENSE, {
@@ -347,18 +347,18 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const missingId = valid.id + foreign.id + systemCategory.id + 1_000_000;
 
       await expect(
-        limitsController.create(req, spaceId, { category_ids: [valid.id, missingId], amount: 10 } as any),
+        limitsController.create(req, spaceId, { category_ids: [valid.id, missingId], amount: '10' }),
       ).rejects.toMatchObject(new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403));
 
       await expect(
-        limitsController.create(req, spaceId, { category_ids: [valid.id, foreign.id], amount: 10 } as any),
+        limitsController.create(req, spaceId, { category_ids: [valid.id, foreign.id], amount: '10' }),
       ).rejects.toMatchObject(new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403));
 
       await expect(
-        limitsController.create(req, spaceId, { category_ids: [systemCategory.id], amount: 10 } as any),
+        limitsController.create(req, spaceId, { category_ids: [systemCategory.id], amount: '10' }),
       ).rejects.toMatchObject(new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, 400));
 
-      const created = await limitsController.create(req, spaceId, { category_ids: [valid.id], amount: 10 } as any);
+      const created = await limitsController.create(req, spaceId, { category_ids: [valid.id], amount: '10' });
       expect(created).toBeTruthy();
 
       const findSpy = jest.spyOn(categoryRepository, 'find');

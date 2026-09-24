@@ -1,6 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, type ObjectLiteral } from 'typeorm';
 
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.config';
@@ -97,11 +97,14 @@ describe('Space setup across registration, verification and space creation (e2e)
 
   function failSavesOf(entity: typeof SpaceMember | typeof Category) {
     const originalSave = Repository.prototype.save;
-    jest.spyOn(Repository.prototype, 'save').mockImplementation(function (this: Repository<any>, ...args: any[]) {
+    jest.spyOn(Repository.prototype, 'save').mockImplementation(function (
+      this: Repository<ObjectLiteral>,
+      ...args: Parameters<typeof originalSave>
+    ) {
       if (this.target === entity) {
         return Promise.reject(new Error('injected failure'));
       }
-      return (originalSave as any).apply(this, args);
+      return Reflect.apply(originalSave, this, args);
     });
   }
 
