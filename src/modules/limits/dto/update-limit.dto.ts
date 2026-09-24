@@ -18,5 +18,5 @@ export class UpdateLimitDto {
 
   @IsOptionalNonNull()
   @IsDecimal()
-  amount?: number;
+  amount?: string;
 }

@@ -15,5 +15,5 @@ export class CreateLimitDto {
 
   @IsNotEmpty()
   @IsDecimal()
-  amount: number;
+  amount: string;
 }

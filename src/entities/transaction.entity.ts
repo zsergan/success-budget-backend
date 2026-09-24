@@ -25,7 +25,7 @@ export class Transaction {
   transaction_type: TransactionType;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  amount: number;
+  amount: string;
 
   @Column({ type: 'timestamp', precision: 3, default: () => 'CURRENT_TIMESTAMP(3)' })
   timestamp: Date;

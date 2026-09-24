@@ -34,7 +34,7 @@ export class Limit {
   limit_type: LimitType;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  amount: number;
+  amount: string;
 
   @Exclude()
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })

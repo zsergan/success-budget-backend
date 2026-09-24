@@ -38,7 +38,7 @@ describe('WalletsService', () => {
 
     walletRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn((entity) => entity) };
     categoryRepositoryInTx = { findOneOrFail: jest.fn() };
-    transactionRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn((entity) => entity) };
+    transactionRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn((entity) => ({ ...entity })) };
     const manager = {
       getRepository: jest.fn((entity) => {
         if (entity === Wallet) return walletRepositoryInTx;
@@ -143,11 +143,11 @@ describe('WalletsService', () => {
         wallet_id: 7,
         category_id: 3,
         transaction_type: TransactionType.INCOME,
-        amount: 100,
+        amount: '100.00',
         timestamp: expect.any(Date),
       });
       expect(result.wallet).toEqual(expect.objectContaining({ id: 7, balance: 100 }));
-      expect(result.transaction).toBeDefined();
+      expect(result.transaction).toEqual(expect.objectContaining({ amount: 100 }));
     });
   });
 

@@ -61,7 +61,14 @@ describe('TransactionsService', () => {
 
   describe('create', () => {
     const dto = (overrides = {}) =>
-      ({ wallet_id: 1, category_id: 5, amount: 10, transaction_type: TransactionType.INCOME, ...overrides }) as any;
+      ({
+        wallet_id: 1,
+        category_id: 5,
+        amount: '10',
+        transaction_type: TransactionType.INCOME,
+        timestamp: '2026-01-15T10:00:00.000Z',
+        ...overrides,
+      }) as any;
 
     it('rejects a non-member before loading anything', async () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbidden());
@@ -103,8 +110,16 @@ describe('TransactionsService', () => {
       const wallet = { id: 1, space_id: spaceId, is_deleted: 0 };
       walletsService.getOne.mockResolvedValue(wallet);
       transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 100]]));
-      const input = dto();
-      transactionRepository.save.mockResolvedValue({ ...input, id: 'tx-1' });
+      const input = dto({ description: 'Lunch' });
+      const entity = {
+        wallet_id: 1,
+        category_id: 5,
+        transaction_type: TransactionType.INCOME,
+        amount: '10',
+        timestamp: new Date('2026-01-15T10:00:00.000Z'),
+        description: 'Lunch',
+      };
+      transactionRepository.save.mockResolvedValue({ ...entity, id: 'tx-1' });
 
       const result = await service.create(userId, spaceId, input);
 
@@ -112,10 +127,10 @@ describe('TransactionsService', () => {
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
       expect(walletsService.getOne).toHaveBeenCalledWith(1);
       expect(categoriesService.getOne).toHaveBeenCalledWith(5);
-      expect(transactionRepository.create).toHaveBeenCalledWith(input);
-      expect(transactionRepository.save).toHaveBeenCalledWith(input);
+      expect(transactionRepository.create).toHaveBeenCalledWith(entity);
+      expect(transactionRepository.save).toHaveBeenCalledWith(entity);
       expect(result).toEqual({
-        transaction: { ...input, id: 'tx-1' },
+        transaction: { ...entity, id: 'tx-1' },
         wallet: { ...wallet, balance: 110 },
         previous_balance: 100,
       });
@@ -125,7 +140,7 @@ describe('TransactionsService', () => {
 
     it('subtracts the amount for an expense transaction', async () => {
       transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 100]]));
-      const input = dto({ amount: 30, transaction_type: TransactionType.EXPENSE });
+      const input = dto({ amount: '30', transaction_type: TransactionType.EXPENSE });
       transactionRepository.save.mockResolvedValue(input);
 
       const result = await service.create(userId, spaceId, input);
@@ -135,13 +150,21 @@ describe('TransactionsService', () => {
     });
 
     it('starts from a balance of 0 when the wallet has no transactions yet', async () => {
-      const input = dto({ amount: 50 });
+      const input = dto({ amount: '50' });
       transactionRepository.save.mockResolvedValue(input);
 
       const result = await service.create(userId, spaceId, input);
 
       expect(result.previous_balance).toBe(0);
       expect(result.wallet.balance).toBe(50);
+    });
+
+    it('stores an absent description as null and converts a date-only timestamp to local midnight', async () => {
+      await service.create(userId, spaceId, dto({ timestamp: '2026-01-15' }));
+
+      expect(transactionRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ description: null, timestamp: new Date(2026, 0, 15) }),
+      );
     });
   });
 

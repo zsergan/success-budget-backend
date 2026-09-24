@@ -30,9 +30,13 @@ export interface WalletsOverview {
   wallets: WalletSummary[];
 }
 
+// POST /wallets returns the initial amount as a number, unlike DECIMAL
+// reads - see docs/type-contract.md
+export type InitialBalanceTransaction = Omit<Transaction, 'amount'> & { amount: number };
+
 export interface CreateWalletResult {
   wallet: Wallet;
-  transaction: Transaction | null;
+  transaction: InitialBalanceTransaction | null;
 }
 
 @Injectable()
@@ -95,12 +99,12 @@ export class WalletsService {
         .findOneOrFail({ where: { space_id: spaceId, is_system: 1 } });
 
       const transactionRepository = manager.getRepository(Transaction);
-      const transaction = await transactionRepository.save(
+      const saved = await transactionRepository.save(
         transactionRepository.create({
           wallet_id: wallet.id,
           category_id: systemCategory.id,
           transaction_type: TransactionType.INCOME,
-          amount: initialBalance,
+          amount: createWalletDto.initial_balance,
           // set explicitly, in JS, rather than left to the column's DB-side
           // CURRENT_TIMESTAMP(3) default - the dev DB's server time zone is
           // not UTC, so a DB-computed default would be off by several hours
@@ -109,6 +113,7 @@ export class WalletsService {
       );
 
       wallet.balance = initialBalance;
+      const transaction: InitialBalanceTransaction = Object.assign(saved, { amount: initialBalance });
 
       return { wallet, transaction };
     });

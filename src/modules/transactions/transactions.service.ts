@@ -7,7 +7,7 @@ import { Wallet } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace } from '@shared/utils';
+import { assertBelongsToSpace, toDate } from '@shared/utils';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
@@ -54,7 +54,14 @@ export class TransactionsService {
     const balances = await this.transactionQueriesService.getBalances([wallet.id]);
     const previousBalance = balances.get(wallet.id) ?? 0;
 
-    const transaction = this.transactionRepository.create(createTransactionDto);
+    const transaction = this.transactionRepository.create({
+      wallet_id: createTransactionDto.wallet_id,
+      category_id: createTransactionDto.category_id,
+      transaction_type: createTransactionDto.transaction_type,
+      amount: createTransactionDto.amount,
+      timestamp: toDate(createTransactionDto.timestamp),
+      description: createTransactionDto.description ?? null,
+    });
     const savedTransaction = await this.transactionRepository.save(transaction);
 
     const amount = Number(createTransactionDto.amount);

@@ -161,7 +161,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
     wallet_id: number,
     category_id: number,
     transaction_type: TransactionType,
-    amount: number,
+    amount: string,
     timestamp: Date,
   ): Promise<Transaction> {
     return transactionRepository.save(
@@ -182,12 +182,12 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const from = new Date(2026, 0, 1, 0, 0, 0, 0);
       const to = new Date(2026, 0, 31, 23, 59, 59, 999);
 
-      await createTransaction(w1.id, income.id, TransactionType.INCOME, 1000, new Date(2025, 11, 15)); // before period, all-time only
-      await createTransaction(w1.id, income.id, TransactionType.INCOME, 500, from); // exactly on the lower boundary
-      await createTransaction(w1.id, expense.id, TransactionType.EXPENSE, 120.5, new Date(2026, 0, 15));
-      await createTransaction(w1.id, expense.id, TransactionType.EXPENSE, 50, to); // exactly on the upper boundary
-      await createTransaction(w1.id, income.id, TransactionType.INCOME, 200, new Date(to.getTime() + 1)); // after period, all-time only
-      await createTransaction(w2.id, expense.id, TransactionType.EXPENSE, 30, new Date(2026, 0, 10));
+      await createTransaction(w1.id, income.id, TransactionType.INCOME, '1000', new Date(2025, 11, 15)); // before period, all-time only
+      await createTransaction(w1.id, income.id, TransactionType.INCOME, '500', from); // exactly on the lower boundary
+      await createTransaction(w1.id, expense.id, TransactionType.EXPENSE, '120.5', new Date(2026, 0, 15));
+      await createTransaction(w1.id, expense.id, TransactionType.EXPENSE, '50', to); // exactly on the upper boundary
+      await createTransaction(w1.id, income.id, TransactionType.INCOME, '200', new Date(to.getTime() + 1)); // after period, all-time only
+      await createTransaction(w2.id, expense.id, TransactionType.EXPENSE, '30', new Date(2026, 0, 10));
 
       const walletIds = [w1.id, w2.id, w3.id];
 
@@ -208,7 +208,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const income = await createCategory(spaceId, TransactionType.INCOME, { name: 'Salary' });
       const wallet = await createWallet(spaceId, 'Main');
 
-      await createTransaction(wallet.id, income.id, TransactionType.INCOME, 400, new Date());
+      await createTransaction(wallet.id, income.id, TransactionType.INCOME, '400', new Date());
 
       const overview = await walletsService.getOverview(userId, spaceId, new Date(2000, 0, 1), new Date(2100, 0, 1));
 
@@ -227,11 +227,11 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
 
       const catA = await createCategory(spaceA, TransactionType.EXPENSE, { name: 'Groceries' });
       const walletA = await createWallet(spaceA, 'A');
-      await createTransaction(walletA.id, catA.id, TransactionType.EXPENSE, 70, new Date(2026, 1, 10));
+      await createTransaction(walletA.id, catA.id, TransactionType.EXPENSE, '70', new Date(2026, 1, 10));
 
       const catB = await createCategory(spaceB, TransactionType.EXPENSE, { name: 'Groceries' });
       const walletB = await createWallet(spaceB, 'B');
-      await createTransaction(walletB.id, catB.id, TransactionType.EXPENSE, 999, new Date(2026, 1, 10));
+      await createTransaction(walletB.id, catB.id, TransactionType.EXPENSE, '999', new Date(2026, 1, 10));
 
       const totalsA = await transactionQueriesService.getExpensesByCategory(spaceA, from, to);
       const totalsB = await transactionQueriesService.getExpensesByCategory(spaceB, from, to);
@@ -257,13 +257,13 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const from = new Date(2026, 2, 1, 0, 0, 0, 0);
       const to = new Date(2026, 2, 31, 23, 59, 59, 999);
 
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, 100.25, new Date(2026, 2, 10));
-      await createTransaction(kept.id, catB.id, TransactionType.EXPENSE, 40, from); // lower boundary
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, 15, to); // upper boundary
-      await createTransaction(kept.id, catIncome.id, TransactionType.INCOME, 500, new Date(2026, 2, 12));
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, 5, new Date(from.getTime() - 1)); // outside
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, 7, new Date(to.getTime() + 1)); // outside
-      await createTransaction(deleted.id, catA.id, TransactionType.EXPENSE, 60, new Date(2026, 2, 11));
+      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '100.25', new Date(2026, 2, 10));
+      await createTransaction(kept.id, catB.id, TransactionType.EXPENSE, '40', from); // lower boundary
+      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '15', to); // upper boundary
+      await createTransaction(kept.id, catIncome.id, TransactionType.INCOME, '500', new Date(2026, 2, 12));
+      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '5', new Date(from.getTime() - 1)); // outside
+      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '7', new Date(to.getTime() + 1)); // outside
+      await createTransaction(deleted.id, catA.id, TransactionType.EXPENSE, '60', new Date(2026, 2, 11));
 
       await walletsService.delete(userId, spaceId, deleted.id);
 
@@ -301,10 +301,10 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const from = new Date(2026, 3, 1, 0, 0, 0, 0);
       const to = new Date(2026, 3, 30, 23, 59, 59, 999);
 
-      await createTransaction(wallet.id, catX.id, TransactionType.EXPENSE, 12.34, new Date(2026, 3, 5));
-      await createTransaction(wallet.id, catX.id, TransactionType.EXPENSE, 0.01, new Date(2026, 3, 6));
-      await createTransaction(wallet.id, catY.id, TransactionType.EXPENSE, 45.65, new Date(2026, 3, 7));
-      await createTransaction(wallet.id, catZ.id, TransactionType.EXPENSE, 100, new Date(2026, 3, 8));
+      await createTransaction(wallet.id, catX.id, TransactionType.EXPENSE, '12.34', new Date(2026, 3, 5));
+      await createTransaction(wallet.id, catX.id, TransactionType.EXPENSE, '0.01', new Date(2026, 3, 6));
+      await createTransaction(wallet.id, catY.id, TransactionType.EXPENSE, '45.65', new Date(2026, 3, 7));
+      await createTransaction(wallet.id, catZ.id, TransactionType.EXPENSE, '100', new Date(2026, 3, 8));
 
       const userId = await createUserWithMembership(spaceId);
       await limitsService.create(userId, spaceId, { amount: 50 } as any); // monthly total, less than the group's own amount

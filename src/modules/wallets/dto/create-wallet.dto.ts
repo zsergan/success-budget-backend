@@ -10,7 +10,7 @@ export class CreateWalletDto {
   @IsNotEmpty()
   @IsDecimal()
   @Matches(/^\d+(\.\d+)?$/, { message: 'initial_balance must not be negative' })
-  initial_balance: number;
+  initial_balance: string;
 
   @IsNotEmpty()
   @IsEnum(AppColor)
