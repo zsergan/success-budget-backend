@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HealthCheckService, TypeOrmHealthIndicator } from '@nestjs/terminus';
+import { HealthCheckService, TypeOrmHealthIndicator, type HealthCheckResult } from '@nestjs/terminus';
 
 import { HealthController } from './health.controller';
 
@@ -25,9 +25,12 @@ describe('HealthController', () => {
   it('runs a database ping check through the Terminus health check service', async () => {
     health.check.mockImplementation(async (indicators) => {
       for (const indicator of indicators) {
-        await (indicator as () => unknown)();
+        if (typeof indicator === 'function') {
+          await indicator();
+        }
       }
-      return { status: 'ok', info: {}, error: {}, details: {} } as any;
+      const result: HealthCheckResult = { status: 'ok', info: {}, error: {}, details: {} };
+      return result;
     });
     db.pingCheck.mockResolvedValue({ database: { status: 'up' } });
 

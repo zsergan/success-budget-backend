@@ -2,6 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
+import type { CreateWalletDto } from './dto/create-wallet.dto';
+import { AppColor } from '@shared/enums';
+import type { AuthedRequest } from '@shared/types';
+import { buildWallet } from '@testing';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
@@ -22,21 +26,22 @@ describe('WalletsController', () => {
     walletsService = module.get(WalletsService);
   });
 
-  const req = { user: { id: 1 } } as any;
+  const req: AuthedRequest = { user: { id: 1 } };
   const spaceId = 10;
 
   it('create delegates with the caller and space', async () => {
-    const created = { wallet: { id: 1 }, transaction: null };
-    walletsService.create.mockResolvedValue(created as any);
+    const dto: CreateWalletDto = { wallet_name: 'Cash', initial_balance: '0', design: AppColor.SLATE };
+    const created = { wallet: Object.assign(buildWallet(), { balance: 0 }), transaction: null };
+    walletsService.create.mockResolvedValue(created);
 
-    const result = await controller.create(req, spaceId, { wallet_name: 'Cash' } as any);
+    const result = await controller.create(req, spaceId, dto);
 
-    expect(walletsService.create).toHaveBeenCalledWith(1, spaceId, { wallet_name: 'Cash' });
+    expect(walletsService.create).toHaveBeenCalledWith(1, spaceId, dto);
     expect(result).toBe(created);
   });
 
   it('update delegates with the caller, space and wallet id', async () => {
-    await controller.update(req, spaceId, 3, { wallet_name: 'Renamed' } as any);
+    await controller.update(req, spaceId, 3, { wallet_name: 'Renamed' });
 
     expect(walletsService.update).toHaveBeenCalledWith(1, spaceId, 3, { wallet_name: 'Renamed' });
   });

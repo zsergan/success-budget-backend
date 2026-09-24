@@ -14,7 +14,8 @@
       "@entities/*": ["./src/entities/*"],
       "@modules/*": ["./src/modules/*"],
       "@shared/*": ["./src/shared/*"],
-      "@config/*": ["./src/config/*"]
+      "@config/*": ["./src/config/*"],
+      "@testing": ["./src/testing"]
     },
     "skipLibCheck": true,
     "strict": true,

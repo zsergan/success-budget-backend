@@ -1,15 +1,15 @@
-import { ConfigService } from '@nestjs/config';
-import type { IncomingMessage, ServerResponse } from 'http';
-import type { Options as PinoHttpOptions } from 'pino-http';
+import { IncomingMessage, ServerResponse } from 'http';
+import { Socket } from 'net';
 
 import type { EnvironmentVariables } from './env.validation';
 import { getLoggerConfig } from './logger.config';
+import { buildConfigService } from '@testing';
 
-const buildConfigService = (values: Record<string, unknown>) =>
-  ({ get: jest.fn((key: string) => values[key]) }) as unknown as ConfigService<EnvironmentVariables, true>;
+const getPinoHttpOptions = (values: Partial<EnvironmentVariables> = {}) =>
+  getLoggerConfig(buildConfigService(values)).pinoHttp;
 
-const getPinoHttpOptions = (values: Record<string, unknown> = {}) =>
-  getLoggerConfig(buildConfigService(values)).pinoHttp as PinoHttpOptions;
+const buildRequest = (headers: IncomingMessage['headers'] = {}): IncomingMessage =>
+  Object.assign(new IncomingMessage(new Socket()), { headers });
 
 describe('getLoggerConfig', () => {
   it('defaults the log level to info when LOG_LEVEL is unset', () => {
@@ -36,9 +36,10 @@ describe('getLoggerConfig', () => {
   });
 
   describe('genReqId', () => {
-    const buildReqRes = (headers: Record<string, string | string[]> = {}) => {
-      const req = { headers } as unknown as IncomingMessage;
-      const res = { setHeader: jest.fn() } as unknown as ServerResponse;
+    const buildReqRes = (headers: IncomingMessage['headers'] = {}) => {
+      const req = buildRequest(headers);
+      const res = new ServerResponse(req);
+      jest.spyOn(res, 'setHeader');
       return { req, res };
     };
 
@@ -62,7 +63,7 @@ describe('getLoggerConfig', () => {
     it('generates a uuid when no header is present', () => {
       const { req, res } = buildReqRes();
 
-      const id = getPinoHttpOptions().genReqId?.(req, res) as string;
+      const id = getPinoHttpOptions().genReqId?.(req, res);
 
       expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
       expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', id);
@@ -71,8 +72,9 @@ describe('getLoggerConfig', () => {
 
   describe('customLogLevel', () => {
     const level = (statusCode: number, err?: Error) => {
-      const res = { statusCode } as unknown as ServerResponse;
-      return getPinoHttpOptions().customLogLevel?.({} as IncomingMessage, res, err);
+      const req = buildRequest();
+      const res = Object.assign(new ServerResponse(req), { statusCode });
+      return getPinoHttpOptions().customLogLevel?.(req, res, err);
     };
 
     it('returns error for a server error status', () => {

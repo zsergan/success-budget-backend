@@ -3,6 +3,9 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import type { CreateUserDto } from './dto/create-user.dto';
+import type { VerifyUserDto } from './dto/verify-user.dto';
+import { buildUser } from '@testing';
 
 describe('UsersController', () => {
   let controller: UsersController;
@@ -32,8 +35,8 @@ describe('UsersController', () => {
   });
 
   it('register delegates to UsersService.registerAndSendConfirmation', async () => {
-    const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
-    const user = { id: 2, email: 'a@b.com' } as any;
+    const dto: CreateUserDto = { email: 'a@b.com', name: 'A', password: 'StrongPass#1', base_currency_id: 1 };
+    const user = buildUser({ id: 2, email: 'a@b.com', email_verified: 0 });
     usersService.registerAndSendConfirmation.mockResolvedValue(user);
 
     await expect(controller.register(dto)).resolves.toBe(user);
@@ -41,7 +44,7 @@ describe('UsersController', () => {
   });
 
   it('verifyEmail delegates to UsersService.verifyEmail', async () => {
-    const dto = { email: 'x@x.com', code: '1234' } as any;
+    const dto: VerifyUserDto = { email: 'x@x.com', code: '123456' };
     usersService.verifyEmail.mockResolvedValue('access-token');
 
     await expect(controller.verifyEmail(dto)).resolves.toBe('access-token');
@@ -51,15 +54,15 @@ describe('UsersController', () => {
   it('login delegates to UsersService.login', async () => {
     usersService.login.mockResolvedValue('token');
 
-    await expect(controller.login({ email: 'a@b.com', password: 'pw' } as any)).resolves.toBe('token');
+    await expect(controller.login({ email: 'a@b.com', password: 'pw' })).resolves.toBe('token');
     expect(usersService.login).toHaveBeenCalledWith({ email: 'a@b.com', password: 'pw' });
   });
 
   it('getProfile returns the authenticated user by id from the request', async () => {
-    const user = { id: 1, email: 'a@b.com' } as any;
+    const user = buildUser({ id: 1, email: 'a@b.com' });
     usersService.getProfile.mockResolvedValue(user);
 
-    await expect(controller.getProfile({ user: { id: 1 } } as any)).resolves.toBe(user);
+    await expect(controller.getProfile({ user: { id: 1 } })).resolves.toBe(user);
     expect(usersService.getProfile).toHaveBeenCalledWith(1);
   });
 });

@@ -1,4 +1,6 @@
-import { ArgumentsHost, HttpException, HttpStatus } from '@nestjs/common';
+import { HttpException, HttpStatus } from '@nestjs/common';
+import { ExecutionContextHost } from '@nestjs/core/helpers/execution-context-host';
+
 import { HttpExceptionFilter } from './http-exception.filter';
 import { RetryAfterException } from './retry-after.exception';
 
@@ -9,12 +11,7 @@ describe('HttpExceptionFilter', () => {
     const jsonMock = jest.fn();
     const statusMock = jest.fn().mockReturnValue({ json: jsonMock });
     const setMock = jest.fn();
-    const host = {
-      switchToHttp: () => ({
-        getResponse: () => ({ status: statusMock, set: setMock }),
-        getRequest: () => ({ url }),
-      }),
-    } as unknown as ArgumentsHost;
+    const host = new ExecutionContextHost([{ url }, { status: statusMock, set: setMock }]);
 
     return { host, statusMock, jsonMock, setMock };
   };

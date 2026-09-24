@@ -13,7 +13,7 @@ export interface NewSpace {
 }
 
 export async function createSpaceWithOwner(
-  manager: EntityManager,
+  manager: Pick<EntityManager, 'getRepository'>,
   newSpace: NewSpace,
   ownerId: number,
 ): Promise<Space> {
@@ -36,7 +36,10 @@ export async function createSpaceWithOwner(
   return space;
 }
 
-export async function createDefaultCategories(manager: EntityManager, spaceId: number): Promise<void> {
+export async function createDefaultCategories(
+  manager: Pick<EntityManager, 'getRepository'>,
+  spaceId: number,
+): Promise<void> {
   const categories = [...DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY].map((category) => ({
     ...category,
     space_id: spaceId,

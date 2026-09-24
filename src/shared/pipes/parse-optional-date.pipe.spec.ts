@@ -1,10 +1,10 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, type ArgumentMetadata } from '@nestjs/common';
 
 import { ParseOptionalDatePipe } from './parse-optional-date.pipe';
 
 describe('ParseOptionalDatePipe', () => {
   const pipe = new ParseOptionalDatePipe();
-  const metadata = { type: 'query' as const, data: 'from' };
+  const metadata: ArgumentMetadata = { type: 'query', data: 'from' };
 
   it('keeps an absent value undefined so the handler default applies', () => {
     expect(pipe.transform(undefined, metadata)).toBeUndefined();
@@ -15,14 +15,16 @@ describe('ParseOptionalDatePipe', () => {
   });
 
   it.each([[''], ['garbage'], [['2026-01-01', '2026-01-02']], [null]])('rejects %p with a field error', (value) => {
-    expect(() => pipe.transform(value, metadata)).toThrow(BadRequestException);
-
+    let error: unknown;
     try {
       pipe.transform(value, metadata);
-    } catch (error) {
-      expect((error as BadRequestException).getResponse()).toMatchObject({
-        message: [{ field: 'from', error: 'from must be a valid ISO 8601 date' }],
-      });
+    } catch (caught) {
+      error = caught;
     }
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error instanceof BadRequestException && error.getResponse()).toMatchObject({
+      message: [{ field: 'from', error: 'from must be a valid ISO 8601 date' }],
+    });
   });
 });

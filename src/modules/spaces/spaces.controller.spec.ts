@@ -4,6 +4,9 @@ import { SpacesController } from './spaces.controller';
 import { SpacesService } from './spaces.service';
 import { SpaceMembersService } from './space-members.service';
 import { SpaceInvitesService } from './space-invites.service';
+import type { AuthedRequest } from '@shared/types';
+import { withRelations } from '@shared/utils';
+import { buildCurrency, buildSpace } from '@testing';
 
 describe('SpacesController', () => {
   let controller: SpacesController;
@@ -11,7 +14,7 @@ describe('SpacesController', () => {
   let spaceMembersService: jest.Mocked<SpaceMembersService>;
   let spaceInvitesService: jest.Mocked<SpaceInvitesService>;
 
-  const req = { user: { id: 1 } } as any;
+  const req: AuthedRequest = { user: { id: 1 } };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -39,9 +42,10 @@ describe('SpacesController', () => {
   });
 
   it('getOne delegates to SpacesService.getForMember', async () => {
-    spacesService.getForMember.mockResolvedValue({ id: 10 } as any);
+    const space = withRelations(buildSpace({ id: 10, currency: buildCurrency() }), 'currency');
+    spacesService.getForMember.mockResolvedValue(space);
 
-    await expect(controller.getOne(req, 10)).resolves.toEqual({ id: 10 });
+    await expect(controller.getOne(req, 10)).resolves.toBe(space);
     expect(spacesService.getForMember).toHaveBeenCalledWith(1, 10);
   });
 
@@ -71,9 +75,10 @@ describe('SpacesController', () => {
   });
 
   it('acceptInvite delegates to SpaceInvitesService.accept', async () => {
-    spaceInvitesService.accept.mockResolvedValue({ id: 10 } as any);
+    const space = withRelations(buildSpace({ id: 10, currency: buildCurrency() }), 'currency');
+    spaceInvitesService.accept.mockResolvedValue(space);
 
-    await expect(controller.acceptInvite(req, { code: '123456' })).resolves.toEqual({ id: 10 });
+    await expect(controller.acceptInvite(req, { code: '123456' })).resolves.toBe(space);
     expect(spaceInvitesService.accept).toHaveBeenCalledWith(1, '123456');
   });
 

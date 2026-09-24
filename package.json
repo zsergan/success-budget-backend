@@ -103,7 +103,8 @@
       "^@entities/(.*)$": "<rootDir>/entities/$1",
       "^@modules/(.*)$": "<rootDir>/modules/$1",
       "^@shared/(.*)$": "<rootDir>/shared/$1",
-      "^@config/(.*)$": "<rootDir>/config/$1"
+      "^@config/(.*)$": "<rootDir>/config/$1",
+      "^@testing$": "<rootDir>/testing"
     },
     "transform": {
       "^.+\\.(t|j)s$": [
@@ -129,7 +130,8 @@
     ],
     "collectCoverageFrom": [
       "**/*.(t|j)s",
-      "!migrations/**"
+      "!migrations/**",
+      "!testing/**"
     ],
     "coverageDirectory": "../coverage",
     "coverageThreshold": {
