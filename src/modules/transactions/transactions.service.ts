@@ -7,7 +7,7 @@ import type { Wallet, WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace, toDate } from '@shared/utils';
+import { assertBelongsToSpace, moneyToNumber, parseMoney, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
@@ -58,7 +58,7 @@ export class TransactionsService {
     }
 
     const balances = await this.transactionQueriesService.getBalances([wallet.id]);
-    const previousBalance = balances.get(wallet.id) ?? 0;
+    const previousBalance = balances.get(wallet.id) ?? 0n;
 
     const transaction = this.transactionRepository.create({
       wallet_id: createTransactionDto.wallet_id,
@@ -70,11 +70,15 @@ export class TransactionsService {
     });
     const savedTransaction = await this.transactionRepository.save(transaction);
 
-    const amount = Number(createTransactionDto.amount);
+    const amount = parseMoney(createTransactionDto.amount);
     const balanceChange = createTransactionDto.transaction_type === TransactionType.INCOME ? amount : -amount;
-    const walletWithBalance = Object.assign(wallet, { balance: previousBalance + balanceChange });
+    const walletWithBalance = Object.assign(wallet, { balance: moneyToNumber(previousBalance + balanceChange) });
 
-    return { transaction: savedTransaction, wallet: walletWithBalance, previous_balance: previousBalance };
+    return {
+      transaction: savedTransaction,
+      wallet: walletWithBalance,
+      previous_balance: moneyToNumber(previousBalance),
+    };
   }
 
   async getAll(userId: number, spaceId: number, from: Date, to: Date): Promise<TransactionView[]> {

@@ -46,7 +46,7 @@ describe('TransactionsService', () => {
       delete: jest.fn(),
     };
     transactionQueriesService = {
-      getBalances: jest.fn(async (ids: number[]) => new Map(ids.map((id) => [id, 0]))),
+      getBalances: jest.fn(async (ids: number[]) => new Map(ids.map((id) => [id, 0n]))),
       getForAllWallets: jest.fn(),
       getLatest: jest.fn(),
       getOneWithWallet: jest.fn(),
@@ -126,7 +126,7 @@ describe('TransactionsService', () => {
     it('creates the transaction and derives the wallet balance from its previous history', async () => {
       const wallet = buildWallet({ id: 1, space_id: spaceId });
       walletsService.getOne.mockResolvedValue(wallet);
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 100]]));
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10000n]]));
       const input = dto({ description: 'Lunch' });
       const entity = {
         wallet_id: 1,
@@ -153,7 +153,7 @@ describe('TransactionsService', () => {
     });
 
     it('subtracts the amount for an expense transaction', async () => {
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 100]]));
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10000n]]));
       const input = dto({ amount: '30', transaction_type: TransactionType.EXPENSE });
       transactionRepository.save.mockResolvedValue(
         buildTransaction({ amount: '30', transaction_type: TransactionType.EXPENSE }),
@@ -163,6 +163,19 @@ describe('TransactionsService', () => {
 
       expect(result.previous_balance).toBe(100);
       expect(result.wallet.balance).toBe(70);
+    });
+
+    it.each([
+      [TransactionType.INCOME, '0.2', 0.3],
+      [TransactionType.EXPENSE, '0.3', -0.2],
+    ])('adds a %s of %p to a 0.10 balance without float error', async (transaction_type, amount, balance) => {
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10n]]));
+      transactionRepository.save.mockResolvedValue(buildTransaction({ amount, transaction_type }));
+
+      const result = await service.create(userId, spaceId, dto({ amount, transaction_type }));
+
+      expect(result.previous_balance).toBe(0.1);
+      expect(result.wallet.balance).toBe(balance);
     });
 
     it('starts from a balance of 0 when the wallet has no transactions yet', async () => {

@@ -9,7 +9,7 @@ import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
-import { assertBelongsToSpace, assertFound } from '@shared/utils';
+import { assertBelongsToSpace, assertFound, moneyToNumber, parseMoney, roundPercentToTenth } from '@shared/utils';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import {
@@ -87,9 +87,9 @@ export class WalletsService {
         }),
       );
 
-      const initialBalance = Number(createWalletDto.initial_balance);
+      const initialBalance = parseMoney(createWalletDto.initial_balance);
 
-      if (initialBalance <= 0) {
+      if (initialBalance === 0n) {
         return { wallet: Object.assign(wallet, { balance: 0 }), transaction: null };
       }
 
@@ -111,9 +111,10 @@ export class WalletsService {
         }),
       );
 
-      const transaction: InitialBalanceTransaction = Object.assign(saved, { amount: initialBalance });
+      const amount = moneyToNumber(initialBalance);
+      const transaction: InitialBalanceTransaction = Object.assign(saved, { amount });
 
-      return { wallet: Object.assign(wallet, { balance: initialBalance }), transaction };
+      return { wallet: Object.assign(wallet, { balance: amount }), transaction };
     });
   }
 
@@ -138,39 +139,37 @@ export class WalletsService {
     return wallet;
   }
 
-  private summarize(wallets: WalletWithBalance[], periodTotals: Map<number, WalletPeriodTotals>): WalletSummary[] {
-    return wallets.map((wallet) => {
-      const totals = periodTotals.get(wallet.id) ?? { income: 0, spend: 0 };
-
-      return { wallet, total_spend: totals.spend, total_income: totals.income };
-    });
-  }
-
   private async buildOverview(
     spaceId: number,
     walletRows: Wallet[],
     periodTotals: Map<number, WalletPeriodTotals>,
-    balances: Map<number, number>,
+    balances: Map<number, bigint>,
   ): Promise<WalletsOverview> {
     const space = await this.spacesService.getOne(spaceId);
     assertFound(space);
 
-    const wallets = walletRows.map((wallet) => Object.assign(wallet, { balance: balances.get(wallet.id) ?? 0 }));
+    let totalBalance = 0n;
+    let net = 0n;
 
-    const total_balance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
+    const wallets = walletRows.map((row): WalletSummary => {
+      const balance = balances.get(row.id) ?? 0n;
+      const { income, spend } = periodTotals.get(row.id) ?? { income: 0n, spend: 0n };
 
-    const totalIncome = wallets.reduce((sum, wallet) => sum + (periodTotals.get(wallet.id)?.income ?? 0), 0);
-    const totalSpend = wallets.reduce((sum, wallet) => sum + (periodTotals.get(wallet.id)?.spend ?? 0), 0);
-    const net = totalIncome - totalSpend;
+      totalBalance += balance;
+      net += income - spend;
 
-    const balanceAtPeriodStart = total_balance - net;
-    const delta_percent = balanceAtPeriodStart !== 0 ? Math.round((net / balanceAtPeriodStart) * 1000) / 10 : 0;
+      return {
+        wallet: Object.assign(row, { balance: moneyToNumber(balance) }),
+        total_spend: moneyToNumber(spend),
+        total_income: moneyToNumber(income),
+      };
+    });
 
     return {
-      total_balance,
+      total_balance: moneyToNumber(totalBalance),
       total_balance_currency: space.currency.code,
-      delta_percent,
-      wallets: this.summarize(wallets, periodTotals),
+      delta_percent: roundPercentToTenth(net, totalBalance - net),
+      wallets,
     };
   }
 }

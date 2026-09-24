@@ -21,6 +21,7 @@ describe('Boundary type contract (e2e)', () => {
   let walletId: number;
   let currencyId: number;
   let email: string;
+  const extraSpaceIds: number[] = [];
 
   const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -68,18 +69,18 @@ describe('Boundary type contract (e2e)', () => {
 
   afterAll(async () => {
     try {
-      if (spaceId) {
+      for (const id of [spaceId, ...extraSpaceIds].filter(Boolean)) {
         await dataSource.query(
           'DELETE lc FROM limit_categories lc INNER JOIN limits l ON l.id = lc.limit_id WHERE l.space_id = ?',
-          [spaceId],
+          [id],
         );
-        await dataSource.query('DELETE FROM limits WHERE space_id = ?', [spaceId]);
+        await dataSource.query('DELETE FROM limits WHERE space_id = ?', [id]);
         await dataSource.query(
           'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
-          [spaceId],
+          [id],
         );
-        await dataSource.query('DELETE FROM space_members WHERE space_id = ?', [spaceId]);
-        await dataSource.query('DELETE FROM spaces WHERE id = ?', [spaceId]);
+        await dataSource.query('DELETE FROM space_members WHERE space_id = ?', [id]);
+        await dataSource.query('DELETE FROM spaces WHERE id = ?', [id]);
       }
 
       if (userId) {
@@ -217,6 +218,54 @@ describe('Boundary type contract (e2e)', () => {
       expect(wallet.body.wallet.balance).toBe(99999999.99);
       expect((await readTransaction(wallet.body.transaction.id)).amount).toBe('99999999.99');
       await api().delete(`${base()}/wallets/${wallet.body.wallet.id}`).expect(200);
+    });
+
+    it('computes balances, totals and delta_percent in exact cents', async () => {
+      const space = await api()
+        .post('/api/v1/spaces')
+        .send({ name: 'Exact', currency_id: currencyId, type: 'personal' })
+        .expect(201);
+      extraSpaceIds.push(space.body.id);
+      const spaceBase = `/api/v1/spaces/${space.body.id}`;
+      const categories = await api().get(`${spaceBase}/categories`).expect(200);
+      const incomeCategoryId = categories.body.incomes[0].id;
+      const createWallet = (initial_balance: string) =>
+        api().post(`${spaceBase}/wallets`).send({ wallet_name: 'Exact', initial_balance, design: 'slate' }).expect(201);
+
+      const first = await createWallet('0.10');
+      const second = await createWallet('0.20');
+      expect(first.body).toMatchObject({ wallet: { balance: 0.1 }, transaction: { amount: 0.1 } });
+
+      const overview = await api().get(`${spaceBase}/wallets`).expect(200);
+      expect(overview.body.total_balance).toBe(0.3);
+
+      const income = await api()
+        .post(`${spaceBase}/transactions`)
+        .send({
+          wallet_id: first.body.wallet.id,
+          category_id: incomeCategoryId,
+          transaction_type: 'income',
+          amount: '0.2',
+          timestamp: '2030-01-15T12:00:00.000Z',
+        })
+        .expect(201);
+      expect(income.body.previous_balance).toBe(0.1);
+      expect(income.body.wallet.balance).toBe(0.3);
+
+      const period = await api().get(`${spaceBase}/wallets?from=2030-01-01&to=2030-01-31`).expect(200);
+      expect(period.body).toMatchObject({ total_balance: 0.5, delta_percent: 66.7 });
+      expect(period.body.wallets).toEqual([
+        expect.objectContaining({
+          wallet: expect.objectContaining({ id: first.body.wallet.id, balance: 0.3 }),
+          total_income: 0.2,
+          total_spend: 0,
+        }),
+        expect.objectContaining({
+          wallet: expect.objectContaining({ id: second.body.wallet.id, balance: 0.2 }),
+          total_income: 0,
+          total_spend: 0,
+        }),
+      ]);
     });
 
     it('returns the initial wallet transaction amount as a number, but reads it back as a DECIMAL string', async () => {

@@ -243,14 +243,14 @@ describe('WalletsService', () => {
       queryBuilder.getMany.mockResolvedValue([buildWallet({ id: 1 }), buildWallet({ id: 2 })]);
       transactionQueriesService.getPeriodTotals.mockResolvedValue(
         new Map([
-          [1, { income: 200, spend: 0 }],
-          [2, { income: 0, spend: 50 }],
+          [1, { income: 20000n, spend: 0n }],
+          [2, { income: 0n, spend: 5000n }],
         ]),
       );
       transactionQueriesService.getBalances.mockResolvedValue(
         new Map([
-          [1, 1000],
-          [2, 500],
+          [1, 100000n],
+          [2, 50000n],
         ]),
       );
 
@@ -264,7 +264,7 @@ describe('WalletsService', () => {
       // total_balance = 1500, net = 200 - 50 = 150, base = 1500 - 150 = 1350
       expect(result.total_balance).toBe(1500);
       expect(result.total_balance_currency).toBe('USD');
-      expect(result.delta_percent).toBeCloseTo((150 / 1350) * 100, 1);
+      expect(result.delta_percent).toBe(11.1);
       expect(result.wallets).toEqual([
         { wallet: expect.objectContaining({ id: 1, balance: 1000 }), total_income: 200, total_spend: 0 },
         { wallet: expect.objectContaining({ id: 2, balance: 500 }), total_income: 0, total_spend: 50 },
@@ -290,13 +290,50 @@ describe('WalletsService', () => {
 
     it('returns a 0% delta when the balance at the start of the period was zero', async () => {
       queryBuilder.getMany.mockResolvedValue([buildWallet({ id: 1 })]);
-      transactionQueriesService.getPeriodTotals.mockResolvedValue(new Map([[1, { income: 200, spend: 0 }]]));
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 200]]));
+      transactionQueriesService.getPeriodTotals.mockResolvedValue(new Map([[1, { income: 20000n, spend: 0n }]]));
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 20000n]]));
 
       const result = await service.getOverview(userId, spaceId, from, to);
 
       expect(result.total_balance).toBe(200);
       expect(result.delta_percent).toBe(0);
+    });
+
+    it('sums balances and period totals in cents without float error', async () => {
+      queryBuilder.getMany.mockResolvedValue([buildWallet({ id: 1 }), buildWallet({ id: 2 })]);
+      transactionQueriesService.getPeriodTotals.mockResolvedValue(
+        new Map([
+          [1, { income: 10n, spend: 0n }],
+          [2, { income: 20n, spend: 0n }],
+        ]),
+      );
+      transactionQueriesService.getBalances.mockResolvedValue(
+        new Map([
+          [1, 10n],
+          [2, 20n],
+        ]),
+      );
+
+      const result = await service.getOverview(userId, spaceId, from, to);
+
+      expect(result.total_balance).toBe(0.3);
+      expect(result.wallets.map(({ total_income }) => total_income)).toEqual([0.1, 0.2]);
+    });
+
+    it.each([
+      ['a positive half up', 10225n, 225n, 2.3],
+      ['a negative half toward zero', 9775n, -225n, -2.2],
+      ['a negative start balance with the sign flipped', -9000n, 1000n, -10],
+    ])('rounds delta_percent for %s', async (_, balance, net, delta) => {
+      queryBuilder.getMany.mockResolvedValue([buildWallet({ id: 1 })]);
+      transactionQueriesService.getPeriodTotals.mockResolvedValue(
+        new Map([[1, net >= 0n ? { income: net, spend: 0n } : { income: 0n, spend: -net }]]),
+      );
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, balance]]));
+
+      const result = await service.getOverview(userId, spaceId, from, to);
+
+      expect(result.delta_percent).toBe(delta);
     });
   });
 });

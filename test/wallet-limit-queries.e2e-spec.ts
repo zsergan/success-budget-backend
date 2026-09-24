@@ -192,14 +192,14 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const walletIds = [w1.id, w2.id, w3.id];
 
       const balances = await transactionQueriesService.getBalances(walletIds);
-      expect(balances.get(w1.id)).toBe(1000 + 500 - 120.5 - 50 + 200);
-      expect(balances.get(w2.id)).toBe(-30);
-      expect(balances.get(w3.id)).toBe(0);
+      expect(balances.get(w1.id)).toBe(152950n);
+      expect(balances.get(w2.id)).toBe(-3000n);
+      expect(balances.get(w3.id)).toBe(0n);
 
       const periodTotals = await transactionQueriesService.getPeriodTotals(walletIds, from, to);
-      expect(periodTotals.get(w1.id)).toEqual({ income: 500, spend: 170.5 });
-      expect(periodTotals.get(w2.id)).toEqual({ income: 0, spend: 30 });
-      expect(periodTotals.get(w3.id)).toEqual({ income: 0, spend: 0 });
+      expect(periodTotals.get(w1.id)).toEqual({ income: 50000n, spend: 17050n });
+      expect(periodTotals.get(w2.id)).toEqual({ income: 0n, spend: 3000n });
+      expect(periodTotals.get(w3.id)).toEqual({ income: 0n, spend: 0n });
     });
 
     it('builds the full wallets overview from the aggregated maps, including total_balance and delta_percent', async () => {
@@ -271,7 +271,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       expect(visibleWallets.map((w) => w.id)).toEqual([kept.id]);
 
       const balances = await transactionQueriesService.getBalances(visibleWallets.map((w) => w.id));
-      expect(balances.get(kept.id)).toBe(500 - 100.25 - 40 - 15 - 5 - 7);
+      expect(balances.get(kept.id)).toBe(33275n);
       expect(balances.has(deleted.id)).toBe(false);
 
       const periodTotals = await transactionQueriesService.getPeriodTotals(
@@ -279,7 +279,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
         from,
         to,
       );
-      expect(periodTotals.get(kept.id)).toEqual({ income: 500, spend: 100.25 + 40 + 15 });
+      expect(periodTotals.get(kept.id)).toEqual({ income: 50000n, spend: 15525n });
 
       // limits scope by space, not by wallet visibility - the deleted
       // wallet's history still counts against a category limit

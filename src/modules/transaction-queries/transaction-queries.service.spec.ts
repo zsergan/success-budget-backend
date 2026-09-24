@@ -55,16 +55,16 @@ describe('TransactionQueriesService', () => {
 
       expect(result).toEqual(
         new Map([
-          [1, 0],
-          [2, 0],
+          [1, 0n],
+          [2, 0n],
         ]),
       );
     });
 
     it('sums income and expense transactions per wallet', async () => {
       queryBuilder.getRawMany.mockResolvedValue([
-        { wallet_id: '1', balance: '150' },
-        { wallet_id: '2', balance: '-20' },
+        { wallet_id: '1', balance: '150.10' },
+        { wallet_id: '2', balance: '-20.05' },
       ]);
 
       const result = await service.getBalances([1, 2, 3]);
@@ -76,12 +76,20 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
       expect(result).toEqual(
         new Map([
-          [1, 150],
-          [2, -20],
-          [3, 0],
+          [1, 15010n],
+          [2, -2005n],
+          [3, 0n],
         ]),
       );
     });
+  });
+
+  it('keeps a SUM above the single-amount range exact', async () => {
+    queryBuilder.getRawMany.mockResolvedValue([{ wallet_id: '1', balance: '1234567890123.45' }]);
+
+    const result = await service.getBalances([1]);
+
+    expect(result.get(1)).toBe(123456789012345n);
   });
 
   describe('getPeriodTotals', () => {
@@ -97,8 +105,8 @@ describe('TransactionQueriesService', () => {
 
       expect(result).toEqual(
         new Map([
-          [1, { income: 0, spend: 0 }],
-          [2, { income: 0, spend: 0 }],
+          [1, { income: 0n, spend: 0n }],
+          [2, { income: 0n, spend: 0n }],
         ]),
       );
     });
@@ -107,8 +115,8 @@ describe('TransactionQueriesService', () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
       queryBuilder.getRawMany.mockResolvedValue([
-        { wallet_id: '1', income: '200', spend: '0' },
-        { wallet_id: '2', income: '0', spend: '50' },
+        { wallet_id: '1', income: '200.00', spend: '0.00' },
+        { wallet_id: '2', income: '0.00', spend: '50.30' },
       ]);
 
       const result = await service.getPeriodTotals([1, 2, 3], from, to);
@@ -121,9 +129,9 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
       expect(result).toEqual(
         new Map([
-          [1, { income: 200, spend: 0 }],
-          [2, { income: 0, spend: 50 }],
-          [3, { income: 0, spend: 0 }],
+          [1, { income: 20000n, spend: 0n }],
+          [2, { income: 0n, spend: 5030n }],
+          [3, { income: 0n, spend: 0n }],
         ]),
       );
     });
