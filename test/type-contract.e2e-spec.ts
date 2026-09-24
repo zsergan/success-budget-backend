@@ -469,4 +469,143 @@ describe('Boundary type contract (e2e)', () => {
       expect(created.body.transaction.description).toBeNull();
     });
   });
+
+  // Exact key sets: a changed, leaked (@Exclude) or dropped field fails here.
+  describe('response shapes', () => {
+    const keys = (value: object): string[] => Object.keys(value).sort();
+    const WALLET = ['created_at', 'design', 'id', 'updated_at', 'wallet_name'];
+    const WALLET_WITH_BALANCE = [...WALLET, 'balance'].sort();
+    const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type'];
+    const CATEGORY = ['color', 'created_at', 'icon', 'id', 'is_active', 'name', 'transaction_type', 'updated_at'];
+
+    it('wallet creation and overview', async () => {
+      const funded = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Shape', initial_balance: '5', design: 'slate' })
+        .expect(201);
+      expect(keys(funded.body)).toEqual(['transaction', 'wallet']);
+      expect(keys(funded.body.wallet)).toEqual(WALLET_WITH_BALANCE);
+      expect(keys(funded.body.transaction)).toEqual(TRANSACTION);
+      expect(funded.body.transaction.description).toBeNull();
+
+      const empty = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Shape0', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      expect(empty.body.transaction).toBeNull();
+      expect(keys(empty.body.wallet)).toEqual(WALLET_WITH_BALANCE);
+
+      const overview = await api().get(`${base()}/wallets`).expect(200);
+      expect(keys(overview.body)).toEqual(['delta_percent', 'total_balance', 'total_balance_currency', 'wallets']);
+      expect(keys(overview.body.wallets[0])).toEqual(['total_income', 'total_spend', 'wallet']);
+      expect(keys(overview.body.wallets[0].wallet)).toEqual(WALLET_WITH_BALANCE);
+    });
+
+    it('transaction creation and reads', async () => {
+      const created = await createTransaction({ description: 'Lunch' }).expect(201);
+      expect(keys(created.body)).toEqual(['previous_balance', 'transaction', 'wallet']);
+      expect(keys(created.body.transaction)).toEqual(TRANSACTION);
+      expect(keys(created.body.wallet)).toEqual(WALLET_WITH_BALANCE);
+
+      const read = await readTransaction(created.body.transaction.id);
+      expect(keys(read)).toEqual([...TRANSACTION, 'category', 'wallet'].sort());
+      expect(keys(read.wallet)).toEqual(WALLET);
+      expect(keys(read.category)).toEqual(CATEGORY);
+    });
+
+    it('nulls the wallet of a soft-deleted wallet in transaction reads, keeping the key', async () => {
+      const wallet = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Doomed', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const doomedId = wallet.body.wallet.id;
+      const created = await createTransaction({ wallet_id: doomedId, timestamp: '2037-12-31T00:00:00.000Z' }).expect(
+        201,
+      );
+      await api().delete(`${base()}/wallets/${doomedId}`).expect(200);
+
+      const res = await api().get(`${base()}/transactions?from=2037-12-30&to=2038-01-01`).expect(200);
+      expect(res.body).toHaveLength(1);
+      expect(keys(res.body[0])).toEqual([...TRANSACTION, 'category', 'wallet'].sort());
+      expect(res.body[0].wallet).toBeNull();
+
+      const latest = await api().get(`${base()}/transactions/latest`).expect(200);
+      expect(latest.body.id).toBe(created.body.transaction.id);
+      expect(latest.body.wallet).toBeNull();
+      expect(keys(latest.body.category)).toEqual(CATEGORY);
+
+      const overview = await api().get(`${base()}/wallets`).expect(200);
+      expect(overview.body.wallets.map((summary: { wallet: { id: number } }) => summary.wallet.id)).not.toContain(
+        doomedId,
+      );
+
+      await createTransaction({ wallet_id: doomedId }).expect(403);
+      await api().delete(`${base()}/transactions/${created.body.transaction.id}`).expect(200);
+    });
+
+    it('limits and categories', async () => {
+      const category = await api()
+        .post(`${base()}/categories`)
+        .send({ name: 'Shape', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+        .expect(201);
+      // is_active comes from the column default and is not re-read after insert
+      expect(keys(category.body)).toEqual(CATEGORY.filter((key) => key !== 'is_active'));
+
+      const limit = await api()
+        .post(`${base()}/limits`)
+        .send({ amount: '20', category_ids: [category.body.id] })
+        .expect(201);
+      expect(keys(limit.body)).toEqual([
+        'amount',
+        'categories',
+        'created_at',
+        'id',
+        'limit_type',
+        'name',
+        'updated_at',
+      ]);
+      expect(limit.body.name).toBeNull();
+      expect(keys(limit.body.categories[0])).toEqual(CATEGORY);
+
+      const summary = await api().get(`${base()}/limits`).expect(200);
+      expect(keys(summary.body)).toEqual(['categories', 'over_allocation', 'total']);
+      const view = summary.body.categories.find((item: { id: number }) => item.id === limit.body.id);
+      expect(keys(view)).toEqual(['amount', 'categories', 'id', 'in_percent', 'name', 'spent']);
+      expect(keys(view.categories[0])).toEqual(['color', 'icon', 'id', 'name']);
+
+      const views = await api().get(`${base()}/categories`).expect(200);
+      expect(keys(views.body)).toEqual(['archived', 'expenses', 'incomes']);
+      const categoryView = views.body.expenses.find((item: { id: number }) => item.id === category.body.id);
+      expect(keys(categoryView)).toEqual([
+        'archived_at',
+        'color',
+        'icon',
+        'id',
+        'is_active',
+        'limit',
+        'name',
+        'transaction_count',
+        'transaction_type',
+      ]);
+      expect(categoryView.archived_at).toBeNull();
+      expect(categoryView.limit).toEqual({ id: limit.body.id, name: null });
+
+      await api().delete(`${base()}/limits/${limit.body.id}`).expect(200);
+    });
+
+    it('space and profile', async () => {
+      const space = await api().get(base()).expect(200);
+      expect(keys(space.body)).toEqual(['created_at', 'currency', 'id', 'name', 'type', 'updated_at']);
+      expect(keys(space.body.currency)).toEqual(['code', 'id', 'name']);
+
+      const list = await api().get('/api/v1/spaces').expect(200);
+      expect(keys(list.body[0])).toEqual(['created_at', 'currency', 'id', 'member_count', 'name', 'role', 'type']);
+
+      const members = await api().get(`${base()}/members`).expect(200);
+      expect(keys(members.body[0])).toEqual(['can_remove', 'email', 'id', 'name', 'role', 'type', 'user_id']);
+
+      const profile = await api().get('/api/v1/users/profile').expect(200);
+      expect(keys(profile.body)).toEqual(['created_at', 'email', 'id', 'name', 'updated_at']);
+    });
+  });
 });
