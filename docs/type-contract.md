@@ -22,8 +22,12 @@ below list what is not enforced yet.
 
 The same transaction amount still leaves the API as a number, the echoed
 input string, or a normalized DECIMAL string depending on the endpoint
-(**gap**, kept for API compatibility). The arithmetic itself (float
-`Number()` sums) is out of scope here.
+(**gap**, kept for API compatibility).
+
+The derived wallet fields are computed in integer cents: `SUM` strings are
+parsed straight into cents, and they become numbers only when the response is
+built. A value a number cannot hold to the cent is a 500, never a rounded
+amount.
 
 ### Money rules
 
