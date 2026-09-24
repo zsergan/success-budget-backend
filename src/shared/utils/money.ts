@@ -28,18 +28,28 @@ export const parseMoneyInput = (value: string): bigint | null => {
   return cents <= MAX_MONEY_INPUT_CENTS ? cents : null;
 };
 
-// A stored or computed value (column, SQL SUM): may be negative and exceed a
-// single amount's range.
-export const parseMoney = (value: string): bigint => {
+const matchMoney = (value: string): bigint | null => {
   const match = MONEY_VALUE.exec(value);
 
   if (!match) {
-    throw new TypeError(`Not a money value: ${value}`);
+    return null;
   }
 
   const cents = toCents(match[2], match[3]);
 
   return match[1] ? -cents : cents;
+};
+
+// A stored or computed value (column, SQL SUM): may be negative and exceed a
+// single amount's range.
+export const parseMoney = (value: string): bigint => {
+  const cents = matchMoney(value);
+
+  if (cents === null) {
+    throw new TypeError(`Not a money value: ${value}`);
+  }
+
+  return cents;
 };
 
 export const formatMoney = (cents: bigint): string => {
@@ -50,12 +60,12 @@ export const formatMoney = (cents: bigint): string => {
 };
 
 // For the number-typed response fields; throws instead of dropping cents.
+// Checked against the JSON form, which can be shorter than toFixed(2) shows.
 export const moneyToNumber = (cents: bigint): number => {
-  const money = formatMoney(cents);
-  const value = Number(money);
+  const value = Number(formatMoney(cents));
 
-  if (value.toFixed(2) !== money) {
-    throw new RangeError(`Money value cannot be represented as a number: ${money}`);
+  if (matchMoney(JSON.stringify(value)) !== cents) {
+    throw new RangeError(`Money value cannot be represented as a number: ${formatMoney(cents)}`);
   }
 
   return value;

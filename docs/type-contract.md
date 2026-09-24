@@ -27,8 +27,8 @@ input string, or a normalized DECIMAL string depending on the endpoint
 Derived amounts (wallet balances and totals, limit `spent`,
 `over_allocation`) and percentages are computed in integer cents: `SUM`
 strings and `DECIMAL` columns are parsed straight into cents, and they become
-numbers only when the response is built. A value a number cannot hold to the
-cent is a 500, never a rounded amount. Parsing, formatting and percentages
+numbers only when the response is built. A value whose JSON number does not
+keep every cent is a 500, never a rounded amount. Parsing, formatting and percentages
 live in `@shared/utils` (`money.ts`); no service adds or divides money as a
 `number`, and every request amount goes through `@IsMoneyAmount`.
 
