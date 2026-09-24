@@ -11,7 +11,7 @@ below list what is not enforced yet.
 
 | Where                                                                                                          | Declared                               | Actual                                                                         |
 | -------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------ |
-| Request `amount`, `initial_balance` (`@IsDecimal`)                                                             | `string`                               | decimal `string` only; a JSON number is a 400                                  |
+| Request `amount`, `initial_balance` (`@IsMoneyAmount`)                                                         | `string`                               | decimal `string` only; a JSON number is a 400                                  |
 | `DECIMAL(10,2)` column (`Transaction.amount`, `Limit.amount`)                                                  | `string`                               | written as the validated request string, read back with 2 decimals (`"12.30"`) |
 | `POST /wallets` → `transaction.amount`                                                                         | `number` (`InitialBalanceTransaction`) | `number` (`Number(initial_balance)`)                                           |
 | `POST /transactions` → `transaction.amount`                                                                    | `string`                               | the request string echoed as sent (`"12.3"`)                                   |
@@ -50,10 +50,8 @@ products, so `29.00` spent of `100.00` is 29, never 28.
 
 Response field types stay as listed in the table above.
 
-**Gaps** until the rules are enforced: transaction and limit amounts accept a
-sign; all amounts accept extra decimal places and values above the range, so
-MySQL rounds or rejects them; `in_percent` is floored from a float product
-(`29.00` of `100.00` gives 28).
+**Gap** until the percentages are exact: `in_percent` is floored from a float
+product (`29.00` of `100.00` gives 28).
 
 ## Dates
 
