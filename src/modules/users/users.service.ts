@@ -7,7 +7,6 @@ import * as bcrypt from 'bcrypt';
 
 import { User } from '@entities/user.entity';
 import { Wallet } from '@entities/wallet.entity';
-import { Category } from '@entities/category.entity';
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
@@ -16,9 +15,10 @@ import type { LoginUserDto } from './dto/login-user.dto';
 import type { VerifyUserDto } from './dto/verify-user.dto';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
 import { MailService } from '@modules/mail/mail.service';
+import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/space-setup';
 import { ErrorMessages } from '@shared/error-messages';
-import { ConfirmationType, AppColor, SpaceRole, SpaceType } from '@shared/enums';
-import { DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY, MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
+import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
+import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
 import { constantTimeEquals } from '@shared/utils';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
@@ -49,20 +49,10 @@ export class UsersService {
         }),
       );
 
-      const space = await manager.getRepository(Space).save(
-        manager.getRepository(Space).create({
-          name: 'Personal',
-          type: SpaceType.PERSONAL,
-          currency_id: createUserDto.base_currency_id,
-        }),
-      );
-
-      await manager.getRepository(SpaceMember).save(
-        manager.getRepository(SpaceMember).create({
-          space_id: space.id,
-          user_id: user.id,
-          role: SpaceRole.OWNER,
-        }),
+      await createSpaceWithOwner(
+        manager,
+        { name: 'Personal', type: SpaceType.PERSONAL, currency_id: createUserDto.base_currency_id },
+        user.id,
       );
 
       return user;
@@ -143,11 +133,7 @@ export class UsersService {
       });
       await manager.getRepository(Wallet).save(wallet);
 
-      const categories = [...DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY].map((category) => ({
-        ...category,
-        space_id: space.id,
-      }));
-      await manager.getRepository(Category).save(categories);
+      await createDefaultCategories(manager, space.id);
     });
 
     return this.generateAccessToken(user);
