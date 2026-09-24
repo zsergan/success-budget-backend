@@ -61,11 +61,9 @@ async function bootstrap() {
     });
 
     if (seedUser.verified) {
-      // goes through the same code path as a real verify-email call
-      // (Cash wallet + default categories, scoped to the personal space
-      // created in register()) instead of duplicating it here - no real
-      // confirmation code exists for seed users, so the id is omitted
-      await usersService.completeEmailVerification(user);
+      // goes through the same starter-data setup as a real verify-email
+      // call instead of duplicating it here - seed users have no code
+      await usersService.completeEmailVerification(user.id);
     }
 
     console.log(`created: ${seedUser.email}`);

@@ -1,9 +1,11 @@
 export const ErrorMessages = {
   INVALID_CREDENTIALS: 'Invalid credentials',
   EMAIL_NOT_VERIFIED: 'Email is not verified',
+  EMAIL_ALREADY_VERIFIED: 'Email is already verified',
   FORBIDDEN_WALLET: 'Wallet does not exist or you do not have access to this wallet',
   FORBIDDEN_CATEGORY: 'Category does not exist or you do not have access to this category',
   CATEGORY_IS_SYSTEM: 'This category is managed by the system and cannot be modified',
+  CATEGORY_ARCHIVED: 'An archived category cannot be added to a limit',
   FORBIDDEN_LIMIT: 'Limit does not exist or you do not have access to this limit',
   LIMIT_EXISTS: 'Limit already exists',
   LIMIT_NAME_REQUIRED: 'A group limit needs a name',

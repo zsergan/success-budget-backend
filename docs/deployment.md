@@ -132,6 +132,12 @@ the same email.
    `docker` job (`.github/workflows/ci.yml`) asserts this on every push/PR
    by running it twice.
 
+   `AddUniqueUserEmail1790000000000` stops with an error listing the user
+   ids of every email shared by more than one account (compared
+   case-insensitively). Nothing is changed in that case: resolve each group
+   by hand (keep one account, remove the others with their spaces) and run
+   this step again.
+
 3. **Verify reference data** landed (currencies are seeded by a migration's
    own `INSERT`, not a schema change, so a partially-applied migration
    could leave the schema right and the data missing):

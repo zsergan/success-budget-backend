@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { User } from '@entities/user.entity';
@@ -8,7 +8,7 @@ import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { RetryAfterException } from '@shared/retry-after.exception';
 import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS, CONFIRMATION_CODE_TTL_MS } from '@shared/constants';
-import { generateRandomNumberString } from '@shared/utils';
+import { assertFound, generateRandomNumberString } from '@shared/utils';
 
 export interface ReservedConfirmationCode {
   id: number;
@@ -55,11 +55,18 @@ export class ConfirmationCodesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async getOne(userId: number, confirmationType: ConfirmationType): Promise<ConfirmationCode | null> {
-    return this.confirmationCodeRepository
-      .createQueryBuilder('confirmation_code')
+  // The caller must already hold the user's row lock (see reserveSend) -
+  // user first, then code, so lock order is the same everywhere.
+  async lockActive(
+    userId: number,
+    confirmationType: ConfirmationType,
+    manager: EntityManager,
+  ): Promise<ConfirmationCode | null> {
+    return manager
+      .createQueryBuilder(ConfirmationCode, 'confirmation_code')
+      .setLock('pessimistic_write')
       .where({ user_id: userId, confirmation_type: confirmationType })
-      .andWhere('confirmation_code.expired_at >= :current_date', { current_date: new Date() })
+      .andWhere('confirmation_code.expired_at >= :now', { now: new Date() })
       .getOne();
   }
 
@@ -76,18 +83,20 @@ export class ConfirmationCodesService {
   // have to account for confirmation_codes' historical rows.
   async reserveSend(userId: number, confirmationType: ConfirmationType): Promise<ReservedConfirmationCode> {
     return this.dataSource.transaction(async (manager) => {
-      await manager
+      const user = await manager
         .createQueryBuilder(User, 'user')
         .setLock('pessimistic_write')
         .where('user.id = :userId', { userId })
         .getOne();
+      assertFound(user);
 
-      const existing = await manager
-        .createQueryBuilder(ConfirmationCode, 'confirmation_code')
-        .setLock('pessimistic_write')
-        .where({ user_id: userId, confirmation_type: confirmationType })
-        .andWhere('confirmation_code.expired_at >= :now', { now: new Date() })
-        .getOne();
+      // same answer registration gives for a verified account - a
+      // verification may have committed since the caller's own check
+      if (confirmationType === ConfirmationType.EMAIL && user.email_verified) {
+        throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+      }
+
+      const existing = await this.lockActive(userId, confirmationType, manager);
 
       const now = new Date();
       const repository = manager.getRepository(ConfirmationCode);
@@ -169,17 +178,14 @@ export class ConfirmationCodesService {
     );
   }
 
-  async incrementAttempts(id: number): Promise<void> {
-    await this.confirmationCodeRepository.increment({ id }, 'attempts', 1);
+  async incrementAttempts(id: number, manager: EntityManager): Promise<void> {
+    await manager.getRepository(ConfirmationCode).increment({ id }, 'attempts', 1);
   }
 
-  async expire(userId: number, confirmationType: ConfirmationType): Promise<void> {
-    const confirmationCode = await this.confirmationCodeRepository.findOne({
-      where: { user_id: userId, confirmation_type: confirmationType },
-    });
-
-    if (confirmationCode) {
-      await this.confirmationCodeRepository.update(confirmationCode.id, { expired_at: confirmationCode.created_at });
-    }
+  // A second in the past, not now: expired_at is a second-precision
+  // timestamp and MySQL rounds fractional seconds, so "now" can be stored up
+  // to half a second ahead and keep the code active until then.
+  async expire(id: number, manager: EntityManager): Promise<void> {
+    await manager.getRepository(ConfirmationCode).update(id, { expired_at: new Date(Date.now() - 1000) });
   }
 }

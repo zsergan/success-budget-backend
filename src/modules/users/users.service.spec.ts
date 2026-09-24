@@ -2,14 +2,13 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { HttpException } from '@nestjs/common';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 
 import { UsersService } from './users.service';
 import { User } from '@entities/user.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
-import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
@@ -34,7 +33,8 @@ describe('UsersService', () => {
   let service: UsersService;
   let repository: jest.Mocked<Repository<User>>;
   let userRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
-  let confirmationCodeRepositoryInTx: { update: jest.Mock };
+  let lockedUser: { getOne: jest.Mock };
+  let manager: { getRepository: jest.Mock; createQueryBuilder: jest.Mock };
   let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock; findOneOrFail: jest.Mock };
@@ -46,7 +46,12 @@ describe('UsersService', () => {
 
   beforeEach(async () => {
     userRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), update: jest.fn() };
-    confirmationCodeRepositoryInTx = { update: jest.fn() };
+    lockedUser = { getOne: jest.fn().mockResolvedValue(buildUser({ id: 1, email_verified: 0 })) };
+    const userLockQueryBuilder = {
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: (...args: unknown[]) => lockedUser.getOne(...args),
+    };
     walletRepositoryInTx = { create: jest.fn(), save: jest.fn() };
     categoryRepositoryInTx = { save: jest.fn() };
     spaceRepositoryInTx = {
@@ -56,10 +61,13 @@ describe('UsersService', () => {
       findOneOrFail: jest.fn(),
     };
     spaceMemberRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), findOneOrFail: jest.fn() };
-    const manager = {
+    manager = {
+      createQueryBuilder: jest.fn((entity) => {
+        if (entity === User) return userLockQueryBuilder;
+        throw new Error(`Unexpected query builder entity: ${entity}`);
+      }),
       getRepository: jest.fn((entity) => {
         if (entity === User) return userRepositoryInTx;
-        if (entity === ConfirmationCode) return confirmationCodeRepositoryInTx;
         if (entity === Wallet) return walletRepositoryInTx;
         if (entity === Category) return categoryRepositoryInTx;
         if (entity === Space) return spaceRepositoryInTx;
@@ -92,7 +100,7 @@ describe('UsersService', () => {
         {
           provide: ConfirmationCodesService,
           useValue: {
-            getOne: jest.fn(),
+            lockActive: jest.fn(),
             expire: jest.fn(),
             incrementAttempts: jest.fn(),
             reserveSend: jest.fn(),
@@ -149,6 +157,18 @@ describe('UsersService', () => {
       expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 4 } });
       expect(spaceRepositoryInTx.update).toHaveBeenCalledWith(20, { currency_id: 2 });
       expect(result).toMatchObject({ id: 4, name: 'New Name' });
+    });
+
+    it('locks the user and leaves an account verified in the meantime untouched', async () => {
+      lockedUser.getOne.mockResolvedValue(buildUser({ id: 4, email_verified: 1 }));
+
+      await expect(
+        service.updateUnverified(4, { email: 'a@b.com', name: 'New', password: 'pw', base_currency_id: 2 }),
+      ).rejects.toMatchObject(new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400));
+
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(User, 'user');
+      expect(userRepositoryInTx.update).not.toHaveBeenCalled();
+      expect(spaceRepositoryInTx.update).not.toHaveBeenCalled();
     });
   });
 
@@ -259,20 +279,74 @@ describe('UsersService', () => {
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(3, expect.objectContaining({ name: 'New' }));
       expect(result).toMatchObject({ id: 3, name: 'New' });
     });
+
+    describe('when a concurrent registration inserts the same email first', () => {
+      const dto: CreateUserDto = { email: 'a@b.com', name: 'Late', password: 'pw', base_currency_id: 1 };
+      const duplicateEmail = () =>
+        new QueryFailedError('INSERT INTO users', [], {
+          code: 'ER_DUP_ENTRY',
+          sqlMessage: "Duplicate entry 'a@b.com' for key 'users.UQ_users_email'",
+        } as unknown as Error);
+
+      beforeEach(() => {
+        userRepositoryInTx.save.mockRejectedValue(duplicateEmail());
+        mockHash.mockResolvedValue('hashed');
+        spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      });
+
+      it('re-reads the winner and refreshes it instead of creating another user', async () => {
+        const winner = buildUser({ id: 9, email: 'a@b.com', email_verified: 0 });
+        repository.findOne
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(winner)
+          .mockResolvedValueOnce(buildUser({ id: 9, name: 'Late' }));
+        lockedUser.getOne.mockResolvedValue(winner);
+
+        const result = await service.registerOrRefresh(dto);
+
+        expect(spaceRepositoryInTx.save).not.toHaveBeenCalled();
+        expect(userRepositoryInTx.update).toHaveBeenCalledWith(9, expect.objectContaining({ name: 'Late' }));
+        expect(result).toMatchObject({ id: 9, name: 'Late' });
+      });
+
+      it('rejects when the winner is already verified', async () => {
+        repository.findOne
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(buildUser({ id: 9, email: 'a@b.com', email_verified: 1 }));
+
+        await expect(service.registerOrRefresh(dto)).rejects.toMatchObject(
+          new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
+        );
+        expect(userRepositoryInTx.update).not.toHaveBeenCalled();
+      });
+
+      it('rethrows any other insert failure', async () => {
+        const failure = new QueryFailedError('INSERT INTO users', [], {
+          code: 'ER_DUP_ENTRY',
+          sqlMessage: "Duplicate entry '1' for key 'users.PRIMARY'",
+        } as unknown as Error);
+        userRepositoryInTx.save.mockRejectedValue(failure);
+        repository.findOne.mockResolvedValue(null);
+
+        await expect(service.registerOrRefresh(dto)).rejects.toBe(failure);
+        expect(repository.findOne).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('completeEmailVerification', () => {
-    it('marks the user verified, expires the code, provisions defaults, and returns a token in one transaction', async () => {
-      const user = buildUser({ id: 1 });
+    beforeEach(() => {
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
       walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+    });
 
-      const token = await service.completeEmailVerification(user, 7);
+    it('locks the user, marks it verified and provisions the starter data in one transaction', async () => {
+      await service.completeEmailVerification(1);
 
-      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(User, 'user');
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
-      expect(confirmationCodeRepositoryInTx.update).toHaveBeenCalledWith(7, { expired_at: expect.any(Date) });
       expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 1 } });
       expect(spaceRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { id: 20 } });
       expect(walletRepositoryInTx.create).toHaveBeenCalledWith(
@@ -283,87 +357,128 @@ describe('UsersService', () => {
         expect.arrayContaining([expect.objectContaining({ space_id: 20, name: 'Initial balance', is_system: 1 })]),
       );
       expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(16);
-      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
-      expect(decoded.id).toBe(1);
     });
 
-    it('skips the confirmation-code update when no id is given (the seed flow)', async () => {
-      const user = buildUser({ id: 1 });
-      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
-      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
-      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+    it('is a no-op for a user that is already verified', async () => {
+      lockedUser.getOne.mockResolvedValue(buildUser({ id: 1, email_verified: 1 }));
 
-      await service.completeEmailVerification(user);
+      await service.completeEmailVerification(1);
 
-      expect(confirmationCodeRepositoryInTx.update).not.toHaveBeenCalled();
+      expect(userRepositoryInTx.update).not.toHaveBeenCalled();
+      expect(walletRepositoryInTx.save).not.toHaveBeenCalled();
+      expect(categoryRepositoryInTx.save).not.toHaveBeenCalled();
     });
 
-    it('propagates a failure from inside the transaction instead of returning a token', async () => {
-      const user = buildUser({ id: 1 });
-      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
-      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
+    it('propagates a failure from inside the transaction', async () => {
       walletRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
 
-      await expect(service.completeEmailVerification(user, 7)).rejects.toThrow('db unavailable');
+      await expect(service.completeEmailVerification(1)).rejects.toThrow('db unavailable');
     });
   });
 
   describe('verifyEmail', () => {
+    const dto = { email: 'x@x.com', code: '1234' };
+
+    beforeEach(() => {
+      repository.findOne.mockResolvedValue(buildUser({ id: 1, email_verified: 0 }));
+      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
+      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
+      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+    });
+
     it('rejects when the user does not exist', async () => {
       repository.findOne.mockResolvedValue(null);
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
-        new HttpException(ErrorMessages.NOT_FOUND, 404),
+      await expect(service.verifyEmail(dto)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects an already verified user under the lock without looking at the code or issuing a token', async () => {
+      lockedUser.getOne.mockResolvedValue(buildUser({ id: 1, email_verified: 1 }));
+
+      await expect(service.verifyEmail(dto)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.EMAIL_ALREADY_VERIFIED, 409),
+      );
+      expect(confirmationCodesService.lockActive).not.toHaveBeenCalled();
+      expect(userRepositoryInTx.update).not.toHaveBeenCalled();
+    });
+
+    it('locks the user before the code', async () => {
+      confirmationCodesService.lockActive.mockResolvedValue(
+        buildConfirmationCode({ id: 7, confirmation_code: '1234' }),
+      );
+
+      await service.verifyEmail(dto);
+
+      expect(confirmationCodesService.lockActive).toHaveBeenCalledWith(1, ConfirmationType.EMAIL, manager);
+      expect(manager.createQueryBuilder.mock.invocationCallOrder[0]).toBeLessThan(
+        confirmationCodesService.lockActive.mock.invocationCallOrder[0],
       );
     });
 
     it('rejects when there is no active confirmation code', async () => {
-      repository.findOne.mockResolvedValue(buildUser({ id: 1 }));
-      confirmationCodesService.getOne.mockResolvedValue(null);
+      confirmationCodesService.lockActive.mockResolvedValue(null);
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
-        new HttpException(ErrorMessages.NOT_FOUND, 404),
-      );
+      await expect(service.verifyEmail(dto)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
     });
 
-    it('rejects when the code does not match and records the failed attempt', async () => {
-      repository.findOne.mockResolvedValue(buildUser({ id: 1 }));
-      confirmationCodesService.getOne.mockResolvedValue(
+    it('commits the failed attempt and only then rejects a wrong code', async () => {
+      confirmationCodesService.lockActive.mockResolvedValue(
         buildConfirmationCode({ id: 7, confirmation_code: '9999', attempts: 0 }),
       );
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
+      await expect(service.verifyEmail(dto)).rejects.toMatchObject(
         new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
       );
-      expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7);
+      expect(confirmationCodesService.incrementAttempts).toHaveBeenCalledWith(7, manager);
+      await expect(dataSource.transaction.mock.results[0].value).resolves.toBeInstanceOf(HttpException);
+      expect(userRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
-    it('rejects and expires the code once the attempt limit is reached', async () => {
-      repository.findOne.mockResolvedValue(buildUser({ id: 1 }));
-      confirmationCodesService.getOne.mockResolvedValue(
+    it('commits the expiry and only then rejects once the attempt limit is reached', async () => {
+      confirmationCodesService.lockActive.mockResolvedValue(
         buildConfirmationCode({ id: 7, confirmation_code: '9999', attempts: 5 }),
       );
 
-      await expect(service.verifyEmail({ email: 'x@x.com', code: '1234' })).rejects.toMatchObject(
+      await expect(service.verifyEmail(dto)).rejects.toMatchObject(
         new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, 429),
       );
-      expect(confirmationCodesService.expire).toHaveBeenCalledWith(1, ConfirmationType.EMAIL);
+      expect(confirmationCodesService.expire).toHaveBeenCalledWith(7, manager);
+      await expect(dataSource.transaction.mock.results[0].value).resolves.toBeInstanceOf(HttpException);
       expect(confirmationCodesService.incrementAttempts).not.toHaveBeenCalled();
     });
 
-    it('completes email verification on a matching code', async () => {
-      const user = buildUser({ id: 1 });
-      repository.findOne.mockResolvedValue(user);
-      confirmationCodesService.getOne.mockResolvedValue(buildConfirmationCode({ id: 7, confirmation_code: '1234' }));
-      spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
-      spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
-      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
+    it('redeems the code, initializes the user and issues a token after the transaction', async () => {
+      confirmationCodesService.lockActive.mockResolvedValue(
+        buildConfirmationCode({ id: 7, confirmation_code: '1234' }),
+      );
+      const signedInTransaction: boolean[] = [];
+      const generateAccessToken = jest.spyOn(
+        service as unknown as { generateAccessToken: (user: User) => string },
+        'generateAccessToken',
+      );
+      generateAccessToken.mockImplementation(() => {
+        signedInTransaction.push(inTransaction);
+        return 'token';
+      });
 
-      const token = await service.verifyEmail({ email: 'x@x.com', code: '1234' });
+      const token = await service.verifyEmail(dto);
 
+      expect(confirmationCodesService.expire).toHaveBeenCalledWith(7, manager);
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
-      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
-      expect(decoded.id).toBe(1);
+      expect(walletRepositoryInTx.save).toHaveBeenCalled();
+      expect(categoryRepositoryInTx.save).toHaveBeenCalled();
+      expect(signedInTransaction).toEqual([false]);
+      expect(token).toBe('token');
+    });
+
+    it('issues no token when initialization fails', async () => {
+      confirmationCodesService.lockActive.mockResolvedValue(
+        buildConfirmationCode({ id: 7, confirmation_code: '1234' }),
+      );
+      categoryRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
+
+      await expect(service.verifyEmail(dto)).rejects.toThrow('db unavailable');
     });
   });
 

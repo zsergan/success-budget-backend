@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { LimitsService } from './limits.service';
 import { Limit } from '@entities/limit.entity';
@@ -19,8 +19,10 @@ describe('LimitsService', () => {
   let repository: jest.Mocked<Repository<Limit>>;
   let queryBuilder: Record<string, jest.Mock>;
   let relationBuilder: Record<string, jest.Mock>;
+  let manager: { getRepository: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getMany'>>;
-  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockSpace'>>;
   let transactionQueriesService: jest.Mocked<Pick<TransactionQueriesService, 'getExpensesByCategory'>>;
 
   const userId = 7;
@@ -50,7 +52,10 @@ describe('LimitsService', () => {
     categoriesService = {
       getMany: jest.fn(async (ids: number[]) => [...new Set(ids)].map((id) => buildCategory({ id, space_id: 1 }))),
     };
-    spaceAccessService = { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })) };
+    spaceAccessService = {
+      assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })),
+      lockSpace: jest.fn().mockResolvedValue(undefined),
+    };
     transactionQueriesService = { getExpensesByCategory: jest.fn().mockResolvedValue(new Map()) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -67,6 +72,7 @@ describe('LimitsService', () => {
             createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
           },
         },
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
         { provide: CategoriesService, useValue: categoriesService },
         { provide: SpaceAccessService, useValue: spaceAccessService },
         { provide: TransactionQueriesService, useValue: transactionQueriesService },
@@ -75,6 +81,78 @@ describe('LimitsService', () => {
 
     service = module.get(LimitsService);
     repository = module.get(getRepositoryToken(Limit));
+    manager = { getRepository: jest.fn().mockReturnValue(repository) };
+    dataSource = module.get(DataSource);
+    dataSource.transaction.mockImplementation((callback: (m: typeof manager) => unknown) => callback(manager));
+  });
+
+  describe('transaction boundary', () => {
+    let txRepository: jest.Mocked<Repository<Limit>>;
+
+    beforeEach(() => {
+      txRepository = {
+        findOne: jest.fn().mockResolvedValue(limitWith({ id: 1, space_id: 1 }, [4])),
+        create: jest.fn((entityLike) => Object.assign(new Limit(), entityLike)),
+        save: jest.fn().mockResolvedValue(buildLimit({ id: 1 })),
+        update: jest.fn(),
+        delete: jest.fn(),
+        createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+      } as unknown as jest.Mocked<Repository<Limit>>;
+      manager.getRepository.mockReturnValue(txRepository);
+    });
+
+    it.each([
+      ['create', () => service.create(userId, 1, { category_ids: [4, 5], name: 'Fun', amount: '10' })],
+      ['update', () => service.update(userId, 1, 1, { category_ids: [5], amount: '20' })],
+    ])('%s runs every read and write through the transaction manager', async (_, run) => {
+      await run();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(categoriesService.getMany).toHaveBeenCalledWith(expect.any(Array), manager);
+      expect(manager.getRepository).toHaveBeenCalledWith(Limit);
+      expect(txRepository.createQueryBuilder).toHaveBeenCalled();
+      expect(txRepository.findOne).toHaveBeenCalled();
+      expect(repository.findOne).not.toHaveBeenCalled();
+      expect(repository.save).not.toHaveBeenCalled();
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(repository.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['create', () => service.create(userId, 1, { category_ids: [4], amount: '10' }), 0],
+      ['update', () => service.update(userId, 1, 1, { category_ids: [5] }), 1],
+    ])('%s propagates a failed category link without reading the result', async (_, run, readsBeforeLink) => {
+      const failure = new Error('link failed');
+      relationBuilder.add.mockRejectedValue(failure);
+
+      await expect(run()).rejects.toBe(failure);
+      expect(txRepository.findOne).toHaveBeenCalledTimes(readsBeforeLink);
+    });
+
+    it.each([
+      ['create', () => service.create(userId, 1, { category_ids: [4], amount: '10' })],
+      ['update', () => service.update(userId, 1, 1, { category_ids: [5] })],
+      ['remove', () => service.remove(userId, 1, 1)],
+    ])('%s locks the space before any other query', async (_, run) => {
+      await run();
+
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(1, manager);
+      const lockOrder = spaceAccessService.lockSpace.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(spaceAccessService.assertMembership.mock.invocationCallOrder[0]);
+      expect(lockOrder).toBeLessThan(manager.getRepository.mock.invocationCallOrder[0]);
+    });
+
+    it('remove deletes through the transaction manager', async () => {
+      await service.remove(userId, 1, 1);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(txRepository.delete).toHaveBeenCalledWith(1);
+      expect(repository.findOne).not.toHaveBeenCalled();
+      expect(repository.delete).not.toHaveBeenCalled();
+    });
   });
 
   describe('create', () => {
@@ -273,7 +351,7 @@ describe('LimitsService', () => {
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledTimes(1);
-      expect(categoriesService.getMany).toHaveBeenCalledWith([5, 6, 5]);
+      expect(categoriesService.getMany).toHaveBeenCalledWith([5, 6, 5], manager);
     });
 
     it('create skips the category lookup for a monthly total limit', async () => {
@@ -289,6 +367,7 @@ describe('LimitsService', () => {
       ['missing', spaceCategories(), ErrorMessages.FORBIDDEN_CATEGORY, 403],
       ['foreign-space', spaceCategories({ id: 5, space_id: 20 }), ErrorMessages.FORBIDDEN_CATEGORY, 403],
       ['system', spaceCategories({ id: 5, space_id: spaceId, is_system: 1 }), ErrorMessages.CATEGORY_IS_SYSTEM, 400],
+      ['archived', spaceCategories({ id: 5, space_id: spaceId, is_active: 0 }), ErrorMessages.CATEGORY_ARCHIVED, 400],
     ])('create rejects a %s category before any limit rule runs', async (_, categories, message, status) => {
       categoriesService.getMany.mockResolvedValue(categories);
 
@@ -315,6 +394,7 @@ describe('LimitsService', () => {
     it.each([
       ['foreign-space', spaceCategories({ id: 6, space_id: 20 }), ErrorMessages.FORBIDDEN_CATEGORY, 403],
       ['system', spaceCategories({ id: 6, space_id: spaceId, is_system: 1 }), ErrorMessages.CATEGORY_IS_SYSTEM, 400],
+      ['archived', spaceCategories({ id: 6, space_id: spaceId, is_active: 0 }), ErrorMessages.CATEGORY_ARCHIVED, 400],
     ])('update rejects switching to a %s category', async (_, categories, message, status) => {
       repository.findOne.mockResolvedValue(limitWith({ id: 1, space_id: spaceId }, [5]));
       categoriesService.getMany.mockResolvedValue(categories);
@@ -333,7 +413,7 @@ describe('LimitsService', () => {
       const result = await service.update(userId, spaceId, 1, { category_ids: [6], amount: '20' });
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(categoriesService.getMany).toHaveBeenCalledWith([6]);
+      expect(categoriesService.getMany).toHaveBeenCalledWith([6], manager);
       expect(relationBuilder.remove).toHaveBeenCalledWith([5]);
       expect(relationBuilder.add).toHaveBeenCalledWith([6]);
       expect(result).toBe(refreshed);

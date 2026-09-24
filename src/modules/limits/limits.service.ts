@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { Limit } from '@entities/limit.entity';
 import { CreateLimitDto } from './dto/create-limit.dto';
@@ -29,13 +29,15 @@ export class LimitsService {
   constructor(
     @InjectRepository(Limit)
     private readonly limitRepository: Repository<Limit>,
+    private readonly dataSource: DataSource,
     private readonly categoriesService: CategoriesService,
     private readonly spaceAccessService: SpaceAccessService,
     private readonly transactionQueriesService: TransactionQueriesService,
   ) {}
 
-  async getOne(limitId: number): Promise<LimitWithCategories | null> {
-    const limit = await this.limitRepository.findOne({ where: { id: limitId }, relations: { categories: true } });
+  async getOne(limitId: number, manager?: EntityManager): Promise<LimitWithCategories | null> {
+    const repository = manager?.getRepository(Limit) ?? this.limitRepository;
+    const limit = await repository.findOne({ where: { id: limitId }, relations: { categories: true } });
 
     return limit && withRelations(limit, 'categories');
   }
@@ -64,31 +66,36 @@ export class LimitsService {
   }
 
   async create(userId: number, spaceId: number, createLimit: CreateLimitDto): Promise<LimitWithCategories> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.assertCategoriesOwnership(spaceId, createLimit.category_ids);
+    return this.dataSource.transaction(async (manager) => {
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+      await this.assertCategoriesOwnership(manager, spaceId, createLimit.category_ids);
 
-    const categoryIds = createLimit.category_ids ?? [];
-    this.assertHasNameIfGroup(categoryIds, createLimit.name);
+      const categoryIds = createLimit.category_ids ?? [];
+      this.assertHasNameIfGroup(categoryIds, createLimit.name);
 
-    if (categoryIds.length === 0) {
-      await this.assertNoOtherTotalLimit(spaceId);
-    } else {
-      await this.assertCategoriesAvailable(spaceId, categoryIds);
-    }
+      if (categoryIds.length === 0) {
+        await this.assertNoOtherTotalLimit(manager, spaceId);
+      } else {
+        await this.assertCategoriesAvailable(manager, spaceId, categoryIds);
+      }
 
-    const limit = this.limitRepository.create({
-      space_id: spaceId,
-      amount: createLimit.amount,
-      name: categoryIds.length > 1 ? createLimit.name : null,
-      limit_type: categoryIds.length === 0 ? LimitType.OTHERS : LimitType.CATEGORY,
+      const limitRepository = manager.getRepository(Limit);
+      const saved = await limitRepository.save(
+        limitRepository.create({
+          space_id: spaceId,
+          amount: createLimit.amount,
+          name: categoryIds.length > 1 ? createLimit.name : null,
+          limit_type: categoryIds.length === 0 ? LimitType.OTHERS : LimitType.CATEGORY,
+        }),
+      );
+
+      if (categoryIds.length) {
+        await limitRepository.createQueryBuilder().relation('categories').of(saved.id).add(categoryIds);
+      }
+
+      return this.getExisting(saved.id, manager);
     });
-    const saved = await this.limitRepository.save(limit);
-
-    if (categoryIds.length) {
-      await this.limitRepository.createQueryBuilder().relation('categories').of(saved.id).add(categoryIds);
-    }
-
-    return this.getExisting(saved.id);
   }
 
   async update(
@@ -97,61 +104,69 @@ export class LimitsService {
     limitId: number,
     updateLimit: UpdateLimitDto,
   ): Promise<LimitWithCategories> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
+    return this.dataSource.transaction(async (manager) => {
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
 
-    const currentLimit = await this.getSpaceLimit(spaceId, limitId);
-    await this.assertCategoriesOwnership(spaceId, updateLimit.category_ids);
+      const currentLimit = await this.getSpaceLimit(spaceId, limitId, manager);
+      await this.assertCategoriesOwnership(manager, spaceId, updateLimit.category_ids);
 
-    const categoryIds = updateLimit.category_ids;
-    const currentCategoryIds = currentLimit.categories.map((category) => category.id);
-    const resultingCategoryIds = categoryIds ?? currentCategoryIds;
-    const resultingName = updateLimit.name !== undefined ? updateLimit.name : currentLimit.name;
-    this.assertHasNameIfGroup(resultingCategoryIds, resultingName);
+      const categoryIds = updateLimit.category_ids;
+      const currentCategoryIds = currentLimit.categories.map((category) => category.id);
+      const resultingCategoryIds = categoryIds ?? currentCategoryIds;
+      const resultingName = updateLimit.name !== undefined ? updateLimit.name : currentLimit.name;
+      this.assertHasNameIfGroup(resultingCategoryIds, resultingName);
 
-    if (categoryIds !== undefined) {
-      if (categoryIds.length === 0) {
-        await this.assertNoOtherTotalLimit(spaceId, limitId);
-      } else {
-        await this.assertCategoriesAvailable(spaceId, categoryIds, limitId);
+      if (categoryIds !== undefined) {
+        if (categoryIds.length === 0) {
+          await this.assertNoOtherTotalLimit(manager, spaceId, limitId);
+        } else {
+          await this.assertCategoriesAvailable(manager, spaceId, categoryIds, limitId);
+        }
       }
-    }
 
-    const scalarUpdate: Partial<Limit> = {};
-    if (updateLimit.amount !== undefined) {
-      scalarUpdate.amount = updateLimit.amount;
-    }
-    if (categoryIds !== undefined) {
-      scalarUpdate.limit_type = resultingCategoryIds.length === 0 ? LimitType.OTHERS : LimitType.CATEGORY;
-      scalarUpdate.name = resultingCategoryIds.length > 1 ? resultingName : null;
-    } else if (updateLimit.name !== undefined) {
-      scalarUpdate.name = resultingCategoryIds.length > 1 ? resultingName : null;
-    }
-    if (Object.keys(scalarUpdate).length) {
-      await this.limitRepository.update({ id: limitId }, scalarUpdate);
-    }
-
-    if (categoryIds !== undefined) {
-      const toRemove = currentCategoryIds.filter((id) => !categoryIds.includes(id));
-      const toAdd = categoryIds.filter((id) => !currentCategoryIds.includes(id));
-      const relation = this.limitRepository.createQueryBuilder().relation('categories').of(limitId);
-
-      if (toRemove.length) {
-        await relation.remove(toRemove);
+      const scalarUpdate: Partial<Limit> = {};
+      if (updateLimit.amount !== undefined) {
+        scalarUpdate.amount = updateLimit.amount;
       }
-      if (toAdd.length) {
-        await relation.add(toAdd);
+      if (categoryIds !== undefined) {
+        scalarUpdate.limit_type = resultingCategoryIds.length === 0 ? LimitType.OTHERS : LimitType.CATEGORY;
+        scalarUpdate.name = resultingCategoryIds.length > 1 ? resultingName : null;
+      } else if (updateLimit.name !== undefined) {
+        scalarUpdate.name = resultingCategoryIds.length > 1 ? resultingName : null;
       }
-    }
 
-    return this.getExisting(limitId);
+      const limitRepository = manager.getRepository(Limit);
+      if (Object.keys(scalarUpdate).length) {
+        await limitRepository.update({ id: limitId }, scalarUpdate);
+      }
+
+      if (categoryIds !== undefined) {
+        const toRemove = currentCategoryIds.filter((id) => !categoryIds.includes(id));
+        const toAdd = categoryIds.filter((id) => !currentCategoryIds.includes(id));
+        const relation = limitRepository.createQueryBuilder().relation('categories').of(limitId);
+
+        if (toRemove.length) {
+          await relation.remove(toRemove);
+        }
+        if (toAdd.length) {
+          await relation.add(toAdd);
+        }
+      }
+
+      return this.getExisting(limitId, manager);
+    });
   }
 
   async remove(userId: number, spaceId: number, limitId: number): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.getSpaceLimit(spaceId, limitId);
+    await this.dataSource.transaction(async (manager) => {
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+      await this.getSpaceLimit(spaceId, limitId, manager);
 
-    // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
-    await this.limitRepository.delete(limitId);
+      // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
+      await manager.getRepository(Limit).delete(limitId);
+    });
   }
 
   // categoryTotals are in cents
@@ -200,21 +215,25 @@ export class LimitsService {
     };
   }
 
-  private async getExisting(limitId: number): Promise<LimitWithCategories> {
-    const limit = await this.getOne(limitId);
+  private async getExisting(limitId: number, manager: EntityManager): Promise<LimitWithCategories> {
+    const limit = await this.getOne(limitId, manager);
     assertFound(limit);
 
     return limit;
   }
 
-  private async getSpaceLimit(spaceId: number, limitId: number): Promise<LimitWithCategories> {
-    const limit = await this.getOne(limitId);
+  private async getSpaceLimit(spaceId: number, limitId: number, manager?: EntityManager): Promise<LimitWithCategories> {
+    const limit = await this.getOne(limitId, manager);
     assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
 
     return limit;
   }
 
-  private async assertCategoriesOwnership(spaceId: number, categoryIds?: number[]): Promise<void> {
+  private async assertCategoriesOwnership(
+    manager: EntityManager,
+    spaceId: number,
+    categoryIds?: number[],
+  ): Promise<void> {
     const ids = categoryIds ?? [];
 
     if (ids.length === 0) {
@@ -222,7 +241,7 @@ export class LimitsService {
     }
 
     const categoriesById = new Map(
-      (await this.categoriesService.getMany(ids)).map((category) => [category.id, category]),
+      (await this.categoriesService.getMany(ids, manager)).map((category) => [category.id, category]),
     );
 
     for (const categoryId of ids) {
@@ -231,6 +250,10 @@ export class LimitsService {
 
       if (category.is_system) {
         throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+      }
+
+      if (category.is_active === 0) {
+        throw new HttpException(ErrorMessages.CATEGORY_ARCHIVED, HttpStatus.BAD_REQUEST);
       }
     }
   }
@@ -242,11 +265,13 @@ export class LimitsService {
   }
 
   private async assertCategoriesAvailable(
+    manager: EntityManager,
     spaceId: number,
     categoryIds: number[],
     excludeLimitId?: number,
   ): Promise<void> {
-    const query = this.limitRepository
+    const query = manager
+      .getRepository(Limit)
       .createQueryBuilder('limit')
       .innerJoin('limit.categories', 'category')
       .where('limit.space_id = :spaceId', { spaceId })
@@ -263,8 +288,13 @@ export class LimitsService {
     }
   }
 
-  private async assertNoOtherTotalLimit(spaceId: number, excludeLimitId?: number): Promise<void> {
-    const query = this.limitRepository
+  private async assertNoOtherTotalLimit(
+    manager: EntityManager,
+    spaceId: number,
+    excludeLimitId?: number,
+  ): Promise<void> {
+    const query = manager
+      .getRepository(Limit)
       .createQueryBuilder('limit')
       .where('limit.space_id = :spaceId', { spaceId })
       .andWhere('limit.limit_type = :limitType', { limitType: LimitType.OTHERS });
