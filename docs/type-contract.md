@@ -3,8 +3,8 @@
 Actual runtime types at the HTTP and MySQL boundaries, observed through the
 real `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`, no
 implicit conversion) and the `mysql2` driver as configured by TypeORM.
-Executable checks: `test/type-contract.e2e-spec.ts`. Entries marked **gap**
-are current behavior that the typing work must change.
+Executable checks: `test/type-contract.e2e-spec.ts`. The one remaining
+**gap** (mixed amount types across responses) is kept for API compatibility.
 
 ## Money
 
@@ -99,7 +99,7 @@ nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 | `null` for a NOT NULL field (`wallet_name`, `design`, category `name`/`icon`/`color`/`is_active`, limit `amount`) | 400 `<field> must not be null`                                                 |
 | `category_ids` (limit create/update)                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400 |
 | `invites` (space create)                                                                                          | absent or `[]`: no invites; `null`: 400                                        |
-| `""` for a field required non-empty on create (`wallet_name`, category `name`)                                    | accepted on update (**gap**, target 400)                                       |
+| `""` for a field required non-empty on create (`wallet_name`, category `name`)                                    | 400 on update as on create                                                     |
 | `""` for `description`                                                                                            | stored as `""`, not normalized to `null`                                       |
 | Query param absent                                                                                                | controller default applies                                                     |
 | Query date param `""`                                                                                             | 400                                                                            |

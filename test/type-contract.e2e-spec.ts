@@ -9,9 +9,7 @@ import { UsersService } from '@modules/users/users.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 
 // Pins the runtime types at the HTTP/DB boundary described in
-// docs/type-contract.md. `it.failing` marks a documented gap (currently a
-// 500 or an accepted value) whose target is a 400 validation error - once
-// fixed, the test starts failing and must be switched to a plain `it`.
+// docs/type-contract.md.
 describe('Boundary type contract (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
@@ -337,8 +335,16 @@ describe('Boundary type contract (e2e)', () => {
       await api().delete(`${base()}/limits/${created.body.id}`).expect(200);
     });
 
-    it.failing('rejects an empty string for a field that is required on create with a 400', async () => {
-      await api().put(`${base()}/wallets/${walletId}`).send({ wallet_name: '' }).expect(400);
+    it('rejects an empty name on update, as on create, without changing the row', async () => {
+      const walletBefore = await readWallet(walletId);
+      const walletRes = await api().put(`${base()}/wallets/${walletId}`).send({ wallet_name: '' }).expect(400);
+      expectFieldError(walletRes, 'wallet_name');
+      expect(await readWallet(walletId)).toMatchObject({ wallet_name: walletBefore.wallet_name });
+
+      const categoryBefore = await readCategory(expenseCategoryId);
+      const categoryRes = await api().put(`${base()}/categories/${expenseCategoryId}`).send({ name: '' }).expect(400);
+      expectFieldError(categoryRes, 'name');
+      expect(await readCategory(expenseCategoryId)).toMatchObject({ name: categoryBefore.name });
     });
   });
 
