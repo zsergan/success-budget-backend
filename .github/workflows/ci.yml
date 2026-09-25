@@ -145,6 +145,11 @@ jobs:
       PORT: 4123
     steps:
       - uses: actions/checkout@v7
+      - name: Enable ANSI_QUOTES for hosted MySQL compatibility
+        run: >-
+          docker exec ${{ job.services.mysql.id }}
+          mysql -uroot -pchange-me -e
+          "SET GLOBAL sql_mode = CONCAT(@@GLOBAL.sql_mode, ',ANSI_QUOTES')"
       - run: docker build -t success-budget-backend:ci .
       - name: Run migrations against the test database
         run: |
