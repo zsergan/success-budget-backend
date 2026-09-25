@@ -137,7 +137,7 @@ export class Init1715331806394 implements MigrationInterface {
             type: 'enum',
             enum: ['green', 'yellow', 'blue', 'red', 'pink'],
             isNullable: false,
-            default: '"green"',
+            default: "'green'",
           },
           {
             name: 'currency_id',

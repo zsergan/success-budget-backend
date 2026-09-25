@@ -81,7 +81,7 @@ export class CreateSpacesTables1789412793658 implements MigrationInterface {
           { name: 'space_id', type: 'int' },
           { name: 'email', type: 'varchar', length: '255' },
           { name: 'code', type: 'varchar', length: '6' },
-          { name: 'role', type: 'enum', enum: ['owner', 'member'], default: '"member"' },
+          { name: 'role', type: 'enum', enum: ['owner', 'member'], default: "'member'" },
           { name: 'expires_at', type: 'timestamp' },
           { name: 'accepted_at', type: 'timestamp', isNullable: true },
           { name: 'revoked_at', type: 'timestamp', isNullable: true },

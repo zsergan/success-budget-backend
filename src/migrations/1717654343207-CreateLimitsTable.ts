@@ -31,7 +31,7 @@ export class CreateLimitsTable1717654343207 implements MigrationInterface {
             type: 'enum',
             enum: ['category', 'others'],
             isNullable: false,
-            default: '"category"',
+            default: "'category'",
           },
           {
             name: 'amount',

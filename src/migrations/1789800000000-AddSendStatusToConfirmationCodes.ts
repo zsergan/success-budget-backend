@@ -26,7 +26,7 @@ export class AddSendStatusToConfirmationCodes1789800000000 implements MigrationI
         type: 'enum',
         enum: ['pending', 'sent', 'failed'],
         isNullable: false,
-        default: '"pending"',
+        default: "'pending'",
       }),
     );
 
