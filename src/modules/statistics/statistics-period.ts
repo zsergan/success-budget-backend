@@ -1,55 +1,84 @@
 import { BadRequestException } from '@nestjs/common';
 
 import type { StatisticsQueryDto } from './dto/statistics-query.dto';
+import {
+  type CalendarUnit,
+  type DateRange,
+  type TimeState,
+  calendarDateAt,
+  daysIn,
+  endOfDay,
+  formatCalendarDate,
+  parseCalendarDate,
+  rangeOf,
+  shift,
+  shiftInstant,
+  splitRange,
+  startOfDay,
+  timeState,
+  unitKey,
+} from './statistics-calendar';
 import { StatisticsPeriodType } from '@shared/enums';
 import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
-import {
-  type LocalDay,
-  endOfLocalDay,
-  formatLocalDate,
-  isoWeekday,
-  localDateParts,
-  localDayAt,
-  parseLocalDate,
-  resolveTimeZone,
-  startOfLocalDay,
-  toLocalDay,
-} from '@shared/utils';
+import { resolveTimeZone } from '@shared/utils';
 
 export const MAX_CUSTOM_PERIOD_DAYS = 366;
+export const MAX_DAILY_CUSTOM_DAYS = 14;
+export const MAX_WEEKLY_CUSTOM_DAYS = 92;
 // device clocks drift; a slightly early server must not reject the client's now
 export const AS_OF_CLOCK_SKEW_MS = 60_000;
 
-export type StatisticsPeriodState = 'past' | 'current' | 'future';
+export type TrendGranularity = 'day' | 'week' | 'month';
 
-export interface StatisticsPeriod {
-  type: StatisticsPeriodType;
-  time_zone: string;
+interface Bounds {
   start_date: string;
   end_date: string;
   from: Date;
   to: Date;
+}
+
+export interface StatisticsPeriod extends Bounds {
+  type: StatisticsPeriodType;
+  time_zone: string;
   as_of: Date;
   // min(to, as_of); null while the period has not started
   actual_to: Date | null;
-  state: StatisticsPeriodState;
+  state: TimeState;
 }
 
-const localRange = (type: StatisticsPeriodType, anchor: LocalDay): [LocalDay, LocalDay] => {
-  const { year, month } = localDateParts(anchor);
+export interface PreviousPeriod extends Bounds {
+  // the like-for-like cut of a current period, otherwise to
+  actual_to: Date;
+}
 
-  switch (type) {
-    case StatisticsPeriodType.WEEK: {
-      const monday = anchor - isoWeekday(anchor);
+export interface TrendInterval extends Bounds {
+  key: string;
+  state: TimeState;
+}
 
-      return [monday, monday + 6];
-    }
-    case StatisticsPeriodType.MONTH:
-      return [toLocalDay(year, month, 1), toLocalDay(year, month + 1, 0)];
-    default:
-      return [toLocalDay(year, 1, 1), toLocalDay(year, 12, 31)];
-  }
+const STANDARD_UNIT: Record<Exclude<StatisticsPeriodType, StatisticsPeriodType.CUSTOM>, CalendarUnit> = {
+  [StatisticsPeriodType.WEEK]: 'week',
+  [StatisticsPeriodType.MONTH]: 'month',
+  [StatisticsPeriodType.YEAR]: 'year',
 };
+
+const TREND_GRANULARITY: Record<Exclude<StatisticsPeriodType, StatisticsPeriodType.CUSTOM>, TrendGranularity> = {
+  [StatisticsPeriodType.WEEK]: 'day',
+  [StatisticsPeriodType.MONTH]: 'week',
+  [StatisticsPeriodType.YEAR]: 'month',
+};
+
+const boundsOf = (range: DateRange, timeZone: string): Bounds => ({
+  start_date: formatCalendarDate(range.start),
+  end_date: formatCalendarDate(range.end),
+  from: startOfDay(range.start, timeZone),
+  to: endOfDay(range.end, timeZone),
+});
+
+const rangeOfPeriod = (period: StatisticsPeriod): DateRange => ({
+  start: parseCalendarDate(period.start_date),
+  end: parseCalendarDate(period.end_date),
+});
 
 interface FieldError {
   field: string;
@@ -99,32 +128,30 @@ export const resolveStatisticsPeriod = (query: StatisticsQueryDto, serverNow: Da
     fail(errors);
   }
 
-  let startDay: LocalDay;
-  let endDay: LocalDay;
+  let range: DateRange;
   let rangeField: 'anchor_date' | 'to_date';
 
   if (query.period === StatisticsPeriodType.CUSTOM) {
-    startDay = parseLocalDate(query.from_date!)!;
-    endDay = parseLocalDate(query.to_date!)!;
+    range = { start: parseCalendarDate(query.from_date!), end: parseCalendarDate(query.to_date!) };
     rangeField = 'to_date';
 
-    if (startDay > endDay) {
+    if (range.start > range.end) {
       fail([{ field: 'to_date', error: 'to_date must not be before from_date' }]);
     }
 
-    if (endDay - startDay + 1 > MAX_CUSTOM_PERIOD_DAYS) {
+    if (daysIn(range) > MAX_CUSTOM_PERIOD_DAYS) {
       fail([{ field: 'to_date', error: `a custom period must not exceed ${MAX_CUSTOM_PERIOD_DAYS} days` }]);
     }
   } else {
-    const anchor = query.anchor_date === undefined ? localDayAt(asOf, timeZone) : parseLocalDate(query.anchor_date)!;
-    [startDay, endDay] = localRange(query.period, anchor);
+    const anchor =
+      query.anchor_date === undefined ? calendarDateAt(asOf, timeZone) : parseCalendarDate(query.anchor_date);
+    range = rangeOf(STANDARD_UNIT[query.period], anchor);
     rangeField = 'anchor_date';
   }
 
-  const from = startOfLocalDay(startDay, timeZone);
-  const to = endOfLocalDay(endDay, timeZone);
+  const bounds = boundsOf(range, timeZone);
 
-  if (from < TIMESTAMP_MIN || to > TIMESTAMP_MAX) {
+  if (bounds.from < TIMESTAMP_MIN || bounds.to > TIMESTAMP_MAX) {
     fail([
       {
         field: rangeField,
@@ -133,17 +160,50 @@ export const resolveStatisticsPeriod = (query: StatisticsQueryDto, serverNow: Da
     ]);
   }
 
-  const state: StatisticsPeriodState = asOf < from ? 'future' : asOf > to ? 'past' : 'current';
+  const state = timeState(bounds.from, bounds.to, asOf);
 
   return {
     type: query.period,
     time_zone: timeZone,
-    start_date: formatLocalDate(startDay),
-    end_date: formatLocalDate(endDay),
-    from,
-    to,
+    ...bounds,
     as_of: asOf,
-    actual_to: state === 'future' ? null : state === 'past' ? to : asOf,
+    actual_to: state === 'future' ? null : state === 'past' ? bounds.to : asOf,
     state,
   };
+};
+
+export const trendGranularity = (period: StatisticsPeriod): TrendGranularity => {
+  if (period.type !== StatisticsPeriodType.CUSTOM) {
+    return TREND_GRANULARITY[period.type];
+  }
+
+  const days = daysIn(rangeOfPeriod(period));
+
+  return days <= MAX_DAILY_CUSTOM_DAYS ? 'day' : days <= MAX_WEEKLY_CUSTOM_DAYS ? 'week' : 'month';
+};
+
+export const resolveTrendIntervals = (period: StatisticsPeriod, granularity: TrendGranularity): TrendInterval[] =>
+  splitRange(rangeOfPeriod(period), granularity).map((range) => {
+    const bounds = boundsOf(range, period.time_zone);
+
+    return {
+      key: unitKey(range.start, granularity),
+      ...bounds,
+      state: timeState(bounds.from, bounds.to, period.as_of),
+    };
+  });
+
+// A finished period is compared with the whole previous one, a current
+// period with the same elapsed part of it; custom and future periods are not
+// compared.
+export const resolvePreviousPeriod = (period: StatisticsPeriod): PreviousPeriod | null => {
+  if (period.type === StatisticsPeriodType.CUSTOM || period.state === 'future') {
+    return null;
+  }
+
+  const unit = STANDARD_UNIT[period.type];
+  const bounds = boundsOf(rangeOf(unit, shift(rangeOfPeriod(period).start, unit, -1)), period.time_zone);
+  const actualTo = period.state === 'past' ? bounds.to : shiftInstant(period.as_of, period.time_zone, unit, -1);
+
+  return { ...bounds, actual_to: actualTo < bounds.to ? actualTo : bounds.to };
 };

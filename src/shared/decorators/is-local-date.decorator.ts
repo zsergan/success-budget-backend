@@ -1,12 +1,12 @@
 import { ValidateBy, buildMessage } from 'class-validator';
 
-import { parseLocalDate, resolveTimeZone } from '@shared/utils';
+import { isLocalDate, resolveTimeZone } from '@shared/utils';
 
 export const IsLocalDate = () =>
   ValidateBy({
     name: 'isLocalDate',
     validator: {
-      validate: (value: unknown) => typeof value === 'string' && parseLocalDate(value) !== null,
+      validate: (value: unknown) => typeof value === 'string' && isLocalDate(value),
       defaultMessage: buildMessage((eachPrefix) => `${eachPrefix}$property must be a calendar date as YYYY-MM-DD`),
     },
   });
