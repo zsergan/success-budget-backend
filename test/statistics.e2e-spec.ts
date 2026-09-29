@@ -1,6 +1,7 @@
 import request from 'supertest';
 
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
 // A fixed as_of in the past keeps these independent of the real clock:
 // 15:00 on Monday 2026-09-28 in Moscow.
@@ -485,6 +486,9 @@ describe('Statistics blocks (e2e)', () => {
         expect(body.by_wallet.primary_items).toEqual([expect.objectContaining({ id: card, amount: '100.00' })]);
         expect(body.by_wallet.other.children).toEqual([expect.objectContaining({ id: cash, amount: '1.00' })]);
 
+        const document = createOpenApiDocument(testApp.app);
+        expect(schemaErrors(document, okResponseSchema(document, '/statistics/breakdown'), body)).toEqual([]);
+
         // without the type filter the category would also list the income
         const untyped = await api(member)
           .get(`${base(member)}/transactions`)
@@ -566,6 +570,23 @@ describe('Statistics blocks (e2e)', () => {
         expect(res.body.message).toEqual([expect.objectContaining({ field: Object.keys(query)[0] })]);
       }
     });
+  });
+
+  it.each([
+    ['a current month', MONTH],
+    ['a past month', { ...MONTH, anchor_date: '2026-08-15' }],
+    ['a future month', { ...MONTH, anchor_date: '2026-10-15' }],
+    ['a custom range', { ...MONTH, period: 'custom', from_date: '2026-09-01', to_date: '2026-09-30' }],
+    ['a year', { ...MONTH, period: 'year' }],
+  ])('responds to %s exactly as the OpenAPI schemas describe', async (_, query) => {
+    const document = createOpenApiDocument(testApp.app);
+
+    for (const block of BLOCKS) {
+      const res = await getBlock(block, query).expect(200);
+      const errors = schemaErrors(document, okResponseSchema(document, `/statistics/${block}`), res.body);
+
+      expect({ block, errors }).toEqual({ block, errors: [] });
+    }
   });
 
   it('rejects a repeated parameter', async () => {
