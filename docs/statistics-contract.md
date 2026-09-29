@@ -15,9 +15,10 @@ Anything marked _open_ needs sign-off before the stage that implements it.
 | Routes, query parameters, validation, `as_of`, access check    | implemented |
 | `period` metadata, `currency`                                  | implemented |
 | Summary `income`, `expense`, `net`, `transactions_count`       | implemented |
-| Trend `totals`, Breakdown `total` (control sums)               | implemented |
-| Summary `previous`, `change`, `last_transaction_date`          | planned     |
-| Trend `granularity`, `buckets`                                 | planned     |
+| Summary `previous`, `change`                                   | implemented |
+| Trend `totals`, `granularity`, `buckets`                       | implemented |
+| Breakdown `total` (control sum)                                | implemented |
+| Summary `last_transaction_date`                                | planned     |
 | Breakdown `by_category`, `by_wallet`, Other                    | planned     |
 | History filters `category_id`, `wallet_id`, `transaction_type` | planned     |
 
@@ -107,7 +108,9 @@ simply makes the period `past`.
 ## Periods
 
 Boundaries are computed as local dates in `time_zone`, then converted to
-instants.
+instants. Calendar arithmetic (weeks, month lengths, leap years, year
+boundaries) is done on dates without a zone; only the final day bounds meet
+the zone, so DST never shifts a period or a bucket by an hour.
 
 | `period` | Local range                                                    |
 | -------- | -------------------------------------------------------------- |
@@ -146,8 +149,8 @@ passed to `GET /transactions` unchanged.
 ### Previous period
 
 Summary compares a standard period with the previous one of the same kind:
-the preceding week, month or year. **Custom periods have no comparison**
-(`previous` and `change` are `null`).
+the preceding week, month or year. **Custom and `future` periods have no
+comparison** (`previous` and `change` are `null`).
 
 A `current` period is compared like-for-like: the previous period is cut at
 the same position, at the same local wall-clock time as `as_of` (September 1
@@ -159,9 +162,11 @@ to 28 at 15:00 against August 1 to 28 at 15:00, not all of August).
 | `month`  | Same day of month, clamped to the previous month's last day (31 → 30) |
 | `year`   | Same month and day, Feb 29 → Feb 28                                   |
 
-A `past` period is compared with the whole previous period. A `future`
-period has an empty current side; its previous period is cut at `as_of`
-like any other.
+A `past` period is compared with the whole previous period.
+
+The response carries the comparison bounds (`previous.start_date`,
+`end_date`, `from`, `to`, `actual_to`), not a caption: texts such as "vs Aug
+1–28" are composed and localized by the client.
 
 ## Money and percentages
 
@@ -206,16 +211,17 @@ interface StatisticsSummary {
   net: string;
   transactions_count: number; // income.count + expense.count
   previous: {
-    start_date: string;
+    start_date: string; // the whole previous period, local dates
     end_date: string;
     from: string;
-    to: string; // the cut instant, inclusive
-    income: MoneyCount;
+    to: string;
+    actual_to: string; // the like-for-like cut of a current period, otherwise to
+    income: MoneyCount; // over from..actual_to
     expense: MoneyCount;
     net: string;
     transactions_count: number;
-  } | null; // null for custom
-  change: { income: Change; expense: Change; net: Change } | null;
+  } | null; // null for custom and future periods
+  change: { income: Change; expense: Change; net: Change } | null; // null with previous
   // local date (in time_zone) of the latest transaction up to as_of, any period
   last_transaction_date: string | null;
 }
@@ -225,6 +231,7 @@ Screen states come from counts and dates, never from amounts:
 
 | Condition                               | State                                                    |
 | --------------------------------------- | -------------------------------------------------------- |
+| `period.state = 'future'`               | The period has not started; checked first                |
 | `last_transaction_date = null`          | Nothing to report yet (first run)                        |
 | `transactions_count = 0`, date not null | Nothing in this period; "Your last one was on …", "Open" |
 | `transactions_count > 0`                | Data, even when every amount is `"0.00"`                 |
@@ -237,24 +244,25 @@ Surplus / Deficit / Balanced is the sign of `net`, decided by the client.
 
 `GET /spaces/:spaceId/statistics/trend`
 
-| `period`           | `granularity` | Buckets                                                |
-| ------------------ | ------------- | ------------------------------------------------------ |
-| `week`             | `day`         | 7                                                      |
-| `month`            | `week`        | 4–6 calendar weeks from Monday, clipped to the month   |
-| `year`             | `month`       | 12                                                     |
-| `custom` ≤ 14 days | `day`         | one per day                                            |
-| `custom` ≤ 92 days | `week`        | weeks from Monday, first and last clipped to the range |
-| `custom` > 92 days | `month`       | calendar months, first and last clipped to the range   |
+| `period`             | `granularity` | Buckets                                                |
+| -------------------- | ------------- | ------------------------------------------------------ |
+| `week`               | `day`         | 7                                                      |
+| `month`              | `week`        | 4–6 calendar weeks from Monday, clipped to the month   |
+| `year`               | `month`       | 12                                                     |
+| `custom` ≤ 14 days   | `day`         | one per day                                            |
+| `custom` 15–92 days  | `week`        | weeks from Monday, first and last clipped to the range |
+| `custom` 93–366 days | `month`       | calendar months, first and last clipped to the range   |
 
 ```ts
 interface TrendBucket {
-  start_date: string;
+  key: string; // stable id of the bucket, see below
+  start_date: string; // local dates, inclusive, clipped to the period
   end_date: string;
-  from: string;
+  from: string; // exact instants of start_date's first and end_date's last moment
   to: string;
   state: 'past' | 'current' | 'future';
-  income: MoneyCount | null; // null only when state = 'future'
-  expense: MoneyCount | null;
+  income: string | null; // null only when state = 'future'
+  expense: string | null;
 }
 
 interface StatisticsTrend {
@@ -269,8 +277,20 @@ interface StatisticsTrend {
 
 Buckets always cover the whole period, so the axis is stable. A `future`
 bucket has `null` values (no bars); a past bucket with no transactions has
-`"0.00"` values (a baseline mark). A `current` bucket covers
-`from..as_of`. The buckets add up exactly to `totals`.
+`"0.00"` values (a baseline mark). A `current` bucket keeps its full
+`from`/`to` but sums only up to `as_of`. The buckets add up exactly to
+`totals`; `totals` also carry the counts the buckets do not.
+
+`key` is the ISO notation of the calendar unit the bucket starts in: `day`
+`2026-09-28`, `week` `2026-W40` (ISO week-numbering year, so the week of
+2025-12-29 is `2026-W01`), `month` `2026-09`. A key is unique within a
+response and the same bucket gets the same key on every request, so the
+client can keep a selected bar across reloads. Bar labels are built by the
+client from `start_date`/`end_date`.
+
+In a `future` period every bucket is `future` and `totals` are zero with
+zero counts; together with `period.state` this tells "not started yet"
+apart from "no transactions".
 
 ## Breakdown
 
@@ -443,7 +463,8 @@ Salary (income), `99` Initial balance (system).
     "start_date": "2026-08-01",
     "end_date": "2026-08-31",
     "from": "2026-07-31T21:00:00.000Z",
-    "to": "2026-08-28T12:00:00.000Z",
+    "to": "2026-08-31T20:59:59.999Z",
+    "actual_to": "2026-08-28T12:00:00.000Z",
     "income": { "amount": "3000.00", "count": 1 },
     "expense": { "amount": "300.00", "count": 2 },
     "net": "2700.00",
@@ -465,13 +486,28 @@ September 28 in Moscow.
 
 Trend: `granularity: "week"`, `totals` equal to the Summary figures.
 
-| `start_date` | `end_date` | `state`   | `income`      | `expense`    |
-| ------------ | ---------- | --------- | ------------- | ------------ |
-| 2026-09-01   | 2026-09-06 | `past`    | `3000.00` / 1 | `570.25` / 2 |
-| 2026-09-07   | 2026-09-13 | `past`    | `0.00` / 0    | `140.00` / 2 |
-| 2026-09-14   | 2026-09-20 | `past`    | `0.00` / 0    | `40.50` / 2  |
-| 2026-09-21   | 2026-09-27 | `past`    | `0.00` / 0    | `49.75` / 2  |
-| 2026-09-28   | 2026-09-30 | `current` | `0.00` / 0    | `10.00` / 1  |
+| `key`      | `start_date` | `end_date` | `state`   | `income`  | `expense` |
+| ---------- | ------------ | ---------- | --------- | --------- | --------- |
+| `2026-W36` | 2026-09-01   | 2026-09-06 | `past`    | `3000.00` | `570.25`  |
+| `2026-W37` | 2026-09-07   | 2026-09-13 | `past`    | `0.00`    | `140.00`  |
+| `2026-W38` | 2026-09-14   | 2026-09-20 | `past`    | `0.00`    | `40.50`   |
+| `2026-W39` | 2026-09-21   | 2026-09-27 | `past`    | `0.00`    | `49.75`   |
+| `2026-W40` | 2026-09-28   | 2026-09-30 | `current` | `0.00`    | `10.00`   |
+
+The first bucket:
+
+```json
+{
+  "key": "2026-W36",
+  "start_date": "2026-09-01",
+  "end_date": "2026-09-06",
+  "from": "2026-08-31T21:00:00.000Z",
+  "to": "2026-09-06T20:59:59.999Z",
+  "state": "past",
+  "income": "3000.00",
+  "expense": "570.25"
+}
+```
 
 Breakdown: `total: { "amount": "810.50", "count": 9 }`. `by_category`
 (`icon`/`color` omitted):
@@ -583,8 +619,13 @@ A custom 2026-07-01 … 2026-09-28 (90 days) is `current` and trends by
 - `period=year`: 2026-01-01 … 2026-12-31, `current`; previous 2025 cut at
   `2025-09-28T12:00:00.000Z`. Trend: 12 `month` buckets, October to
   December `future`.
-- `period=month&anchor_date=2027-02-10`: `future`, all zeros; trend
-  `week`, 4 buckets (February 2027 starts on a Monday), all `future`.
+- `period=month&anchor_date=2027-02-10`: `future`, all zeros, `previous`
+  and `change` `null`; trend `week`, 4 buckets (February 2027 starts on a
+  Monday), all `future` with `null` values.
+- A custom 2026-12-15 … 2027-01-20 (37 days) trends by `week` across the new
+  year: `2026-W51` from December 15, …, `2026-W53` (December 28 to January
+  3), …, `2027-W03` to January 20. A year 2028 trends by 12 `month` buckets,
+  `2028-02` being 29 days long.
 
 ### Example 5 — DST
 
@@ -593,6 +634,13 @@ A custom 2026-07-01 … 2026-09-28 (90 days) is `current` and trends by
 `to: "2026-10-25T22:59:59.999Z"` (CET, UTC+1). The October 25 bucket is 25
 hours long: `from: "2026-10-24T22:00:00.000Z"`,
 `to: "2026-10-25T22:59:59.999Z"`.
+
+Comparing across a DST change keeps the local wall-clock time: `as_of =
+2026-10-26T11:00:00.000Z` (Monday 12:00 CET) cuts the previous week at
+`2026-10-19T10:00:00.000Z` (Monday 12:00 CEST), not at the same UTC instant.
+
+In `America/Santiago` midnight of 2026-09-06 does not exist (clocks jump to
+01:00): that day starts at `2026-09-06T04:00:00.000Z` and is 23 hours long.
 
 ## Out of scope
 
