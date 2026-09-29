@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { TransactionType } from '@shared/enums';
@@ -13,6 +13,14 @@ export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'
 export interface WalletPeriodTotals {
   income: bigint;
   spend: bigint;
+}
+
+// in cents
+export interface StatisticsTotals {
+  income: bigint;
+  incomeCount: number;
+  expense: bigint;
+  expenseCount: number;
 }
 
 @Injectable()
@@ -142,5 +150,37 @@ export class TransactionQueriesService {
       .getOne();
 
     return transaction && withRelations(transaction, 'wallet', 'category');
+  }
+
+  async getStatisticsTotals(spaceId: number, from: Date, to: Date): Promise<StatisticsTotals> {
+    const row = await this.statisticsScope(spaceId, from, to)
+      .select('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :income THEN 1 ELSE 0 END)', 'income_count')
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)', 'expense')
+      .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN 1 ELSE 0 END)', 'expense_count')
+      .setParameter('income', TransactionType.INCOME)
+      .setParameter('expense', TransactionType.EXPENSE)
+      .getRawOne<Record<'income' | 'income_count' | 'expense' | 'expense_count', string | null>>();
+
+    return {
+      income: parseMoney(row?.income ?? '0'),
+      incomeCount: Number(row?.income_count ?? 0),
+      expense: parseMoney(row?.expense ?? '0'),
+      expenseCount: Number(row?.expense_count ?? 0),
+    };
+  }
+
+  // The selection every statistics block shares (docs/statistics-contract.md):
+  // all wallets of the space, soft-deleted ones included, without starting
+  // balances, both bounds inclusive.
+  private statisticsScope(spaceId: number, from: Date, to: Date): SelectQueryBuilder<Transaction> {
+    return this.transactionRepository
+      .createQueryBuilder('transaction')
+      .innerJoin('transaction.wallet', 'wallet')
+      .innerJoin('transaction.category', 'category')
+      .where('wallet.space_id = :spaceId', { spaceId })
+      .andWhere('category.is_system = 0')
+      .andWhere('transaction.timestamp >= :from', { from })
+      .andWhere('transaction.timestamp <= :to', { to });
   }
 }

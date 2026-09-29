@@ -26,6 +26,7 @@ describe('TransactionQueriesService', () => {
       getMany: jest.fn(),
       getOne: jest.fn(),
       getRawMany: jest.fn().mockResolvedValue([]),
+      getRawOne: jest.fn(),
     };
 
     transactionRepository = {
@@ -202,6 +203,44 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
       expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
       expect(queryBuilder.limit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('getStatisticsTotals', () => {
+    const from = new Date('2026-08-31T21:00:00.000Z');
+    const to = new Date('2026-09-28T12:00:00.000Z');
+
+    it('scopes to the space without starting balances, both bounds inclusive', async () => {
+      queryBuilder.getRawOne.mockResolvedValue({
+        income: '3000.00',
+        income_count: '1',
+        expense: '810.50',
+        expense_count: '9',
+      });
+
+      const result = await service.getStatisticsTotals(7, from, to);
+
+      expect(result).toEqual({ income: 300000n, incomeCount: 1, expense: 81050n, expenseCount: 9 });
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 7 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp >= :from', { from });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to });
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('is_deleted'));
+    });
+
+    it('reads the NULL sums of an empty selection as zero', async () => {
+      queryBuilder.getRawOne.mockResolvedValue({
+        income: null,
+        income_count: null,
+        expense: null,
+        expense_count: null,
+      });
+
+      const result = await service.getStatisticsTotals(7, from, to);
+
+      expect(result).toEqual({ income: 0n, incomeCount: 0, expense: 0n, expenseCount: 0 });
     });
   });
 });

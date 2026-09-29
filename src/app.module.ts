@@ -17,6 +17,7 @@ import { CurrenciesModule } from '@modules/currencies/currencies.module';
 import { ConfirmationCodesModule } from '@modules/confirmation-codes/confirmation-codes.module';
 import { LimitsModule } from '@modules/limits/limits.module';
 import { SpacesModule } from '@modules/spaces/spaces.module';
+import { StatisticsModule } from '@modules/statistics/statistics.module';
 import { HealthModule } from '@modules/health/health.module';
 import { JwtStrategy } from '@shared/strategies/jwt.strategy';
 import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
@@ -43,6 +44,7 @@ import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
     ConfirmationCodesModule,
     LimitsModule,
     SpacesModule,
+    StatisticsModule,
   ],
   controllers: [],
   providers: [
