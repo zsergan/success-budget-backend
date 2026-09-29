@@ -54,9 +54,18 @@ describe('foldGroups', () => {
     expect(fold(eight)).toEqual({ primary: [1, 2, 3, 4, 5, 6], folded: [7, 8] });
   });
 
-  it('checks the threshold on exact amounts, before rounding', () => {
-    // 3.00 of 100.00 is exactly 3%; 2.99 of 100.00 would round to 3.0%
-    expect(fold(groups('94.01', '3.00', '2.99'))).toEqual({ primary: [1, 2], folded: [3] });
+  it.each([
+    ['just below', '2.99', false],
+    ['exactly at', '3.00', true],
+    ['just above', '3.01', true],
+  ])('checks the threshold on exact amounts: %s 3%%', (_, amount, isPrimary) => {
+    // 2.99 of 100.00 would round to 3.0%, yet it is below the threshold
+    const list = [
+      { id: 1, amount: 10000n - parseMoney(amount) },
+      { id: 2, amount: parseMoney(amount) },
+    ];
+
+    expect(fold(list)).toEqual(isPrimary ? { primary: [1, 2], folded: [] } : { primary: [1], folded: [2] });
   });
 
   it('keeps the largest group when none reaches the threshold', () => {
@@ -88,6 +97,24 @@ describe('foldGroups', () => {
 
   it('returns nothing for nothing', () => {
     expect(fold([])).toEqual({ primary: [], folded: [] });
+  });
+});
+
+describe('segments', () => {
+  const segments = (breakdown: { primary_items: unknown[]; other: unknown; deleted_wallets?: unknown }) =>
+    breakdown.primary_items.length + (breakdown.other ? 1 : 0) + (breakdown.deleted_wallets ? 1 : 0);
+
+  it.each([1, 2, 6, 7, 8, 20, 100])('never exceed seven for %i equal groups', (count) => {
+    const ids = Array.from({ length: count }, (_, i) => i + 1);
+    const categories = buildCategoryBreakdown(ids.map((id) => category(id, `C${id}`, '10.00')));
+    const wallets = buildWalletBreakdown(ids.map((id) => wallet(id, '10.00')));
+    const withDeleted = buildWalletBreakdown([...ids.map((id) => wallet(id, '10.00')), wallet(0, '10.00', true)]);
+
+    expect(segments(categories)).toBeLessThanOrEqual(7);
+    expect(segments(wallets)).toBeLessThanOrEqual(7);
+    expect(segments(withDeleted)).toBeLessThanOrEqual(7);
+    expect(categories.source_count).toBe(count);
+    expect(withDeleted.source_count).toBe(count + 1);
   });
 });
 
@@ -228,6 +255,19 @@ describe('buildWalletBreakdown', () => {
     expect(seven.primary_items).toHaveLength(6);
     expect(seven.deleted_wallets).toBeNull();
     expect(seven.other?.children).toHaveLength(1);
+  });
+
+  it('keeps the deleted group apart from many regular wallets', () => {
+    const regular = Array.from({ length: 12 }, (_, i) => wallet(i + 1, `${100 - i}.00`));
+    const deleted = [wallet(20, '1.00', true), wallet(21, '0.50', true)];
+
+    const result = buildWalletBreakdown([...deleted, ...regular]);
+
+    expect(result.source_count).toBe(14);
+    expect(result.primary_items.map((item) => item.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.deleted_wallets).toMatchObject({ amount: '1.50', wallets_count: 2 });
+    expect(result.other?.children.map((item) => item.id)).toEqual([6, 7, 8, 9, 10, 11, 12]);
+    expect(result.other?.children.every((item) => item.kind === 'wallet')).toBe(true);
   });
 
   it('does not show a zero deleted group', () => {

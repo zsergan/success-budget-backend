@@ -12,11 +12,13 @@ describe('Statistics blocks (e2e)', () => {
   let testApp: TestApp;
   let owner: Member;
   let outsider: Member;
+  let neighbour: Member;
 
   beforeAll(async () => {
     testApp = await createTestApp();
     owner = await createVerifiedMember(testApp, 'statistics-owner');
     outsider = await createVerifiedMember(testApp, 'statistics-outsider');
+    neighbour = await createVerifiedMember(testApp, 'statistics-neighbour');
 
     const categories = await api(owner)
       .get(`${base(owner)}/categories`)
@@ -49,6 +51,29 @@ describe('Statistics blocks (e2e)', () => {
     await add(card, transport.id, 'expense', '7.77', '2026-07-31T20:59:59.999Z');
     // August, the month before
     await add(card, housing.id, 'expense', '200', '2026-08-10T09:00:00.000Z');
+    // June: sums a float would get wrong
+    for (const amount of ['0.10', '0.20', '99999999.99', '99999999.99', '99999999.99']) {
+      await add(cash, housing.id, 'expense', amount, '2026-06-15T09:00:00.000Z');
+    }
+
+    // another space with transactions in the same month must not leak in
+    const neighbourCategories = await api(neighbour)
+      .get(`${base(neighbour)}/categories`)
+      .expect(200);
+    const neighbourWallet = await api(neighbour)
+      .post(`${base(neighbour)}/wallets`)
+      .send({ wallet_name: 'Neighbour card', initial_balance: '0', design: 'slate' })
+      .expect(201);
+    await api(neighbour)
+      .post(`${base(neighbour)}/transactions`)
+      .send({
+        wallet_id: neighbourWallet.body.wallet.id,
+        category_id: neighbourCategories.body.expenses[0].id,
+        transaction_type: 'expense',
+        amount: '999',
+        timestamp: '2026-09-10T09:00:00.000Z',
+      })
+      .expect(201);
 
     await api(owner)
       .delete(`${base(owner)}/categories/${grocery.id}`)
@@ -60,7 +85,7 @@ describe('Statistics blocks (e2e)', () => {
 
   afterAll(async () => {
     try {
-      await deleteUsers(testApp.dataSource, [owner?.userId, outsider?.userId].filter(Boolean));
+      await deleteUsers(testApp.dataSource, [owner?.userId, outsider?.userId, neighbour?.userId].filter(Boolean));
     } finally {
       await testApp.app.close();
     }
@@ -248,6 +273,34 @@ describe('Statistics blocks (e2e)', () => {
     expect(res.body).toMatchObject({ previous: null, change: null, expense: { amount: '660.25', count: 5 } });
   });
 
+  it('keeps spaces apart', async () => {
+    const [own, other] = await Promise.all([
+      getBlock('breakdown', MONTH).expect(200),
+      api(neighbour)
+        .get(`${base(neighbour)}/statistics/breakdown`)
+        .query(MONTH)
+        .expect(200),
+    ]);
+
+    expect(own.body.total).toEqual({ amount: '660.25', count: 5 });
+    expect(other.body.total).toEqual({ amount: '999.00', count: 1 });
+    expect(other.body.by_wallet.primary_items.map((item: { name: string }) => item.name)).toEqual(['Neighbour card']);
+  });
+
+  it('adds money exactly, beyond the range of a single amount', async () => {
+    const june = { ...MONTH, anchor_date: '2026-06-01' };
+    const [summary, trend, breakdown] = await Promise.all(BLOCKS.map((block) => getBlock(block, june).expect(200)));
+
+    expect(summary.body.expense).toEqual({ amount: '300000000.27', count: 5 });
+    expect(trend.body.totals.expense).toEqual(summary.body.expense);
+    expect(trend.body.buckets.find((bucket: { expense: string }) => bucket.expense !== '0.00').expense).toBe(
+      '300000000.27',
+    );
+    expect(breakdown.body.by_category.primary_items).toEqual([
+      expect.objectContaining({ name: 'Housing', amount: '300000000.27', percent: 100 }),
+    ]);
+  });
+
   it('trend and breakdown carry control sums equal to the summary', async () => {
     const [summary, trend, breakdown] = await Promise.all(BLOCKS.map((block) => getBlock(block, MONTH).expect(200)));
 
@@ -255,6 +308,25 @@ describe('Statistics blocks (e2e)', () => {
     expect(breakdown.body.period).toEqual(summary.body.period);
     expect(trend.body.totals).toEqual({ income: summary.body.income, expense: summary.body.expense });
     expect(breakdown.body.total).toEqual(summary.body.expense);
+
+    const cents = (amount: string) => Math.round(Number(amount) * 100);
+    const bucketSum = (field: 'income' | 'expense') =>
+      trend.body.buckets.reduce((sum: number, bucket: Record<string, string>) => sum + cents(bucket[field]), 0);
+    const groupSum = (items: { amount: string }[]) => items.reduce((sum, item) => sum + cents(item.amount), 0);
+    const { by_category: byCategory, by_wallet: byWallet } = breakdown.body;
+
+    expect(bucketSum('income')).toBe(cents(summary.body.income.amount));
+    expect(bucketSum('expense')).toBe(cents(summary.body.expense.amount));
+    expect(groupSum([...byCategory.primary_items, ...(byCategory.other ? [byCategory.other] : [])])).toBe(
+      cents(summary.body.expense.amount),
+    );
+    expect(
+      groupSum([
+        ...byWallet.primary_items,
+        ...(byWallet.deleted_wallets ? [byWallet.deleted_wallets] : []),
+        ...(byWallet.other ? [byWallet.other] : []),
+      ]),
+    ).toBe(cents(summary.body.expense.amount));
   });
 
   it('draws day boundaries in the requested zone', async () => {

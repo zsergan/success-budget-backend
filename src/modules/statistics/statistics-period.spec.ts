@@ -197,6 +197,21 @@ describe('trend intervals', () => {
     ]);
   });
 
+  it.each([
+    // starts on a Monday, 28 days
+    ['2027-02-10', 4],
+    ['2026-09-10', 5],
+    // starts on a Sunday, ends on a Tuesday
+    ['2027-08-10', 6],
+  ])('gives the month of %s %i weeks', (anchor, count) => {
+    const { granularity, intervals } = trend({ anchor_date: anchor }, new Date('2028-01-01T00:00:00.000Z'));
+
+    expect(granularity).toBe('week');
+    expect(intervals).toHaveLength(count);
+    expect(intervals[0].start_date.slice(0, 7)).toBe(anchor.slice(0, 7));
+    expect(intervals[count - 1].end_date.slice(0, 7)).toBe(anchor.slice(0, 7));
+  });
+
   it('gives a week its seven days, the rest of them future', () => {
     const { granularity, intervals } = trend({ period: StatisticsPeriodType.WEEK });
 
