@@ -19,6 +19,7 @@ describe('TransactionQueriesService', () => {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       setParameter: jest.fn().mockReturnThis(),
+      setParameters: jest.fn().mockReturnThis(),
       groupBy: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
@@ -241,6 +242,45 @@ describe('TransactionQueriesService', () => {
       const result = await service.getStatisticsTotals(7, from, to);
 
       expect(result).toEqual({ income: 0n, incomeCount: 0, expense: 0n, expenseCount: 0 });
+    });
+  });
+
+  describe('getStatisticsIntervalTotals', () => {
+    const from = new Date('2026-08-31T21:00:00.000Z');
+    const to = new Date('2026-09-28T12:00:00.000Z');
+    const ends = [new Date('2026-09-06T20:59:59.999Z'), new Date('2026-09-13T20:59:59.999Z'), to];
+
+    it('maps each transaction to its interval in one grouped query and fills the gaps with zeros', async () => {
+      queryBuilder.getRawMany.mockResolvedValue([
+        { interval_index: '2', income: '0.00', income_count: '0', expense: '10.00', expense_count: '1' },
+        { interval_index: '0', income: '3000.00', income_count: '1', expense: '570.25', expense_count: '2' },
+      ]);
+
+      const result = await service.getStatisticsIntervalTotals(7, from, to, ends);
+
+      expect(result).toEqual([
+        { income: 300000n, incomeCount: 1, expense: 57025n, expenseCount: 2 },
+        { income: 0n, incomeCount: 0, expense: 0n, expenseCount: 0 },
+        { income: 0n, incomeCount: 0, expense: 1000n, expenseCount: 1 },
+      ]);
+      expect(queryBuilder.addSelect).toHaveBeenCalledWith(
+        'CASE WHEN transaction.timestamp <= :intervalEnd0 THEN 0 WHEN transaction.timestamp <= :intervalEnd1 THEN 1 ELSE 2 END',
+        'interval_index',
+      );
+      expect(queryBuilder.setParameters).toHaveBeenCalledWith({ intervalEnd0: ends[0], intervalEnd1: ends[1] });
+      expect(queryBuilder.groupBy).toHaveBeenCalledWith('interval_index');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to });
+    });
+
+    it('puts everything into a single interval', async () => {
+      queryBuilder.getRawMany.mockResolvedValue([
+        { interval_index: 0, income: null, income_count: null, expense: '5.00', expense_count: '1' },
+      ]);
+
+      const result = await service.getStatisticsIntervalTotals(7, from, to, [to]);
+
+      expect(result).toEqual([{ income: 0n, incomeCount: 0, expense: 500n, expenseCount: 1 }]);
+      expect(queryBuilder.addSelect).toHaveBeenCalledWith('0', 'interval_index');
     });
   });
 });
