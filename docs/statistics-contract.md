@@ -12,9 +12,12 @@ Anything marked _open_ needs sign-off before the stage that implements it.
 
 Everything in this document is implemented. Code: `src/modules/statistics`
 (calendar, periods, Other) and the SQL reads in
-`TransactionQueriesService`; Swagger describes the query parameters, the
-response types are the ones below. Tests: `statistics-*.spec.ts`,
-`transaction-queries.service.spec.ts` and `test/statistics.e2e-spec.ts`
+`TransactionQueriesService`. Swagger describes the query parameters and
+the response bodies (`dto/statistics-responses.ts`: the schemas carry the
+names of the types below, with required, nullable and enum values and money
+as decimal strings); the e2e tests check real responses against them. Tests:
+`statistics*.spec.ts`, `transaction-queries.service.spec.ts`,
+`test/statistics.e2e-spec.ts` and `test/statistics-concurrency.e2e-spec.ts`
 against MySQL.
 
 ## Endpoints
