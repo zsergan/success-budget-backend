@@ -45,6 +45,8 @@ describe('Statistics blocks (e2e)', () => {
     await add(cash, housing.id, 'expense', '10', '2026-09-27T21:30:00.000Z');
     // after as_of
     await add(card, housing.id, 'expense', '500', '2026-09-29T07:00:00.000Z');
+    // the very last millisecond of July in Moscow
+    await add(card, transport.id, 'expense', '7.77', '2026-07-31T20:59:59.999Z');
     // August, the month before
     await add(card, housing.id, 'expense', '200', '2026-08-10T09:00:00.000Z');
 
@@ -311,6 +313,108 @@ describe('Statistics blocks (e2e)', () => {
     const res = await getBlock('trend', query as Record<string, string>).expect(400);
 
     expect(res.body.message).toEqual(expect.arrayContaining([expect.objectContaining({ field })]));
+  });
+
+  describe('history drill-down', () => {
+    const cents = (amount: string) => Math.round(Number(amount) * 100);
+    const history = (query: Record<string, string | number>) =>
+      api(owner)
+        .get(`${base(owner)}/transactions`)
+        .query(query)
+        .expect(200);
+
+    it('opens every regular breakdown row with the statistics bounds and adds up to its amount', async () => {
+      const { body } = await getBlock('breakdown', MONTH).expect(200);
+      const bounds = { from: body.period.from, to: body.period.actual_to };
+      const rows = [
+        ...body.by_category.primary_items.map((item: { id: number; amount: string }) => ({
+          item,
+          query: { ...bounds, category_id: item.id },
+        })),
+        ...body.by_wallet.primary_items.map((item: { id: number; amount: string }) => ({
+          item,
+          query: { ...bounds, wallet_id: item.id, transaction_type: 'expense' },
+        })),
+      ];
+
+      expect(rows).toHaveLength(5);
+
+      for (const { item, query } of rows) {
+        const res = await history(query);
+        const sum = res.body.reduce((total: number, tx: { amount: string }) => total + cents(tx.amount), 0);
+
+        expect({ query, sum }).toEqual({ query, sum: cents(item.amount) });
+      }
+    });
+
+    it('includes the last millisecond of a period on both sides', async () => {
+      const july = { ...MONTH, anchor_date: '2026-07-15' };
+      const summary = await getBlock('summary', july).expect(200);
+
+      expect(summary.body.period.to).toBe('2026-07-31T20:59:59.999Z');
+      expect(summary.body.expense).toEqual({ amount: '7.77', count: 1 });
+
+      const inside = await history({ from: summary.body.period.from, to: summary.body.period.to });
+      const before = await history({ from: summary.body.period.from, to: '2026-07-31T20:59:59.998Z' });
+
+      expect(inside.body.map((tx: { amount: string }) => tx.amount)).toEqual(['7.77']);
+      expect(before.body).toEqual([]);
+    });
+
+    it('filters by an archived category, only by type or by both', async () => {
+      const bounds = { from: '2026-08-31T21:00:00.000Z', to: AS_OF };
+      const { body } = await getBlock('breakdown', MONTH).expect(200);
+      const archived = body.by_category.primary_items.find((item: { is_archived: boolean }) => item.is_archived);
+
+      const byCategory = await history({ ...bounds, category_id: archived.id });
+      // the starting balance is dated when the wallet was created, i.e. now
+      const incomes = await history({ ...bounds, to: new Date().toISOString(), transaction_type: 'income' });
+
+      expect(byCategory.body.map((tx: { amount: string }) => tx.amount)).toEqual(['80.00']);
+      // unlike statistics, the history keeps the starting balance
+      expect(incomes.body.map((tx: { amount: string }) => tx.amount).sort()).toEqual(['1000.00', '3000.00']);
+      await history({ ...bounds, category_id: archived.id, transaction_type: 'income' }).then((res) =>
+        expect(res.body).toEqual([]),
+      );
+    });
+
+    it('refuses a deleted, foreign or system resource and a malformed filter', async () => {
+      const outsiderCategories = await api(outsider)
+        .get(`${base(outsider)}/categories`)
+        .expect(200);
+      const { body } = await getBlock('breakdown', MONTH).expect(200);
+      const deletedWallet = await testApp.dataSource.query(
+        'SELECT id FROM wallets WHERE space_id = ? AND is_deleted = 1',
+        [owner.spaceId],
+      );
+      const systemCategory = await testApp.dataSource.query(
+        'SELECT id FROM categories WHERE space_id = ? AND is_system = 1',
+        [owner.spaceId],
+      );
+
+      expect(body.by_wallet.deleted_wallets.opens_history).toBe(false);
+      await api(owner)
+        .get(`${base(owner)}/transactions`)
+        .query({ wallet_id: deletedWallet[0].id })
+        .expect(403);
+      await api(owner)
+        .get(`${base(owner)}/transactions`)
+        .query({ category_id: systemCategory[0].id })
+        .expect(403);
+      await api(owner)
+        .get(`${base(owner)}/transactions`)
+        .query({ category_id: outsiderCategories.body.expenses[0].id })
+        .expect(403);
+
+      for (const query of [{ category_id: 'other' }, { wallet_id: '0' }, { transaction_type: 'transfer' }]) {
+        const res = await api(owner)
+          .get(`${base(owner)}/transactions`)
+          .query(query)
+          .expect(400);
+
+        expect(res.body.message).toEqual([expect.objectContaining({ field: Object.keys(query)[0] })]);
+      }
+    });
   });
 
   it('rejects a repeated parameter', async () => {
