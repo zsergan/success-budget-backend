@@ -395,27 +395,106 @@ describe('Statistics blocks (e2e)', () => {
         .query(query)
         .expect(200);
 
-    it('opens every regular breakdown row with the statistics bounds and adds up to its amount', async () => {
-      const { body } = await getBlock('breakdown', MONTH).expect(200);
-      const bounds = { from: body.period.from, to: body.period.actual_to };
-      const rows = [
-        ...body.by_category.primary_items.map((item: { id: number; amount: string }) => ({
-          item,
-          query: { ...bounds, category_id: item.id },
-        })),
-        ...body.by_wallet.primary_items.map((item: { id: number; amount: string }) => ({
-          item,
-          query: { ...bounds, wallet_id: item.id, transaction_type: 'expense' },
-        })),
-      ];
+    interface OpenableItem {
+      kind: 'category' | 'wallet';
+      id: number;
+      amount: string;
+    }
 
-      expect(rows).toHaveLength(5);
+    interface Breakdown {
+      period: { from: string; actual_to: string };
+      by_category: { primary_items: OpenableItem[]; other: { children: OpenableItem[] } | null };
+      by_wallet: { primary_items: OpenableItem[]; other: { children: OpenableItem[] } | null };
+    }
 
-      for (const { item, query } of rows) {
-        const res = await history(query);
+    // every item with opens_history: primary rows and the children of Other
+    const openableItems = ({ by_category, by_wallet }: Breakdown): OpenableItem[] =>
+      [by_category, by_wallet].flatMap((grouping) => [...grouping.primary_items, ...(grouping.other?.children ?? [])]);
+
+    // the one template of docs/statistics-contract.md for both groupings
+    const drillDownQuery = ({ period }: Breakdown, item: OpenableItem) => ({
+      from: period.from,
+      to: period.actual_to,
+      transaction_type: 'expense',
+      [item.kind === 'category' ? 'category_id' : 'wallet_id']: item.id,
+    });
+
+    const expectHistoryToMatch = async (member: Member, breakdown: Breakdown, items: OpenableItem[]) => {
+      for (const item of items) {
+        const query = drillDownQuery(breakdown, item);
+        const res = await api(member)
+          .get(`${base(member)}/transactions`)
+          .query(query)
+          .expect(200);
+        const types = [...new Set(res.body.map((tx: { transaction_type: string }) => tx.transaction_type))];
         const sum = res.body.reduce((total: number, tx: { amount: string }) => total + cents(tx.amount), 0);
 
-        expect({ query, sum }).toEqual({ query, sum: cents(item.amount) });
+        expect({ query, types, sum }).toEqual({ query, types: ['expense'], sum: cents(item.amount) });
+      }
+    };
+
+    it('opens every regular breakdown row with the statistics bounds and adds up to its amount', async () => {
+      const { body } = await getBlock('breakdown', MONTH).expect(200);
+      const items = openableItems(body);
+
+      expect(items).toHaveLength(5);
+      await expectHistoryToMatch(owner, body, items);
+    });
+
+    it('shows only the expenses of a category that also holds income, in main rows and in Other', async () => {
+      const member = await createVerifiedMember(testApp, 'statistics-mixed');
+
+      try {
+        const categories = await api(member)
+          .get(`${base(member)}/categories`)
+          .expect(200);
+        const [mixed, small] = categories.body.expenses;
+        const wallet = (name: string) =>
+          api(member)
+            .post(`${base(member)}/wallets`)
+            .send({ wallet_name: name, initial_balance: '0', design: 'slate' })
+            .expect(201)
+            .then((res) => res.body.wallet.id as number);
+        const card = await wallet('Card');
+        const cash = await wallet('Cash');
+        const add = (walletId: number, categoryId: number, type: string, amount: string) =>
+          api(member)
+            .post(`${base(member)}/transactions`)
+            .send({
+              wallet_id: walletId,
+              category_id: categoryId,
+              transaction_type: type,
+              amount,
+              timestamp: '2026-09-10T09:00:00.000Z',
+            })
+            .expect(201);
+
+        await add(card, mixed.id, 'expense', '100');
+        // the API does not tie the transaction type to the category type
+        await add(card, mixed.id, 'income', '20');
+        // under 3%: a child of Other in both groupings
+        await add(cash, small.id, 'expense', '1');
+
+        const { body } = await api(member)
+          .get(`${base(member)}/statistics/breakdown`)
+          .query(MONTH)
+          .expect(200);
+
+        expect(body.by_category.primary_items).toEqual([expect.objectContaining({ id: mixed.id, amount: '100.00' })]);
+        expect(body.by_category.other.children).toEqual([expect.objectContaining({ id: small.id, amount: '1.00' })]);
+        expect(body.by_wallet.primary_items).toEqual([expect.objectContaining({ id: card, amount: '100.00' })]);
+        expect(body.by_wallet.other.children).toEqual([expect.objectContaining({ id: cash, amount: '1.00' })]);
+
+        // without the type filter the category would also list the income
+        const untyped = await api(member)
+          .get(`${base(member)}/transactions`)
+          .query({ from: body.period.from, to: body.period.actual_to, category_id: mixed.id })
+          .expect(200);
+        expect(untyped.body).toHaveLength(2);
+
+        await expectHistoryToMatch(member, body, openableItems(body));
+      } finally {
+        await deleteUsers(testApp.dataSource, [member.userId]);
       }
     });
 
