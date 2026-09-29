@@ -22,7 +22,7 @@ describe('Statistics blocks (e2e)', () => {
       .get(`${base(owner)}/categories`)
       .expect(200);
     const [salary] = categories.body.incomes;
-    const [groceries, restaurants, gifts] = categories.body.expenses;
+    const [housing, transport, grocery] = categories.body.expenses;
 
     const card = await createWallet('Card', '0');
     const cash = await createWallet('Cash', '0');
@@ -37,19 +37,19 @@ describe('Statistics blocks (e2e)', () => {
         .expect(201);
 
     await add(card, salary.id, 'income', '3000', '2026-09-01T07:00:00.000Z');
-    await add(card, groceries.id, 'expense', '450.25', '2026-09-02T16:30:00.000Z');
-    await add(cash, restaurants.id, 'expense', '120', '2026-09-05T10:00:00.000Z');
-    await add(oldCard, gifts.id, 'expense', '80', '2026-09-12T17:00:00.000Z');
-    await add(card, restaurants.id, 'expense', '0', '2026-09-21T06:00:00.000Z');
+    await add(card, housing.id, 'expense', '450.25', '2026-09-02T16:30:00.000Z');
+    await add(cash, transport.id, 'expense', '120', '2026-09-05T10:00:00.000Z');
+    await add(oldCard, grocery.id, 'expense', '80', '2026-09-12T17:00:00.000Z');
+    await add(card, transport.id, 'expense', '0', '2026-09-21T06:00:00.000Z');
     // 00:30 on Sep 28 in Moscow, still Sep 27 in UTC
-    await add(cash, groceries.id, 'expense', '10', '2026-09-27T21:30:00.000Z');
+    await add(cash, housing.id, 'expense', '10', '2026-09-27T21:30:00.000Z');
     // after as_of
-    await add(card, groceries.id, 'expense', '500', '2026-09-29T07:00:00.000Z');
+    await add(card, housing.id, 'expense', '500', '2026-09-29T07:00:00.000Z');
     // August, the month before
-    await add(card, groceries.id, 'expense', '200', '2026-08-10T09:00:00.000Z');
+    await add(card, housing.id, 'expense', '200', '2026-08-10T09:00:00.000Z');
 
     await api(owner)
-      .delete(`${base(owner)}/categories/${gifts.id}`)
+      .delete(`${base(owner)}/categories/${grocery.id}`)
       .expect(200);
     await api(owner)
       .delete(`${base(owner)}/wallets/${oldCard}`)
@@ -132,6 +132,66 @@ describe('Statistics blocks (e2e)', () => {
         expense: { delta: '460.25', percent: 230.1 },
         net: { delta: '2539.75', percent: 1269.9 },
       },
+      has_any_transactions: true,
+      // 00:30 on Sep 28 in Moscow; the one after as_of does not count
+      last_transaction_date: '2026-09-28',
+    });
+  });
+
+  it('summary tells a space without transactions', async () => {
+    const res = await api(outsider)
+      .get(`${base(outsider)}/statistics/summary`)
+      .query(MONTH)
+      .expect(200);
+
+    expect(res.body).toMatchObject({ transactions_count: 0, has_any_transactions: false, last_transaction_date: null });
+  });
+
+  it('breakdown groups expenses by category and by wallet in SQL', async () => {
+    const res = await getBlock('breakdown', MONTH).expect(200);
+    const brief = (items: Record<string, unknown>[]) =>
+      items.map(({ kind, name, amount, percent, is_archived, opens_history }) => ({
+        kind,
+        name,
+        amount,
+        percent,
+        is_archived,
+        opens_history,
+      }));
+
+    expect(res.body.total).toEqual({ amount: '660.25', count: 5 });
+    expect(res.body.by_category).toMatchObject({ total_amount: '660.25', source_count: 3, other: null });
+    expect(brief(res.body.by_category.primary_items)).toEqual([
+      { kind: 'category', name: 'Housing', amount: '460.25', percent: 69.7, is_archived: false, opens_history: true },
+      {
+        kind: 'category',
+        name: 'Transport',
+        amount: '120.00',
+        percent: 18.2,
+        is_archived: false,
+        opens_history: true,
+      },
+      { kind: 'category', name: 'Grocery', amount: '80.00', percent: 12.1, is_archived: true, opens_history: true },
+    ]);
+    expect(res.body.by_category.primary_items[0]).toMatchObject({
+      key: `category:${res.body.by_category.primary_items[0].id}`,
+      icon: expect.any(String),
+      color: expect.any(String),
+    });
+
+    expect(res.body.by_wallet).toMatchObject({ total_amount: '660.25', source_count: 3, other: null });
+    expect(brief(res.body.by_wallet.primary_items)).toEqual([
+      { kind: 'wallet', name: 'Card', amount: '450.25', percent: 68.2, is_archived: false, opens_history: true },
+      { kind: 'wallet', name: 'Cash', amount: '130.00', percent: 19.7, is_archived: false, opens_history: true },
+    ]);
+    expect(res.body.by_wallet.deleted_wallets).toMatchObject({
+      kind: 'deleted_wallets',
+      key: 'deleted_wallets',
+      id: null,
+      amount: '80.00',
+      percent: 12.1,
+      opens_history: false,
+      wallets_count: 1,
     });
   });
 

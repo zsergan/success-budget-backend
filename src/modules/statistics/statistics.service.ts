@@ -2,6 +2,14 @@ import { Injectable } from '@nestjs/common';
 
 import type { StatisticsQueryDto } from './dto/statistics-query.dto';
 import {
+  type CategoryBreakdown,
+  type WalletBreakdown,
+  buildCategoryBreakdown,
+  buildWalletBreakdown,
+  sumOf,
+} from './statistics-breakdown';
+import { calendarDateAt, formatCalendarDate } from './statistics-calendar';
+import {
   type PreviousPeriod,
   type StatisticsPeriod,
   type TrendGranularity,
@@ -45,6 +53,10 @@ interface Figures {
 export interface StatisticsSummary extends StatisticsBlock, Figures {
   previous: (PreviousPeriod & Figures) | null;
   change: { income: Change; expense: Change; net: Change } | null;
+  // any statistics transaction up to as_of, in any period
+  has_any_transactions: boolean;
+  // local date in period.time_zone
+  last_transaction_date: string | null;
 }
 
 export interface TrendBucket extends TrendInterval {
@@ -61,7 +73,10 @@ export interface StatisticsTrend extends StatisticsBlock {
 }
 
 export interface StatisticsBreakdown extends StatisticsBlock {
+  // control sum: the client compares it with the summary expense of the same cycle
   total: MoneyCount;
+  by_category: CategoryBreakdown;
+  by_wallet: WalletBreakdown;
 }
 
 const EMPTY_TOTALS: StatisticsTotals = { income: 0n, incomeCount: 0, expense: 0n, expenseCount: 0 };
@@ -98,10 +113,11 @@ export class StatisticsService {
   async getSummary(userId: number, spaceId: number, query: StatisticsQueryDto): Promise<StatisticsSummary> {
     const block = await this.openBlock(userId, spaceId, query);
     const previousPeriod = resolvePreviousPeriod(block.period);
-    const [totals, previousTotals] = await Promise.all([
+    const [totals, previousTotals, lastTimestamp] = await Promise.all([
       this.getTotals(spaceId, block.period),
       previousPeriod &&
         this.transactionQueriesService.getStatisticsTotals(spaceId, previousPeriod.from, previousPeriod.actual_to),
+      this.transactionQueriesService.getLastStatisticsTimestamp(spaceId, block.period.as_of),
     ]);
 
     return {
@@ -113,6 +129,8 @@ export class StatisticsService {
         expense: changeOf(totals.expense, previousTotals.expense),
         net: changeOf(totals.income - totals.expense, previousTotals.income - previousTotals.expense),
       },
+      has_any_transactions: lastTimestamp !== null,
+      last_transaction_date: lastTimestamp && formatCalendarDate(calendarDateAt(lastTimestamp, block.period.time_zone)),
     };
   }
 
@@ -148,9 +166,24 @@ export class StatisticsService {
 
   async getBreakdown(userId: number, spaceId: number, query: StatisticsQueryDto): Promise<StatisticsBreakdown> {
     const block = await this.openBlock(userId, spaceId, query);
-    const totals = await this.getTotals(spaceId, block.period);
+    const { period } = block;
+    const [categories, wallets] =
+      period.actual_to === null
+        ? [[], []]
+        : await Promise.all([
+            this.transactionQueriesService.getStatisticsExpenseByCategory(spaceId, period.from, period.actual_to),
+            this.transactionQueriesService.getStatisticsExpenseByWallet(spaceId, period.from, period.actual_to),
+          ]);
 
-    return { ...block, total: figuresOf(totals).expense };
+    return {
+      ...block,
+      total: {
+        amount: formatMoney(sumOf(categories)),
+        count: categories.reduce((sum, category) => sum + category.count, 0),
+      },
+      by_category: buildCategoryBreakdown(categories),
+      by_wallet: buildWalletBreakdown(wallets),
+    };
   }
 
   private async openBlock(userId: number, spaceId: number, query: StatisticsQueryDto): Promise<StatisticsBlock> {

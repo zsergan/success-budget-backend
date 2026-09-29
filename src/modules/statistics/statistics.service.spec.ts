@@ -54,6 +54,23 @@ describe('StatisticsService', () => {
               .mockResolvedValueOnce(AUGUST_TO_28TH)
               .mockResolvedValue(SEPTEMBER),
             getStatisticsIntervalTotals: jest.fn(),
+            getLastStatisticsTimestamp: jest.fn().mockResolvedValue(new Date('2026-09-27T21:30:00.000Z')),
+            getStatisticsExpenseByCategory: jest.fn().mockResolvedValue([
+              {
+                id: 10,
+                name: 'Groceries',
+                icon: 'cart',
+                color: 'emerald',
+                isArchived: false,
+                amount: 80000n,
+                count: 8,
+              },
+              { id: 16, name: 'Fees', icon: 'receipt', color: 'slate', isArchived: false, amount: 1050n, count: 1 },
+            ]),
+            getStatisticsExpenseByWallet: jest.fn().mockResolvedValue([
+              { id: 1, name: 'Card', design: 'slate', isDeleted: false, amount: 71050n, count: 7 },
+              { id: 3, name: 'Old card', design: 'rose', isDeleted: true, amount: 10000n, count: 2 },
+            ]),
           },
         },
       ],
@@ -109,7 +126,11 @@ describe('StatisticsService', () => {
         expense: { delta: '510.50', percent: 170.2 },
         net: { delta: '-510.50', percent: -18.9 },
       },
+      has_any_transactions: true,
+      // 00:30 on Sep 28 in Moscow
+      last_transaction_date: '2026-09-28',
     });
+    expect(transactionQueriesService.getLastStatisticsTimestamp).toHaveBeenCalledWith(spaceId, now);
     expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
     expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(1, spaceId, period.from, now);
     expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(
@@ -184,7 +205,31 @@ describe('StatisticsService', () => {
   it('breakdown: the expense total of the same selection', async () => {
     const result = await service.getBreakdown(userId, spaceId, query);
 
-    expect(result).toEqual({ period, currency: 'EUR', total: { amount: '810.50', count: 9 } });
+    expect(result).toMatchObject({ period, currency: 'EUR', total: { amount: '810.50', count: 9 } });
+    expect(result.by_category).toMatchObject({
+      total_amount: '810.50',
+      source_count: 2,
+      primary_items: [{ kind: 'category', key: 'category:10', amount: '800.00', percent: 98.7 }],
+      // 1.3% is under the threshold
+      other: { kind: 'other', amount: '10.50', percent: 1.3, children: [{ key: 'category:16' }] },
+    });
+    expect(result.by_wallet).toMatchObject({
+      total_amount: '810.50',
+      source_count: 2,
+      primary_items: [{ kind: 'wallet', key: 'wallet:1', amount: '710.50' }],
+      deleted_wallets: { kind: 'deleted_wallets', amount: '100.00', wallets_count: 1 },
+      other: null,
+    });
+    expect(transactionQueriesService.getStatisticsExpenseByCategory).toHaveBeenCalledWith(spaceId, period.from, now);
+    expect(transactionQueriesService.getStatisticsExpenseByWallet).toHaveBeenCalledWith(spaceId, period.from, now);
+  });
+
+  it('summary: no transactions at all', async () => {
+    transactionQueriesService.getLastStatisticsTimestamp.mockResolvedValue(null);
+
+    const result = await service.getSummary(userId, spaceId, query);
+
+    expect(result).toMatchObject({ has_any_transactions: false, last_transaction_date: null });
   });
 
   it('keeps the sign of a negative net', async () => {
@@ -205,6 +250,7 @@ describe('StatisticsService', () => {
     const future = { ...query, anchor_date: '2026-10-01' };
     const summary = await service.getSummary(userId, spaceId, future);
     const trend = await service.getTrend(userId, spaceId, future);
+    const breakdown = await service.getBreakdown(userId, spaceId, future);
 
     expect(summary.period.state).toBe('future');
     expect(summary).toMatchObject({
@@ -214,7 +260,15 @@ describe('StatisticsService', () => {
       transactions_count: 0,
       previous: null,
       change: null,
+      // history before as_of still counts: the period is just not there yet
+      has_any_transactions: true,
     });
+    expect(breakdown).toMatchObject({
+      total: { amount: '0.00', count: 0 },
+      by_category: { total_amount: '0.00', source_count: 0, primary_items: [], other: null },
+      by_wallet: { source_count: 0, primary_items: [], deleted_wallets: null, other: null },
+    });
+    expect(transactionQueriesService.getStatisticsExpenseByCategory).not.toHaveBeenCalled();
     expect(trend.totals).toEqual({ income: { amount: '0.00', count: 0 }, expense: { amount: '0.00', count: 0 } });
     expect(trend.buckets).toHaveLength(5);
     expect(trend.buckets.every((bucket) => bucket.state === 'future' && bucket.income === null)).toBe(true);
