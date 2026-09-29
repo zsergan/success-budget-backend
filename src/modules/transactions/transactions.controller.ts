@@ -11,7 +11,7 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -44,6 +44,20 @@ export class TransactionsController {
     return this.transactionsService.getLatest(req.user.id, spaceId);
   }
 
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'Inclusive; without Z/offset it is server local time. Default: start of the current month.',
+  })
+  @ApiQuery({ name: 'to', required: false, description: 'Inclusive, to the millisecond. Default: end of the month.' })
+  @ApiQuery({ name: 'transaction_type', required: false, enum: TransactionType })
+  @ApiQuery({
+    name: 'category_id',
+    required: false,
+    type: Number,
+    description: 'A category of the space, archived allowed; the system one is refused.',
+  })
+  @ApiQuery({ name: 'wallet_id', required: false, type: Number, description: 'An active wallet of the space.' })
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
   async getAll(

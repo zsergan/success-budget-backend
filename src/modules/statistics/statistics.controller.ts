@@ -1,16 +1,32 @@
 import { Controller, Get, Param, ParseIntPipe, Query, Request } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiForbiddenResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { StatisticsService } from './statistics.service';
 import { StatisticsQueryDto } from './dto/statistics-query.dto';
 import type { AuthedRequest } from '@shared/types';
 
+const CONTRACT = 'Response types and rules: docs/statistics-contract.md.';
+
 @ApiTags('statistics')
 @ApiBearerAuth()
+@ApiBadRequestResponse({ description: 'Invalid or inconsistent query parameters, as `message: [{ field, error }]`.' })
+@ApiForbiddenResponse({ description: 'Not a member of the space.' })
 @Controller('spaces/:spaceId/statistics')
 export class StatisticsController {
   constructor(private readonly statisticsService: StatisticsService) {}
 
+  @ApiOperation({
+    summary: 'Income, expense, net and the comparison with the previous period',
+    description: `Also has_any_transactions and last_transaction_date. ${CONTRACT}`,
+  })
+  @ApiOkResponse({ description: 'StatisticsSummary' })
   @Get('summary')
   async getSummary(
     @Request() req: AuthedRequest,
@@ -20,6 +36,11 @@ export class StatisticsController {
     return this.statisticsService.getSummary(req.user.id, spaceId, query);
   }
 
+  @ApiOperation({
+    summary: 'Income and expense per day, week or month of the period',
+    description: `Buckets cover the whole period; future ones are null. ${CONTRACT}`,
+  })
+  @ApiOkResponse({ description: 'StatisticsTrend' })
   @Get('trend')
   async getTrend(
     @Request() req: AuthedRequest,
@@ -29,6 +50,11 @@ export class StatisticsController {
     return this.statisticsService.getTrend(req.user.id, spaceId, query);
   }
 
+  @ApiOperation({
+    summary: 'Expenses by category and by wallet, with Other',
+    description: `Both groupings at once; Other children inline. ${CONTRACT}`,
+  })
+  @ApiOkResponse({ description: 'StatisticsBreakdown' })
   @Get('breakdown')
   async getBreakdown(
     @Request() req: AuthedRequest,
