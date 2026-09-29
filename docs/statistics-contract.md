@@ -414,7 +414,14 @@ refreshes.
    are separate reads with **no shared snapshot**: a transaction created,
    edited or deleted by any member between them (for example one backdated
    to the selected period) can show up in only some of the responses. The
-   API does not promise an atomic view under concurrent editing.
+   API does not promise an atomic view across blocks under concurrent
+   editing.
+   Within **one** response it does: the reads of Summary and of Breakdown
+   run in one short `REPEATABLE READ` transaction that only reads, without
+   row locks, so they all see the same database state. In Breakdown,
+   `total`, `by_category.total_amount` and `by_wallet.total_amount` are
+   always equal, and Summary never reports sums together with
+   `has_any_transactions: false`. Trend is a single query.
 5. To detect that, the client compares the control sums with Summary, both
    `amount` and `count`: `trend.totals.income`/`expense` with
    `summary.income`/`expense`, and `breakdown.total` with `summary.expense`.
@@ -746,9 +753,10 @@ In `America/Santiago` midnight of 2026-09-06 does not exist (clocks jump to
 Every block is one or two SQL queries that aggregate in MySQL
 (`SUM`/`COUNT` with `GROUP BY` per category, per wallet or per trend
 bucket); only aggregated rows reach Node.js. Summary: current and previous
-totals plus the latest timestamp (3 queries, in parallel). Trend: 1 query
-for all buckets. Breakdown: 2 queries (categories, wallets). A `future`
-period sends none for its own range.
+totals plus the latest timestamp (3 queries). Trend: 1 query for all
+buckets. Breakdown: 2 queries (categories, wallets). The queries of one
+block run one after another in its snapshot transaction (see Consistency
+model). A `future` period sends none for its own range.
 
 All period reads go through the space's wallets and then the
 `transactions` rows of each wallet in a time range. The index
