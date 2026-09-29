@@ -78,3 +78,10 @@ export enum SpaceRole {
   OWNER = 'owner',
   MEMBER = 'member',
 }
+
+export enum StatisticsPeriodType {
+  WEEK = 'week',
+  MONTH = 'month',
+  YEAR = 'year',
+  CUSTOM = 'custom',
+}
