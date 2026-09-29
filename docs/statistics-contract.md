@@ -20,6 +20,22 @@ as decimal strings); the e2e tests check real responses against them. Tests:
 `test/statistics.e2e-spec.ts` and `test/statistics-concurrency.e2e-spec.ts`
 against MySQL.
 
+## Changes after review
+
+Changes to this contract after its first implementation; the sections they
+touch are the source of truth.
+
+- **One snapshot per response.** Summary and Breakdown read in one
+  `REPEATABLE READ` transaction, so the figures inside one response always
+  agree; across the three blocks the control sums stay the check (see
+  Consistency model).
+- **History template.** Every breakdown item opens the history with
+  `transaction_type=expense`, for categories too, not only for wallets
+  (see Opening a breakdown item). Clients that followed the earlier
+  category example must add it.
+- **Swagger.** The three responses have full OpenAPI schemas (see
+  Implementation).
+
 ## Endpoints
 
 All routes are under `/api/v1`, require the bearer token and membership in
@@ -800,4 +816,5 @@ in the size of one space's history and runs once per Summary.
 - Income breakdown, cross-space or multi-currency statistics.
 - Planned or recurring transactions: the model has none; a transaction
   dated after `as_of` is simply not counted yet.
-- A database snapshot shared by the three blocks, and caching.
+- A database snapshot shared by the three blocks (each response is
+  consistent on its own), and caching.

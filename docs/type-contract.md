@@ -122,14 +122,14 @@ removes internal fields such as `space_id`, `wallet_id`, `category_id`,
 `is_deleted`, `deleted_at`, `sort`, `is_system`, `currency_id`, `password`
 and `email_verified`. Exact key sets are pinned in the e2e contract spec.
 
-| Response                                          | Type                                                          | Difference                                                                                                                |
-| ------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `GET /transactions`, `GET /transactions/latest`   | `TransactionView`                                             | `wallet` is `null` when the wallet was soft-deleted; `category` always present                                            |
-| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                                          |
-| `POST /wallets`                                   | `CreateWalletResult`                                          | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)                          |
-| `GET /wallets`                                    | `WalletsOverview`                                             | `wallets[].wallet: WalletWithBalance`                                                                                     |
-| `POST /categories`                                | `Category`                                                    | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior)                      |
-| `GET /statistics/summary`, `/trend`, `/breakdown` | `StatisticsSummary`, `StatisticsTrend`, `StatisticsBreakdown` | not entities: computed views, typed in `statistics.service.ts` and `statistics-breakdown.ts`; see the statistics contract |
+| Response                                          | Type                                                          | Difference                                                                                                                                                                  |
+| ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /transactions`, `GET /transactions/latest`   | `TransactionView`                                             | `wallet` is `null` when the wallet was soft-deleted; `category` always present                                                                                              |
+| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                                                                                            |
+| `POST /wallets`                                   | `CreateWalletResult`                                          | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)                                                                            |
+| `GET /wallets`                                    | `WalletsOverview`                                             | `wallets[].wallet: WalletWithBalance`                                                                                                                                       |
+| `POST /categories`                                | `Category`                                                    | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior)                                                                        |
+| `GET /statistics/summary`, `/trend`, `/breakdown` | `StatisticsSummary`, `StatisticsTrend`, `StatisticsBreakdown` | not entities: computed views, typed in `statistics.service.ts` and `statistics-breakdown.ts`, OpenAPI schemas in `dto/statistics-responses.ts`; see the statistics contract |
 
 ## Absent vs `null` vs empty
 
