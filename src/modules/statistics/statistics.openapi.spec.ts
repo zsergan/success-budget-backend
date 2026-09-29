@@ -15,10 +15,12 @@ type Schema = {
   format?: string;
   items?: Schema;
   allOf?: Schema[];
+  anyOf?: Schema[];
   $ref?: string;
 };
 
 const MONEY_PATTERN = '^-?\\d+\\.\\d{2}$';
+const NULL_ONLY: Schema = { type: 'object', nullable: true, enum: [null] };
 
 describe('Statistics OpenAPI', () => {
   let app: INestApplication;
@@ -41,7 +43,8 @@ describe('Statistics OpenAPI', () => {
     await app.close();
   });
 
-  const refName = (schema: Schema): string | undefined => (schema.$ref ?? schema.allOf?.[0]?.$ref)?.split('/').pop();
+  const refName = (schema: Schema): string | undefined =>
+    (schema.$ref ?? schema.allOf?.[0]?.$ref ?? schema.anyOf?.[0]?.$ref)?.split('/').pop();
 
   const collectRefs = (value: unknown): string[] =>
     value && typeof value === 'object'
@@ -69,7 +72,7 @@ describe('Statistics OpenAPI', () => {
 
   const nullableFields = (name: string) =>
     properties(name)
-      .filter(([, property]) => property.nullable)
+      .filter(([, property]) => property.nullable || property.anyOf?.some((branch) => branch.nullable))
       .map(([field]) => field);
 
   it.each([
@@ -116,12 +119,27 @@ describe('Statistics OpenAPI', () => {
     expect(nullableFields('WalletBreakdown')).toEqual(['deleted_wallets', 'other']);
   });
 
-  it('points nullable objects at their schema', () => {
-    expect(refName(schemas.StatisticsSummary.properties!.previous)).toBe('PreviousPeriod');
-    expect(refName(schemas.StatisticsSummary.properties!.change)).toBe('Changes');
-    expect(refName(schemas.WalletBreakdown.properties!.deleted_wallets)).toBe('DeletedWalletsItem');
-    expect(refName(schemas.WalletBreakdown.properties!.other)).toBe('WalletOtherItem');
-    expect(refName(schemas.CategoryBreakdown.properties!.other)).toBe('CategoryOtherItem');
+  it('describes a nullable object as its schema or null, in OpenAPI 3.0 terms', () => {
+    const nullableObjects: [string, string, string][] = [
+      ['StatisticsSummary', 'previous', 'PreviousPeriod'],
+      ['StatisticsSummary', 'change', 'Changes'],
+      ['CategoryBreakdown', 'other', 'CategoryOtherItem'],
+      ['WalletBreakdown', 'deleted_wallets', 'DeletedWalletsItem'],
+      ['WalletBreakdown', 'other', 'WalletOtherItem'],
+    ];
+
+    for (const [schema, field, target] of nullableObjects) {
+      const { anyOf, ...rest } = schemas[schema].properties![field];
+
+      expect({ schema, field, anyOf, rest: Object.keys(rest).filter((key) => key !== 'description') }).toEqual({
+        schema,
+        field,
+        anyOf: [{ $ref: `#/components/schemas/${target}` }, NULL_ONLY],
+        rest: [],
+      });
+      expect(schemas[schema].required).toContain(field);
+    }
+
     expect(refName(schemas.CategoryOtherItem.properties!.children.items!)).toBe('CategoryItem');
     expect(refName(schemas.WalletOtherItem.properties!.children.items!)).toBe('WalletItem');
   });

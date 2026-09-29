@@ -1,4 +1,5 @@
-import { ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
+import type { Type } from '@nestjs/common';
+import { ApiExtraModels, ApiProperty, type ApiPropertyOptions, getSchemaPath } from '@nestjs/swagger';
 
 import { AppColor, CategoryIcon, StatisticsPeriodType } from '@shared/enums';
 import type {
@@ -36,6 +37,11 @@ const MONEY: ApiPropertyOptions = {
   description: 'Money as a decimal string with two digits after the point, never a number.',
 };
 const PERCENT: ApiPropertyOptions = { type: 'number', example: 12.5, description: 'Rounded to one decimal.' };
+// OpenAPI 3.0 has no null type; nullable next to a $ref is ignored by tools.
+const nullableObject = (model: Type<unknown>, description?: string): ApiPropertyOptions => ({
+  anyOf: [{ $ref: getSchemaPath(model) }, { type: 'object', nullable: true, enum: [null] }],
+  description,
+});
 const ALWAYS_NULL: ApiPropertyOptions = { type: String, nullable: true, enum: [null], description: 'Always null.' };
 
 export class StatisticsPeriod implements StatisticsPeriodShape {
@@ -136,6 +142,7 @@ class StatisticsBlock {
   currency!: string;
 }
 
+@ApiExtraModels(PreviousPeriod, Changes)
 export class StatisticsSummary extends StatisticsBlock implements StatisticsSummaryShape {
   @ApiProperty({ type: () => MoneyCount })
   income!: MoneyCount;
@@ -149,10 +156,10 @@ export class StatisticsSummary extends StatisticsBlock implements StatisticsSumm
   @ApiProperty({ type: 'integer', description: 'income.count + expense.count.' })
   transactions_count!: number;
 
-  @ApiProperty({ type: () => PreviousPeriod, nullable: true, description: 'null for custom and future periods.' })
+  @ApiProperty(nullableObject(PreviousPeriod, 'null for custom and future periods.'))
   previous!: PreviousPeriod | null;
 
-  @ApiProperty({ type: () => Changes, nullable: true, description: 'null exactly when previous is null.' })
+  @ApiProperty(nullableObject(Changes, 'null exactly when previous is null.'))
   change!: Changes | null;
 
   @ApiProperty({ description: 'Any statistics transaction up to as_of, in any period.' })
@@ -325,6 +332,7 @@ export class WalletOtherItem extends ServiceItemFields implements OtherItemShape
   children!: WalletItem[];
 }
 
+@ApiExtraModels(CategoryOtherItem)
 export class CategoryBreakdown implements CategoryBreakdownShape {
   @ApiProperty(MONEY)
   total_amount!: string;
@@ -335,10 +343,11 @@ export class CategoryBreakdown implements CategoryBreakdownShape {
   @ApiProperty({ type: () => CategoryItem, isArray: true })
   primary_items!: CategoryItem[];
 
-  @ApiProperty({ type: () => CategoryOtherItem, nullable: true })
+  @ApiProperty(nullableObject(CategoryOtherItem))
   other!: CategoryOtherItem | null;
 }
 
+@ApiExtraModels(DeletedWalletsItem, WalletOtherItem)
 export class WalletBreakdown implements WalletBreakdownShape {
   @ApiProperty(MONEY)
   total_amount!: string;
@@ -349,10 +358,10 @@ export class WalletBreakdown implements WalletBreakdownShape {
   @ApiProperty({ type: () => WalletItem, isArray: true, description: 'Active wallets only.' })
   primary_items!: WalletItem[];
 
-  @ApiProperty({ type: () => DeletedWalletsItem, nullable: true })
+  @ApiProperty(nullableObject(DeletedWalletsItem))
   deleted_wallets!: DeletedWalletsItem | null;
 
-  @ApiProperty({ type: () => WalletOtherItem, nullable: true })
+  @ApiProperty(nullableObject(WalletOtherItem))
   other!: WalletOtherItem | null;
 }
 
