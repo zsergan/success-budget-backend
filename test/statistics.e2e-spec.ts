@@ -115,7 +115,75 @@ describe('Statistics blocks (e2e)', () => {
       expense: { amount: '660.25', count: 5 },
       net: '2339.75',
       transactions_count: 6,
+      // August 1 to 28, 15:00: the like-for-like part
+      previous: {
+        start_date: '2026-08-01',
+        end_date: '2026-08-31',
+        from: '2026-07-31T21:00:00.000Z',
+        to: '2026-08-31T20:59:59.999Z',
+        actual_to: '2026-08-28T12:00:00.000Z',
+        income: { amount: '0.00', count: 0 },
+        expense: { amount: '200.00', count: 1 },
+        net: '-200.00',
+        transactions_count: 1,
+      },
+      change: {
+        income: { delta: '3000.00', percent: null },
+        expense: { delta: '460.25', percent: 230.1 },
+        net: { delta: '2539.75', percent: 1269.9 },
+      },
     });
+  });
+
+  it('trend splits the month into calendar weeks up to as_of', async () => {
+    const res = await getBlock('trend', MONTH).expect(200);
+
+    expect(res.body.granularity).toBe('week');
+    expect(
+      res.body.buckets.map((bucket: Record<string, string>) => [
+        bucket.key,
+        bucket.start_date,
+        bucket.end_date,
+        bucket.state,
+        bucket.income,
+        bucket.expense,
+      ]),
+    ).toEqual([
+      ['2026-W36', '2026-09-01', '2026-09-06', 'past', '3000.00', '570.25'],
+      ['2026-W37', '2026-09-07', '2026-09-13', 'past', '0.00', '80.00'],
+      ['2026-W38', '2026-09-14', '2026-09-20', 'past', '0.00', '0.00'],
+      // the zero-amount transaction; the Sunday-night one belongs to the next week in Moscow
+      ['2026-W39', '2026-09-21', '2026-09-27', 'past', '0.00', '0.00'],
+      // the transaction after as_of is left out
+      ['2026-W40', '2026-09-28', '2026-09-30', 'current', '0.00', '10.00'],
+    ]);
+    expect(res.body.buckets[0]).toMatchObject({ from: '2026-08-31T21:00:00.000Z', to: '2026-09-06T20:59:59.999Z' });
+  });
+
+  it('trend of a future period has only empty future buckets and no comparison anywhere', async () => {
+    const future = { ...MONTH, anchor_date: '2026-10-01' };
+    const [summary, trend] = await Promise.all([
+      getBlock('summary', future).expect(200),
+      getBlock('trend', future).expect(200),
+    ]);
+
+    expect(summary.body).toMatchObject({ period: { state: 'future' }, previous: null, change: null });
+    expect(trend.body.buckets).toHaveLength(5);
+    expect(trend.body.buckets).toEqual(
+      Array(5).fill(expect.objectContaining({ state: 'future', income: null, expense: null })),
+    );
+  });
+
+  it('does not compare a custom period', async () => {
+    const res = await getBlock('summary', {
+      period: 'custom',
+      from_date: '2026-09-01',
+      to_date: '2026-09-28',
+      time_zone: 'Europe/Moscow',
+      as_of: AS_OF,
+    }).expect(200);
+
+    expect(res.body).toMatchObject({ previous: null, change: null, expense: { amount: '660.25', count: 5 } });
   });
 
   it('trend and breakdown carry control sums equal to the summary', async () => {
