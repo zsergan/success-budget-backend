@@ -589,6 +589,39 @@ describe('Statistics blocks (e2e)', () => {
     }
   });
 
+  it('the contract check accepts an allowed null and rejects a wrong or incomplete one', async () => {
+    const document = createOpenApiDocument(testApp.app);
+    const summarySchema = okResponseSchema(document, '/statistics/summary');
+    const breakdownSchema = okResponseSchema(document, '/statistics/breakdown');
+    const summary = (await getBlock('summary', MONTH).expect(200)).body;
+    const breakdown = (await getBlock('breakdown', MONTH).expect(200)).body;
+    const check = (schema: typeof summarySchema, body: Record<string, unknown>) => schemaErrors(document, schema, body);
+
+    expect(summary.previous).not.toBeNull();
+    expect(breakdown.by_wallet.deleted_wallets).not.toBeNull();
+
+    expect(check(summarySchema, { ...summary, previous: null, change: null })).toEqual([]);
+    expect(
+      check(breakdownSchema, { ...breakdown, by_wallet: { ...breakdown.by_wallet, deleted_wallets: null } }),
+    ).toEqual([]);
+
+    expect(check(summarySchema, { ...summary, period: null })).toContain('$.period: null is not allowed');
+    expect(check(summarySchema, { ...summary, income: null })).toContain('$.income: null is not allowed');
+
+    expect(check(summarySchema, { ...summary, previous: {} })).toEqual(
+      expect.arrayContaining(['$.previous: matches no anyOf branch', '$.previous.actual_to: missing']),
+    );
+    expect(
+      check(breakdownSchema, {
+        ...breakdown,
+        by_wallet: { ...breakdown.by_wallet, deleted_wallets: { kind: 'deleted_wallets' } },
+      }),
+    ).toContain('$.by_wallet.deleted_wallets: matches no anyOf branch');
+    expect(check(summarySchema, { ...summary, previous: { ...summary.previous, income: null } })).toContain(
+      '$.previous: matches no anyOf branch',
+    );
+  });
+
   it('rejects a repeated parameter', async () => {
     const res = await api(owner)
       .get(`${base(owner)}/statistics/summary?period=month&period=week&time_zone=UTC`)

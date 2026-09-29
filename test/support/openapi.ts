@@ -11,6 +11,7 @@ interface Schema {
   format?: string;
   items?: Schema;
   allOf?: Schema[];
+  anyOf?: Schema[];
   $ref?: string;
 }
 
@@ -31,7 +32,10 @@ export function okResponseSchema(document: OpenAPIObject, pathSuffix: string): S
 }
 
 // A small validator for the subset of OpenAPI 3.0 the Nest generator emits.
-// Unlike the default, an object may not carry properties its schema lacks.
+// Composite keywords always apply, null included. A typed schema takes null
+// only when it is nullable and, with an enum, lists null; an untyped one (the
+// rest of a composite) puts no limit on null. Unlike the default, an object
+// may not carry properties its schema lacks.
 export function schemaErrors(document: OpenAPIObject, schema: Schema, value: unknown, at = '$'): string[] {
   if (schema.$ref) {
     const name = schema.$ref.split('/').pop()!;
@@ -39,12 +43,35 @@ export function schemaErrors(document: OpenAPIObject, schema: Schema, value: unk
     return schemaErrors(document, document.components!.schemas![name] as Schema, value, at);
   }
 
-  if (value === null) {
-    return schema.nullable ? [] : [`${at}: null is not allowed`];
+  const { allOf, anyOf, ...own } = schema;
+
+  if (allOf) {
+    return [
+      ...allOf.flatMap((part) => schemaErrors(document, part, value, at)),
+      ...schemaErrors(document, own, value, at),
+    ];
   }
 
-  if (schema.allOf) {
-    return schema.allOf.flatMap((part) => schemaErrors(document, part, value, at));
+  if (anyOf) {
+    const branches = anyOf.map((branch) => schemaErrors(document, branch, value, at));
+
+    return branches.some((errors) => errors.length === 0)
+      ? schemaErrors(document, own, value, at)
+      : [`${at}: matches no anyOf branch`, ...branches.flat()];
+  }
+
+  if (value === null) {
+    if (schema.type === undefined && schema.enum === undefined) {
+      return [];
+    }
+
+    if (!schema.nullable) {
+      return [`${at}: null is not allowed`];
+    }
+
+    return schema.enum && !schema.enum.includes(null)
+      ? [`${at}: null is not one of ${JSON.stringify(schema.enum)}`]
+      : [];
   }
 
   if (schema.enum && !schema.enum.includes(value)) {
