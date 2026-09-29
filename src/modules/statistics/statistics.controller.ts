@@ -10,9 +10,10 @@ import {
 
 import { StatisticsService } from './statistics.service';
 import { StatisticsQueryDto } from './dto/statistics-query.dto';
+import { StatisticsBreakdown, StatisticsSummary, StatisticsTrend } from './dto/statistics-responses';
 import type { AuthedRequest } from '@shared/types';
 
-const CONTRACT = 'Response types and rules: docs/statistics-contract.md.';
+const CONTRACT = 'Rules: docs/statistics-contract.md.';
 
 @ApiTags('statistics')
 @ApiBearerAuth()
@@ -26,7 +27,7 @@ export class StatisticsController {
     summary: 'Income, expense, net and the comparison with the previous period',
     description: `Also has_any_transactions and last_transaction_date. ${CONTRACT}`,
   })
-  @ApiOkResponse({ description: 'StatisticsSummary' })
+  @ApiOkResponse({ type: StatisticsSummary })
   @Get('summary')
   async getSummary(
     @Request() req: AuthedRequest,
@@ -40,7 +41,7 @@ export class StatisticsController {
     summary: 'Income and expense per day, week or month of the period',
     description: `Buckets cover the whole period; future ones are null. ${CONTRACT}`,
   })
-  @ApiOkResponse({ description: 'StatisticsTrend' })
+  @ApiOkResponse({ type: StatisticsTrend })
   @Get('trend')
   async getTrend(
     @Request() req: AuthedRequest,
@@ -54,7 +55,7 @@ export class StatisticsController {
     summary: 'Expenses by category and by wallet, with Other',
     description: `Both groupings at once; Other children inline. ${CONTRACT}`,
   })
-  @ApiOkResponse({ description: 'StatisticsBreakdown' })
+  @ApiOkResponse({ type: StatisticsBreakdown })
   @Get('breakdown')
   async getBreakdown(
     @Request() req: AuthedRequest,
