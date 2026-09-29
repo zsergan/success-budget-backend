@@ -19,7 +19,7 @@ Anything marked _open_ needs sign-off before the stage that implements it.
 | Trend `totals`, `granularity`, `buckets`                       | implemented |
 | Summary `has_any_transactions`, `last_transaction_date`        | implemented |
 | Breakdown `total`, `by_category`, `by_wallet`, Other           | implemented |
-| History filters `category_id`, `wallet_id`, `transaction_type` | planned     |
+| History filters `category_id`, `wallet_id`, `transaction_type` | implemented |
 
 ## Endpoints
 
@@ -432,25 +432,60 @@ refreshes.
 
 ## History filters (drill-down)
 
-`GET /spaces/:spaceId/transactions` gains optional query parameters:
+`GET /spaces/:spaceId/transactions` gains three optional query parameters.
+This is the minimal support the Stats tab needs to let the user re-check a
+number; the History screen itself is not redesigned here.
 
-| Param              | Meaning                                                               |
-| ------------------ | --------------------------------------------------------------------- |
-| `category_id`      | Only this category's transactions (archived allowed, system rejected) |
-| `wallet_id`        | Only this wallet's transactions (active wallets only)                 |
-| `transaction_type` | `income` or `expense`                                                 |
+| Param              | Meaning                                                 |
+| ------------------ | ------------------------------------------------------- |
+| `transaction_type` | `income` or `expense`                                   |
+| `category_id`      | Only this category (archived allowed; system refused)   |
+| `wallet_id`        | Only this wallet (active wallets only; deleted refused) |
 
-`category_id` and `wallet_id` are mutually exclusive (400). A foreign,
-missing or system category, or a foreign, missing or deleted wallet, is the
-existing `403` of that resource. A breakdown row opens:
+- Filters combine with AND, together and with `from`/`to`. Without any of
+  them the endpoint behaves exactly as before.
+- A foreign or missing category, the system category, a foreign or missing
+  wallet, or a soft-deleted wallet is the existing `403`
+  (`FORBIDDEN_CATEGORY` / `FORBIDDEN_WALLET`), checked after membership.
+- A malformed value (`category_id=other`, `wallet_id=0`,
+  `transaction_type=transfer`, a repeated parameter) is `400` with the
+  standard `message: [{ field, error }]`.
+- There is no filter for Other or for deleted wallets: only items with
+  `opens_history: true` open the history. Inside Other, each child opens its
+  own history; `deleted_wallets` opens nothing.
+
+### Bounds
+
+The existing date semantics of the endpoint are unchanged: `from` and `to`
+are both **inclusive**, compared with millisecond precision; a value
+without `Z`/offset is the server's local time; absent bounds default to the
+server's current calendar month. The statistics bounds are therefore passed
+**verbatim**, as the ISO instants with `Z` the statistics endpoints return:
+
+```
+from = period.from          (first millisecond of the first local day)
+to   = period.actual_to     (as_of for a current period, otherwise period.to)
+```
+
+`period.to` is the last millisecond of the last local day (`…:59.999Z`),
+and `actual_to` is `as_of` itself, so nothing is shifted: a transaction
+stamped exactly at `to` is in both the statistics and the history, one a
+millisecond later is in neither. The client must not reformat, round or
+drop the milliseconds, and must not replace the instants with local dates.
+
+A breakdown row opens:
 
 ```
 GET /spaces/:spaceId/transactions?from={period.from}&to={period.actual_to}&category_id={id}
 GET /spaces/:spaceId/transactions?from={period.from}&to={period.actual_to}&wallet_id={id}&transaction_type=expense
 ```
 
-`from`/`to` are exact instants, so the history uses the statistics bounds
-whatever the server's zone, and its rows add up to the row's `amount`.
+The wallet row adds `transaction_type=expense` because the breakdown counts
+expenses only. With these bounds and filters the rows of the history add up
+exactly to the item's `amount`, in the same cycle and barring concurrent
+edits (see Consistency model). The history, unlike statistics, still lists
+starting balances; the filters above never match them (they are income on
+the system category).
 
 ## Worked examples
 
