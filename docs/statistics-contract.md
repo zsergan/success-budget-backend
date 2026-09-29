@@ -17,9 +17,8 @@ Anything marked _open_ needs sign-off before the stage that implements it.
 | Summary `income`, `expense`, `net`, `transactions_count`       | implemented |
 | Summary `previous`, `change`                                   | implemented |
 | Trend `totals`, `granularity`, `buckets`                       | implemented |
-| Breakdown `total` (control sum)                                | implemented |
-| Summary `last_transaction_date`                                | planned     |
-| Breakdown `by_category`, `by_wallet`, Other                    | planned     |
+| Summary `has_any_transactions`, `last_transaction_date`        | implemented |
+| Breakdown `total`, `by_category`, `by_wallet`, Other           | implemented |
 | History filters `category_id`, `wallet_id`, `transaction_type` | planned     |
 
 ## Endpoints
@@ -59,14 +58,16 @@ wallet tab never sends a request.
 6. **History is kept.** Transactions on archived categories and on
    soft-deleted wallets are counted everywhere. An archived category keeps
    its own row in the breakdown (`is_archived: true`); deleted wallets are
-   merged into one non-clickable `deleted_wallets` group.
+   merged into one service group, `deleted_wallets`, that opens no history.
 7. **No future transactions.** A transaction with `timestamp` after `as_of`
    is not part of any sum or count, even inside the selected period. The
    period's actual range ends at `min(period end, as_of)`.
 8. **Zero is not empty.** `"0.00"` does not mean there were no
    transactions: zero-amount transactions are valid, and income may equal
-   expense. Every sum is paired with a `count`; "no data" states are decided
-   by counts, never by amounts.
+   expense. Summary and Trend totals pair every sum with a `count`; "no
+   data" states are decided by counts, never by amounts. The breakdown is
+   the one exception: it draws shares, so it lists only groups with a
+   positive sum.
 9. **Exact money.** Sums are computed in integer cents (`SUM` strings parsed
    with `parseMoney`, arithmetic on `bigint`, `formatMoney` for output), as
    in `src/shared/utils/money.ts`. No amount is ever a JS `number` on the way.
@@ -178,15 +179,15 @@ The response carries the comparison bounds (`previous.start_date`,
   `roundPercentToTenth` (halves toward +∞). The client may round further for
   display.
 
-| Field              | Formula                                     | Zero base |
-| ------------------ | ------------------------------------------- | --------- |
-| `change.*.delta`   | `current − previous` (money string, signed) | —         |
-| `change.*.percent` | `(current − previous) / \|previous\| × 100` | `null`    |
-| `*.share_percent`  | `amount / total × 100`                      | `0`       |
+| Field               | Formula                                     | Zero base |
+| ------------------- | ------------------------------------------- | --------- |
+| `change.*.delta`    | `current − previous` (money string, signed) | —         |
+| `change.*.percent`  | `(current − previous) / \|previous\| × 100` | `null`    |
+| breakdown `percent` | `amount / total_amount × 100`               | —         |
 
 `percent` divides by `|previous|`, so a rise of a negative net is positive.
-`null` is the design's "No comparison". Shares are rounded one by one and
-may not add up to exactly `100.0`.
+`null` is the design's "No comparison". Breakdown percents are rounded one
+by one and may not add up to exactly `100.0`.
 
 ## Summary
 
@@ -222,7 +223,9 @@ interface StatisticsSummary {
     transactions_count: number;
   } | null; // null for custom and future periods
   change: { income: Change; expense: Change; net: Change } | null; // null with previous
-  // local date (in time_zone) of the latest transaction up to as_of, any period
+  // any statistics transaction up to as_of, in any period
+  has_any_transactions: boolean;
+  // local date (in time_zone) of the latest one; null exactly when has_any_transactions is false
   last_transaction_date: string | null;
 }
 ```
@@ -232,11 +235,11 @@ Screen states come from counts and dates, never from amounts:
 | Condition                               | State                                                    |
 | --------------------------------------- | -------------------------------------------------------- |
 | `period.state = 'future'`               | The period has not started; checked first                |
-| `last_transaction_date = null`          | Nothing to report yet (first run)                        |
+| `has_any_transactions = false`          | Nothing to report yet (first run)                        |
 | `transactions_count = 0`, date not null | Nothing in this period; "Your last one was on …", "Open" |
 | `transactions_count > 0`                | Data, even when every amount is `"0.00"`                 |
 | `change.x.percent = null`               | No comparison for that figure                            |
-| `expense.count = 0`                     | Breakdown shows "No expenses in this period"             |
+| `by_category.source_count = 0`          | Breakdown shows "No expenses in this period"             |
 
 Surplus / Deficit / Balanced is the sign of `net`, decided by the client.
 
@@ -294,33 +297,47 @@ apart from "no transactions".
 
 ## Breakdown
 
-`GET /spaces/:spaceId/statistics/breakdown` — expenses only.
+`GET /spaces/:spaceId/statistics/breakdown` — expenses only. Both groupings
+come in one response, ready to draw: the client repeats neither the money
+arithmetic nor the grouping.
 
 ```ts
-interface BreakdownBase {
+interface BreakdownItem {
+  kind: 'category' | 'wallet' | 'deleted_wallets' | 'other';
+  key: string; // stable: 'category:12', 'wallet:3', 'deleted_wallets', 'other'
+  id: number | null; // the category or wallet id; null for service groups
+  name: string | null; // null for service groups: the client names them
+  icon: CategoryIcon | null; // categories only
+  color: AppColor | null; // Category.color, Wallet.design; null for service groups
   amount: string;
-  count: number;
-  share_percent: number;
+  percent: number; // of total_amount, one decimal
+  is_archived: boolean; // archived category
+  opens_history: boolean; // true for categories (archived too) and wallets
 }
 
-interface CategoryItem extends BreakdownBase {
-  kind: 'category';
-  category: { id: number; name: string; icon: CategoryIcon; color: AppColor; is_archived: boolean };
-}
-
-interface WalletItem extends BreakdownBase {
-  kind: 'wallet';
-  wallet: { id: number; wallet_name: string; design: AppColor };
-}
-
-interface DeletedWalletsItem extends BreakdownBase {
+interface DeletedWalletsItem extends BreakdownItem {
   kind: 'deleted_wallets';
   wallets_count: number;
 }
 
-interface OtherItem<T> extends BreakdownBase {
+interface OtherItem extends BreakdownItem {
   kind: 'other';
-  items: T[]; // folded groups, same order rules
+  children: BreakdownItem[]; // the folded groups, sorted, inline
+}
+
+interface CategoryBreakdown {
+  total_amount: string;
+  source_count: number; // categories with a positive sum
+  primary_items: BreakdownItem[]; // kind 'category'
+  other: OtherItem | null;
+}
+
+interface WalletBreakdown {
+  total_amount: string;
+  source_count: number; // real wallets with a positive sum, deleted ones included
+  primary_items: BreakdownItem[]; // kind 'wallet', active wallets only
+  deleted_wallets: DeletedWalletsItem | null;
+  other: OtherItem | null;
 }
 
 interface StatisticsBreakdown {
@@ -328,34 +345,63 @@ interface StatisticsBreakdown {
   currency: string;
   // control sum, equal to Summary expense of the same cycle
   total: MoneyCount;
-  by_category: (CategoryItem | OtherItem<CategoryItem>)[];
-  by_wallet: (WalletItem | DeletedWalletsItem | OtherItem<WalletItem | DeletedWalletsItem>)[];
+  by_category: CategoryBreakdown;
+  by_wallet: WalletBreakdown;
 }
 ```
 
-- A group appears only with at least one expense in the actual range
-  (`count > 0`); its amount may be `"0.00"`. With `total.count = 0` both
-  lists are empty.
-- Shares are of `total`, including the members of Other.
-- Order: `amount` descending; ties by name (case-insensitive), then `id`;
-  `deleted_wallets` after regular wallets of the same amount.
-- `category` and `wallet` rows are clickable (history filter), archived
-  categories included. `deleted_wallets` merges all soft-deleted wallets of
-  the space; it is never clickable and never expands.
-- Category name, icon and color are the current values.
+- Sums per category and per wallet are computed in SQL (`GROUP BY`); only
+  the groups reach Node.js, never the transactions.
+- `total_amount` of each grouping is the sum of all its groups, so the
+  items and Other add up to it exactly.
+- Segments are drawn in this order: `primary_items`, then
+  `deleted_wallets`, then `other`. Other is always last, even when it is
+  larger than a primary item.
+- The center of the donut shows `source_count` ("10 categories"), not the
+  number of segments. Expanding Other changes neither the donut, the total
+  nor the count: its `children` are already in the response.
+- Category name, icon and color are the current values. Service groups
+  have no color token; the client uses its own, distinguishable neutral
+  shades for `deleted_wallets` and `other`.
+- Other is not a category: it has no id and opens no history. A real
+  category named "Other" is `kind: 'category'` with an id; the two are
+  told apart by `kind`, never by name.
 
 ### Other
 
-Each list is folded on its own, after sorting:
+One pure function (`foldGroups`) serves both groupings:
 
-1. With at most **6** groups, every group is shown and there is no Other.
-2. With more, the first 6 stay and the rest are folded into one `other`
-   item, appended last: its `amount` and `count` are the sums of its
-   members, its `items` are the members.
+1. Take the sums per group for the period; drop groups with a zero sum.
+2. Sort by sum descending; ties by id ascending.
+3. Keep as primary at most **6** groups whose share of the total is at
+   least **3%**. The share is checked on exact cents, before rounding.
+4. Fold the rest into Other: its `amount` is the exact sum of its children
+   and its `percent` is computed from that sum, so the children's rounded
+   percents may add up to 9.4 while Other shows 9.5.
+5. If no group reaches 3%, the largest one stays primary and the rest is
+   folded.
+6. With nothing left over there is no Other (`other: null`).
 
-`other` is an expandable aggregate, not a category or wallet in the
-database: it has no id and opens no history; its members are clickable as
-usual (a folded `deleted_wallets` stays non-clickable).
+Children are sorted like primary items; their percents are of the whole
+`total_amount`, not of Other. The 3% threshold (about 11° of the circle)
+and the limit of 6 are backend constants, not user settings; neither is
+taken from the mock-up data.
+
+| Distribution           | Result                                |
+| ---------------------- | ------------------------------------- |
+| One category, 100%     | One full ring, no Other               |
+| 50%, 30%, 20%          | Three primary groups                  |
+| 98%, 1%, 1%            | The largest group and Other of 2%     |
+| Ten mock-up categories | Six primary groups, four inside Other |
+| Eight about equal      | Six primary groups, two inside Other  |
+
+**Wallets.** The same function, with one service group added: all
+soft-deleted wallets with a positive sum form `deleted_wallets`. It is
+outside the threshold and never folded into Other, and it is `null` when
+its sum is zero. To stay within seven segments, primary wallets are
+limited to **5** when `deleted_wallets` is present and 6 otherwise. The
+threshold is still measured against the whole `total_amount`, deleted
+wallets included.
 
 ## Consistency model
 
@@ -513,80 +559,102 @@ Breakdown: `total: { "amount": "810.50", "count": 9 }`. `by_category`
 (`icon`/`color` omitted):
 
 ```json
-[
-  {
-    "kind": "category",
-    "category": { "id": 10, "name": "Groceries", "is_archived": false },
-    "amount": "500.00",
-    "count": 2,
-    "share_percent": 61.7
-  },
-  {
-    "kind": "category",
-    "category": { "id": 11, "name": "Restaurants", "is_archived": false },
-    "amount": "120.00",
-    "count": 1,
-    "share_percent": 14.8
-  },
-  {
-    "kind": "category",
-    "category": { "id": 14, "name": "Gifts", "is_archived": true },
-    "amount": "80.00",
-    "count": 1,
-    "share_percent": 9.9
-  },
-  {
-    "kind": "category",
-    "category": { "id": 12, "name": "Transport", "is_archived": false },
-    "amount": "70.00",
-    "count": 2,
-    "share_percent": 8.6
-  },
-  {
-    "kind": "category",
-    "category": { "id": 13, "name": "Health", "is_archived": false },
-    "amount": "25.50",
-    "count": 1,
-    "share_percent": 3.1
-  },
-  {
-    "kind": "category",
-    "category": { "id": 15, "name": "Pets", "is_archived": false },
-    "amount": "15.00",
-    "count": 1,
-    "share_percent": 1.9
-  },
-  {
+{
+  "total_amount": "810.50",
+  "source_count": 6,
+  "primary_items": [
+    {
+      "kind": "category",
+      "key": "category:10",
+      "id": 10,
+      "name": "Groceries",
+      "amount": "500.00",
+      "percent": 61.7,
+      "is_archived": false,
+      "opens_history": true
+    },
+    {
+      "kind": "category",
+      "key": "category:11",
+      "id": 11,
+      "name": "Restaurants",
+      "amount": "120.00",
+      "percent": 14.8,
+      "is_archived": false,
+      "opens_history": true
+    },
+    {
+      "kind": "category",
+      "key": "category:14",
+      "id": 14,
+      "name": "Gifts",
+      "amount": "80.00",
+      "percent": 9.9,
+      "is_archived": true,
+      "opens_history": true
+    },
+    {
+      "kind": "category",
+      "key": "category:12",
+      "id": 12,
+      "name": "Transport",
+      "amount": "70.00",
+      "percent": 8.6,
+      "is_archived": false,
+      "opens_history": true
+    },
+    {
+      "kind": "category",
+      "key": "category:13",
+      "id": 13,
+      "name": "Health",
+      "amount": "25.50",
+      "percent": 3.1,
+      "is_archived": false,
+      "opens_history": true
+    }
+  ],
+  "other": {
     "kind": "other",
-    "amount": "0.00",
-    "count": 1,
-    "share_percent": 0,
-    "items": [
+    "key": "other",
+    "id": null,
+    "name": null,
+    "icon": null,
+    "color": null,
+    "amount": "15.00",
+    "percent": 1.9,
+    "is_archived": false,
+    "opens_history": false,
+    "children": [
       {
         "kind": "category",
-        "category": { "id": 16, "name": "Fees", "is_archived": false },
-        "amount": "0.00",
-        "count": 1,
-        "share_percent": 0
+        "key": "category:15",
+        "id": 15,
+        "name": "Pets",
+        "amount": "15.00",
+        "percent": 1.9,
+        "is_archived": false,
+        "opens_history": true
       }
     ]
   }
-]
+}
 ```
 
-Seven categories: six stay, Fees is folded. Other is `"0.00"` yet not
-empty (`count: 1`).
+Health (25.50 of 810.50, 3.15%) passes the 3% threshold; Pets (1.85%) is
+folded although a primary slot is free. Fees (S8) has a zero sum and is
+left out, so `source_count` is 6, not 7.
 
 `by_wallet`:
 
-| `kind`            | Wallet | `amount` | `count` | `share_percent` |
-| ----------------- | ------ | -------- | ------- | --------------- |
-| `wallet`          | 1 Card | `560.00` | 4       | 69.1            |
-| `wallet`          | 2 Cash | `145.00` | 3       | 17.9            |
-| `deleted_wallets` | —      | `105.50` | 2       | 13              |
+| Part              | Item   | `amount` | `percent` |
+| ----------------- | ------ | -------- | --------- |
+| `primary_items`   | 1 Card | `560.00` | 69.1      |
+| `primary_items`   | 2 Cash | `145.00` | 17.9      |
+| `deleted_wallets` | —      | `105.50` | 13        |
 
-Savings (4) has no expenses and is absent; `deleted_wallets` has
-`wallets_count: 1`.
+`source_count: 3` (Card, Cash, Old card); `deleted_wallets.wallets_count:
+1`; `other: null`. Savings (4) has no expenses and is absent.
 
 ### Example 2 — current week, zone boundary, zero comparison
 
