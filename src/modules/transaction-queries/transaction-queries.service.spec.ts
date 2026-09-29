@@ -180,6 +180,25 @@ describe('TransactionQueriesService', () => {
       await service.getForAllWallets(9, from, to);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
+    });
+
+    it('adds only the filters that are set', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), {
+        transactionType: TransactionType.EXPENSE,
+        walletId: 3,
+      });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :transactionType', {
+        transactionType: 'expense',
+      });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.wallet_id = :walletId', { walletId: 3 });
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(
+        'transaction.category_id = :categoryId',
+        expect.anything(),
+      );
     });
   });
 

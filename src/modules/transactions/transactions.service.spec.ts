@@ -228,9 +228,53 @@ describe('TransactionsService', () => {
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-      expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to);
+      expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to, {});
+      expect(walletsService.getOne).not.toHaveBeenCalled();
+      expect(categoriesService.getOne).not.toHaveBeenCalled();
       expect(result[0].wallet).toBe(activeWallet);
       expect(result[1].wallet).toBeNull();
+    });
+
+    it('filters by an archived category of the space and by an active wallet', async () => {
+      categoriesService.getOne.mockResolvedValue(
+        buildCategory({ id: 5, space_id: spaceId, is_active: 0, archived_at: new Date() }),
+      );
+      transactionQueriesService.getForAllWallets.mockResolvedValue([]);
+      const filters = { transactionType: TransactionType.EXPENSE, categoryId: 5, walletId: 1 };
+
+      await service.getAll(userId, spaceId, from, to, filters);
+
+      expect(categoriesService.getOne).toHaveBeenCalledWith(5);
+      expect(walletsService.getOne).toHaveBeenCalledWith(1);
+      expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to, filters);
+    });
+
+    it.each([
+      ['missing', null],
+      ['of a different space', buildCategory({ id: 5, space_id: 20 })],
+      ['the system one', buildCategory({ id: 5, space_id: spaceId, is_system: 1 })],
+    ])('refuses a category filter that is %s', async (_, category) => {
+      categoriesService.getOne.mockResolvedValue(category as Category | null);
+
+      await expect(service.getAll(userId, spaceId, from, to, { categoryId: 5 })).rejects.toMatchObject({
+        message: ErrorMessages.FORBIDDEN_CATEGORY,
+        status: 403,
+      });
+      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['missing', null],
+      ['of a different space', buildWallet({ id: 1, space_id: 20 })],
+      ['soft-deleted', buildWallet({ id: 1, space_id: spaceId, is_deleted: 1, deleted_at: new Date() })],
+    ])('refuses a wallet filter that is %s', async (_, wallet) => {
+      walletsService.getOne.mockResolvedValue(wallet as Wallet | null);
+
+      await expect(service.getAll(userId, spaceId, from, to, { walletId: 1 })).rejects.toMatchObject({
+        message: ErrorMessages.FORBIDDEN_WALLET,
+        status: 403,
+      });
+      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
     });
   });
 

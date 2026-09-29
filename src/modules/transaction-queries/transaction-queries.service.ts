@@ -9,6 +9,12 @@ import { parseMoney, withRelations } from '@shared/utils';
 
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
+export interface TransactionFilters {
+  transactionType?: TransactionType;
+  categoryId?: number;
+  walletId?: number;
+}
+
 // in cents
 export interface WalletPeriodTotals {
   income: bigint;
@@ -150,16 +156,33 @@ export class TransactionQueriesService {
     return new Map(rows.map((row) => [Number(row.category_id), parseMoney(row.spent)]));
   }
 
-  async getForAllWallets(spaceId: number, from: Date, to: Date): Promise<LoadedTransaction[]> {
-    const transactions = await this.transactionRepository
+  async getForAllWallets(
+    spaceId: number,
+    from: Date,
+    to: Date,
+    filters: TransactionFilters = {},
+  ): Promise<LoadedTransaction[]> {
+    const query = this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
       .where('wallet.space_id = :spaceId', { spaceId })
       .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to })
-      .orderBy('transaction.timestamp', 'DESC')
-      .getMany();
+      .andWhere('transaction.timestamp <= :to', { to });
+
+    if (filters.transactionType) {
+      query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
+    }
+
+    if (filters.categoryId) {
+      query.andWhere('transaction.category_id = :categoryId', { categoryId: filters.categoryId });
+    }
+
+    if (filters.walletId) {
+      query.andWhere('transaction.wallet_id = :walletId', { walletId: filters.walletId });
+    }
+
+    const transactions = await query.orderBy('transaction.timestamp', 'DESC').getMany();
 
     return transactions.map((transaction) => withRelations(transaction, 'wallet', 'category'));
   }

@@ -16,8 +16,11 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { AuthedRequest } from '@shared/types';
+import { TransactionType } from '@shared/enums';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
 import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
+import { ParseOptionalEnumPipe } from '@shared/pipes/parse-optional-enum.pipe';
+import { ParseOptionalIdPipe } from '@shared/pipes/parse-optional-id.pipe';
 
 @ApiTags('transactions')
 @ApiBearerAuth()
@@ -48,8 +51,11 @@ export class TransactionsController {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
     @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
+    @Query('transaction_type', new ParseOptionalEnumPipe(TransactionType)) transactionType?: TransactionType,
+    @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
+    @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
   ) {
-    return this.transactionsService.getAll(req.user.id, spaceId, from, to);
+    return this.transactionsService.getAll(req.user.id, spaceId, from, to, { transactionType, categoryId, walletId });
   }
 
   @Delete(':transactionId')

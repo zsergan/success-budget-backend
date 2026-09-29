@@ -380,7 +380,7 @@ describe('Boundary type contract (e2e)', () => {
       const spy = jest.spyOn(transactionQueriesService, 'getForAllWallets');
 
       await api().get(`${base()}/transactions?from=2026-01-01&to=2026-01-31T23:59:59.999`).expect(200);
-      expect(spy).toHaveBeenLastCalledWith(spaceId, new Date(2026, 0, 1), new Date(2026, 0, 31, 23, 59, 59, 999));
+      expect(spy).toHaveBeenLastCalledWith(spaceId, new Date(2026, 0, 1), new Date(2026, 0, 31, 23, 59, 59, 999), {});
 
       await api().get(`${base()}/transactions`).expect(200);
       const now = new Date();
@@ -388,6 +388,7 @@ describe('Boundary type contract (e2e)', () => {
         spaceId,
         new Date(now.getFullYear(), now.getMonth(), 1),
         new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+        {},
       ]);
     });
 

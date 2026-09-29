@@ -61,7 +61,11 @@ describe('TransactionsController', () => {
 
     await controller.getAll(req, spaceId);
 
-    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, expect.any(Date), expect.any(Date));
+    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, expect.any(Date), expect.any(Date), {
+      transactionType: undefined,
+      categoryId: undefined,
+      walletId: undefined,
+    });
   });
 
   it('getAll passes an explicit period through', async () => {
@@ -74,8 +78,26 @@ describe('TransactionsController', () => {
 
     const result = await controller.getAll(req, spaceId, from, to);
 
-    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to);
+    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to, {
+      transactionType: undefined,
+      categoryId: undefined,
+      walletId: undefined,
+    });
     expect(result).toBe(transactions);
+  });
+
+  it('getAll passes the history filters through', async () => {
+    transactionsService.getAll.mockResolvedValue([]);
+    const from = new Date(2026, 0, 1);
+    const to = new Date(2026, 0, 31);
+
+    await controller.getAll(req, spaceId, from, to, TransactionType.EXPENSE, 5, 3);
+
+    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to, {
+      transactionType: TransactionType.EXPENSE,
+      categoryId: 5,
+      walletId: 3,
+    });
   });
 
   it('getLatest delegates to TransactionsService.getLatest', async () => {

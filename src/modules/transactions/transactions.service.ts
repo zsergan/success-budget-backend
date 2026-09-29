@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
+import type { Category } from '@entities/category.entity';
 import type { Wallet, WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { TransactionType } from '@shared/enums';
@@ -11,6 +12,7 @@ import { assertBelongsToSpace, moneyToNumber, parseMoney, toDate } from '@shared
 import {
   TransactionQueriesService,
   type LoadedTransaction,
+  type TransactionFilters,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
@@ -43,19 +45,8 @@ export class TransactionsService {
   ): Promise<CreateTransactionResult> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    const wallet = await this.walletsService.getOne(createTransactionDto.wallet_id);
-    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
-
-    if (wallet.is_deleted) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
-    }
-
-    const category = await this.categoriesService.getOne(createTransactionDto.category_id);
-    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
-
-    if (category.is_system) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
-    }
+    const wallet = await this.getActiveWallet(spaceId, createTransactionDto.wallet_id);
+    await this.getUserCategory(spaceId, createTransactionDto.category_id);
 
     const balances = await this.transactionQueriesService.getBalances([wallet.id]);
     const previousBalance = balances.get(wallet.id) ?? 0n;
@@ -82,10 +73,25 @@ export class TransactionsService {
     };
   }
 
-  async getAll(userId: number, spaceId: number, from: Date, to: Date): Promise<TransactionView[]> {
+  // An archived category is a valid filter: its history is kept.
+  async getAll(
+    userId: number,
+    spaceId: number,
+    from: Date,
+    to: Date,
+    filters: TransactionFilters = {},
+  ): Promise<TransactionView[]> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to);
+    if (filters.categoryId !== undefined) {
+      await this.getUserCategory(spaceId, filters.categoryId);
+    }
+
+    if (filters.walletId !== undefined) {
+      await this.getActiveWallet(spaceId, filters.walletId);
+    }
+
+    const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to, filters);
 
     return transactions.map((transaction) => this.toView(transaction));
   }
@@ -105,6 +111,29 @@ export class TransactionsService {
     assertBelongsToSpace(transaction?.wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
 
     await this.transactionRepository.delete(transaction.id);
+  }
+
+  private async getActiveWallet(spaceId: number, walletId: number): Promise<Wallet> {
+    const wallet = await this.walletsService.getOne(walletId);
+    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
+
+    if (wallet.is_deleted) {
+      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
+    }
+
+    return wallet;
+  }
+
+  // any category of the space but the system one, archived included
+  private async getUserCategory(spaceId: number, categoryId: number): Promise<Category> {
+    const category = await this.categoriesService.getOne(categoryId);
+    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+
+    if (category.is_system) {
+      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
+    }
+
+    return category;
   }
 
   // mutates the entity instead of copying it, so @Exclude() still applies
