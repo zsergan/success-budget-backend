@@ -1,171 +1,191 @@
 # Statistics API contract
 
-Contract for the mobile Stats tab: three independently loadable blocks
+Contract for the mobile Stats tab: three independently loaded blocks
 (Summary, Trend, Breakdown) for one space, plus history filters that let a
 user re-check every number in the transaction list. This document is the
 source of truth for the backend implementation and the mobile integration;
 the rules below apply to all three endpoints identically.
 
-Status: **draft, stage 1** — endpoints are not implemented yet. Anything
-marked _open_ needs sign-off before the stage that implements it.
+Anything marked _open_ needs sign-off before the stage that implements it.
+
+## Implementation status
+
+| Part                                                           | Status      |
+| -------------------------------------------------------------- | ----------- |
+| Routes, query parameters, validation, `as_of`, access check    | implemented |
+| `period` metadata, `currency`                                  | implemented |
+| Summary `income`, `expense`, `net`, `transactions_count`       | implemented |
+| Trend `totals`, Breakdown `total` (control sums)               | implemented |
+| Summary `previous`, `change`, `last_transaction_date`          | planned     |
+| Trend `granularity`, `buckets`                                 | planned     |
+| Breakdown `by_category`, `by_wallet`, Other                    | planned     |
+| History filters `category_id`, `wallet_id`, `transaction_type` | planned     |
 
 ## Endpoints
 
 All routes are under `/api/v1`, require the bearer token and membership in
-the space (a non-member gets the usual `403 FORBIDDEN_SPACE`).
+the space; a non-member gets the usual `403 FORBIDDEN_SPACE`.
 
-| Method | Route                                 | Block                                         |
-| ------ | ------------------------------------- | --------------------------------------------- |
-| `GET`  | `/spaces/:spaceId/stats/summary`      | Income, Expense, Net, previous-period compare |
-| `GET`  | `/spaces/:spaceId/stats/trend`        | Income/Expense/Net per bucket                 |
-| `GET`  | `/spaces/:spaceId/stats/breakdown`    | Expense split by category or wallet, Other    |
-| `GET`  | `/spaces/:spaceId/transactions` (ext) | History, new `category_id`/`wallet_id` filter |
+| Method | Route                                      | Block                                                 |
+| ------ | ------------------------------------------ | ----------------------------------------------------- |
+| `GET`  | `/spaces/:spaceId/statistics/summary`      | Income, Expense, Net, comparison with previous period |
+| `GET`  | `/spaces/:spaceId/statistics/trend`        | Income and Expense per bucket                         |
+| `GET`  | `/spaces/:spaceId/statistics/breakdown`    | Expenses by category **and** by wallet, with Other    |
+| `GET`  | `/spaces/:spaceId/transactions` (extended) | History filtered by category or wallet                |
 
-Each block is a separate request with the same period parameters, so the
-screen can load, fail and retry them independently. Every response echoes the
-resolved `period`, so blocks loaded at different moments can be checked for
-consistency by the client.
+The three blocks take the same query parameters and select transactions by
+the same rules. Each one fails on its own with an ordinary HTTP error (400,
+403, 5xx), so the screen can show a local error and retry just that block.
+Breakdown returns both groupings at once: switching the By category / By
+wallet tab never sends a request.
 
 ## Calculation rules
 
-1. **One space.** Statistics cover the selected space only: every wallet
-   of the space, including soft-deleted ones. There is no cross-space total.
-2. **Space currency.** All amounts are in `Space.currency` and returned as
-   `currency` (the currency code). There is no FX conversion; wallets and
+1. **One space.** Statistics cover the selected space only: every wallet of
+   the space, including soft-deleted ones. There is no cross-space total.
+2. **Space currency.** All amounts are in `Space.currency`, returned as
+   `currency` (its code). There is no FX conversion; wallets and
    transactions have no currency of their own.
 3. **Income excludes starting balances.** A transaction on the system
    category (`Category.is_system = 1`, "Initial balance") is excluded from
-   every statistic: income, counts, trend, breakdown, `has_any_transactions`.
-   The exclusion is by the system category, not by name or amount.
+   every statistic: sums, counts, trend, breakdown,
+   `last_transaction_date`. The exclusion is by the system category, not by
+   name or amount.
 4. **Type comes from the transaction.** A transaction counts as income or
    expense by `Transaction.transaction_type`, never by its category's type.
 5. **Net = Income − Expense.** Income and expense are non-negative sums;
-   net is signed.
+   net is signed. Net is not a wallet balance.
 6. **History is kept.** Transactions on archived categories and on
-   soft-deleted wallets are counted everywhere. Archived categories keep
-   their own row in the breakdown (`is_archived: true`); deleted wallets are
-   merged into one `deleted_wallets` group (see Breakdown).
-7. **No future transactions.** A transaction with `timestamp` after the
-   request's `now` is not part of any actual sum or count, even inside the
-   selected period. The period's actual range ends at `min(period end, now)`.
+   soft-deleted wallets are counted everywhere. An archived category keeps
+   its own row in the breakdown (`is_archived: true`); deleted wallets are
+   merged into one non-clickable `deleted_wallets` group.
+7. **No future transactions.** A transaction with `timestamp` after `as_of`
+   is not part of any sum or count, even inside the selected period. The
+   period's actual range ends at `min(period end, as_of)`.
 8. **Zero is not empty.** `"0.00"` does not mean there were no
    transactions: zero-amount transactions are valid, and income may equal
    expense. Every sum is paired with a `count`; "no data" states are decided
    by counts, never by amounts.
 9. **Exact money.** Sums are computed in integer cents (`SUM` strings parsed
-   with `parseMoney`, arithmetic on `bigint`, `formatMoney` for output) as in
-   `src/shared/utils/money.ts`. No amount is ever a JS `number` on the way.
-10. **One `now` per request.** `now` is read once per request and used for
-    the period, the actual range, the comparison window and bucket states.
+   with `parseMoney`, arithmetic on `bigint`, `formatMoney` for output), as
+   in `src/shared/utils/money.ts`. No amount is ever a JS `number` on the way.
+10. **One time boundary.** `as_of` bounds the transactions of every block
+    in a load cycle (see Consistency model).
 
-## Common query parameters
+## Query parameters
 
-| Param    | Type                                    | Required              | Meaning                                                           |
-| -------- | --------------------------------------- | --------------------- | ----------------------------------------------------------------- |
-| `period` | `week` \| `month` \| `year` \| `custom` | yes                   | Period kind                                                       |
-| `tz`     | IANA zone (`Europe/Moscow`)             | yes                   | Zone that defines days, weeks, months and years; `UTC` is valid   |
-| `date`   | `YYYY-MM-DD`                            | no, not with `custom` | Any day inside the wanted week/month/year; default: today in `tz` |
-| `from`   | `YYYY-MM-DD`                            | with `custom` only    | First local day, inclusive                                        |
-| `to`     | `YYYY-MM-DD`                            | with `custom` only    | Last local day, inclusive                                         |
+Shared by all three blocks.
 
-Validation (400, standard `message: [{ field, error }]` shape):
+| Param         | Type                                    | Required                  | Meaning                                                                 |
+| ------------- | --------------------------------------- | ------------------------- | ----------------------------------------------------------------------- |
+| `period`      | `week` \| `month` \| `year` \| `custom` | yes                       | Period kind                                                             |
+| `time_zone`   | IANA name (`Europe/Moscow`, `UTC`)      | yes                       | The device's zone; defines days, weeks, months and years                |
+| `anchor_date` | `YYYY-MM-DD`                            | no; not with `custom`     | Any day inside the wanted week/month/year; default: `as_of`'s local day |
+| `from_date`   | `YYYY-MM-DD`                            | with `custom`, only there | First local day, inclusive                                              |
+| `to_date`     | `YYYY-MM-DD`                            | with `custom`, only there | Last local day, inclusive                                               |
+| `as_of`       | ISO 8601 date-time with `Z` or offset   | no; default: server time  | Time boundary of the load cycle; echoed as `period.as_of`               |
 
-- `period` missing or not one of the four values;
-- `tz` missing or not a zone known to the runtime's `Intl` (offsets like
-  `+03:00` are rejected — they break on DST);
-- `date`/`from`/`to` not a strict `YYYY-MM-DD` calendar date, empty or
-  repeated;
-- `from`/`to` missing with `custom`, or present with another period; `date`
-  present with `custom`;
-- `from` after `to`; a custom range longer than **366 days** (_open_: cap);
-- a period that reaches outside the MySQL `TIMESTAMP` range (1970–2037).
+Validation errors are `400` with the standard `message: [{ field, error }]`
+shape:
 
-A period entirely in the future is valid: it resolves with
-`state: "future"` and zero sums.
+| Case                                                                                        | `field`                 |
+| ------------------------------------------------------------------------------------------- | ----------------------- |
+| `period` missing, unknown or repeated                                                       | `period`                |
+| `time_zone` missing, unknown or a fixed offset (`+03:00`: it ignores DST)                   | `time_zone`             |
+| a date that is not a real `YYYY-MM-DD` calendar date, empty or repeated                     | that date               |
+| `anchor_date` with `custom`; `from_date`/`to_date` with another period or missing on custom | that date               |
+| `from_date` after `to_date`; a custom period over **366** days (_open_: cap)                | `to_date`               |
+| `as_of` without `Z`/offset, outside the `TIMESTAMP` range, or in the future (below)         | `as_of`                 |
+| a period reaching outside the MySQL `TIMESTAMP` range (1970–2038)                           | `anchor_date`/`to_date` |
+| any other parameter                                                                         | its name                |
+
+`as_of` is in the future when it is more than **60 seconds** ahead of the
+server clock; that margin absorbs device clock drift. A value within the
+margin is used exactly as sent. An `as_of` after the selected period's end
+simply makes the period `past`.
 
 ## Periods
 
-All boundaries are computed in `tz`, then converted to instants.
+Boundaries are computed as local dates in `time_zone`, then converted to
+instants.
 
 | `period` | Local range                                                    |
 | -------- | -------------------------------------------------------------- |
-| `week`   | Monday through Sunday (ISO 8601 week) containing `date`        |
-| `month`  | First through last day of the calendar month containing `date` |
-| `year`   | January 1 through December 31 of the year containing `date`    |
-| `custom` | `from` through `to`                                            |
+| `week`   | Monday through Sunday containing the anchor day                |
+| `month`  | First through last day of the calendar month of the anchor day |
+| `year`   | January 1 through December 31 of the anchor day's year         |
+| `custom` | `from_date` through `to_date`                                  |
 
-A local day starts at its first existing instant in `tz` (midnight, or the
-first instant after a DST gap) and ends right before the next day starts.
-Days are therefore 23, 24 or 25 hours long; the range is never computed as
-"start + N × 24h".
+A local day starts at its first existing instant (midnight, or the end of a
+DST gap that skips midnight) and ends right before the next day starts, so
+days are 23, 24 or 25 hours long.
 
 ```ts
-interface StatsPeriod {
+interface StatisticsPeriod {
   type: 'week' | 'month' | 'year' | 'custom';
-  tz: string;
-  start_date: string; // local, YYYY-MM-DD, inclusive
-  end_date: string; // local, YYYY-MM-DD, inclusive
+  time_zone: string; // canonical IANA name
+  start_date: string; // local YYYY-MM-DD, inclusive
+  end_date: string; // local YYYY-MM-DD, inclusive
   from: string; // ISO instant (UTC, ms) of start_date's first moment
   to: string; // ISO instant of end_date's last millisecond
-  actual_to: string | null; // min(to, now); null when state = 'future'
+  as_of: string; // the applied time boundary
+  actual_to: string | null; // min(to, as_of); null when state = 'future'
   state: 'past' | 'current' | 'future';
 }
 ```
 
-- `past`: `to < now`; `actual_to = to`.
-- `current`: `from <= now <= to`; `actual_to = now`.
-- `future`: `from > now`; `actual_to = null`, every sum is `"0.00"` and
+- `past`: `as_of > to`; `actual_to = to`.
+- `current`: `from <= as_of <= to`; `actual_to = as_of`.
+- `future`: `as_of < from`; `actual_to = null`, every sum is `"0.00"` and
   every count `0`.
 
 Transactions are selected with `from <= timestamp <= actual_to`, inclusive
-on both ends like the existing history filter, so `from`/`actual_to` can be
+on both ends like the history filter, so `from` and `actual_to` can be
 passed to `GET /transactions` unchanged.
 
-### Previous period (comparison)
+### Previous period
 
-| `period`              | Previous period                               |
-| --------------------- | --------------------------------------------- |
-| `week`/`month`/`year` | The preceding calendar week/month/year        |
-| `custom` (N days)     | The N days ending the day before `start_date` |
+Summary compares a standard period with the previous one of the same kind:
+the preceding week, month or year. **Custom periods have no comparison**
+(`previous` and `change` are `null`).
 
-When the selected period is `current`, the comparison is like-for-like: the
-previous period is cut at the **same position** at the **same local wall
-clock time** as `now`, so a month in progress is not compared to a whole
-month.
+A `current` period is compared like-for-like: the previous period is cut at
+the same position, at the same local wall-clock time as `as_of` (September 1
+to 28 at 15:00 against August 1 to 28 at 15:00, not all of August).
 
 | `period` | Same position                                                         |
 | -------- | --------------------------------------------------------------------- |
 | `week`   | Same weekday                                                          |
 | `month`  | Same day of month, clamped to the previous month's last day (31 → 30) |
 | `year`   | Same month and day, Feb 29 → Feb 28                                   |
-| `custom` | Same day offset from the start                                        |
 
-The cut instant is clamped to the previous period's `to`. When the selected
-period is `past` or `future`, the whole previous period is used, still
-limited to `now` by rule 7 (the previous period of a future month may be the
-current one).
+A `past` period is compared with the whole previous period. A `future`
+period has an empty current side; its previous period is cut at `as_of`
+like any other.
 
 ## Money and percentages
 
-- Money is a decimal **string** with exactly two decimals, `-` for negatives
-  only: `"1234.50"`, `"0.00"`, `"-510.50"`. No thousands separator, no
+- Money is a decimal **string** with exactly two decimals and `-` only for
+  negatives: `"1234.50"`, `"0.00"`, `"-510.50"`. No thousands separator, no
   currency sign. (Older endpoints return numbers; the new API does not.)
 - Sums may exceed the per-amount input range `99999999.99`.
 - Percentages are JSON **numbers** with one decimal, computed from cents by
-  `roundPercentToTenth` (halves toward +∞).
+  `roundPercentToTenth` (halves toward +∞). The client may round further for
+  display.
 
-| Field                   | Formula                                     | When the base is zero |
-| ----------------------- | ------------------------------------------- | --------------------- |
-| `change.*.delta`        | `current − previous` (money string, signed) | —                     |
-| `change.*.percent`      | `(current − previous) / \|previous\| × 100` | `null`                |
-| `items[].share_percent` | `amount / total × 100`                      | `0`                   |
+| Field              | Formula                                     | Zero base |
+| ------------------ | ------------------------------------------- | --------- |
+| `change.*.delta`   | `current − previous` (money string, signed) | —         |
+| `change.*.percent` | `(current − previous) / \|previous\| × 100` | `null`    |
+| `*.share_percent`  | `amount / total × 100`                      | `0`       |
 
-`percent` uses `|previous|` so a rise of a negative net is still positive.
-Shares are rounded one by one and may not add up to exactly `100.0`.
+`percent` divides by `|previous|`, so a rise of a negative net is positive.
+`null` is the design's "No comparison". Shares are rounded one by one and
+may not add up to exactly `100.0`.
 
 ## Summary
 
-`GET /spaces/:spaceId/stats/summary?period=&tz=[&date=|&from=&to=]`
+`GET /spaces/:spaceId/statistics/summary`
 
 ```ts
 interface MoneyCount {
@@ -178,8 +198,8 @@ interface Change {
   percent: number | null;
 }
 
-interface StatsSummary {
-  period: StatsPeriod;
+interface StatisticsSummary {
+  period: StatisticsPeriod;
   currency: string;
   income: MoneyCount;
   expense: MoneyCount;
@@ -194,34 +214,37 @@ interface StatsSummary {
     expense: MoneyCount;
     net: string;
     transactions_count: number;
-  };
-  change: {
-    income: Change;
-    expense: Change;
-    net: Change;
-  };
-  // any non-system transaction in the space up to now, in any period
-  has_any_transactions: boolean;
+  } | null; // null for custom
+  change: { income: Change; expense: Change; net: Change } | null;
+  // local date (in time_zone) of the latest transaction up to as_of, any period
+  last_transaction_date: string | null;
 }
 ```
 
-Screen states come from counts: `has_any_transactions = false` → first-run
-empty state; `transactions_count = 0` → "no transactions in this period";
-otherwise data (even when every amount is `"0.00"`).
-`previous.transactions_count = 0` → no comparison to show.
+Screen states come from counts and dates, never from amounts:
+
+| Condition                               | State                                                    |
+| --------------------------------------- | -------------------------------------------------------- |
+| `last_transaction_date = null`          | Nothing to report yet (first run)                        |
+| `transactions_count = 0`, date not null | Nothing in this period; "Your last one was on …", "Open" |
+| `transactions_count > 0`                | Data, even when every amount is `"0.00"`                 |
+| `change.x.percent = null`               | No comparison for that figure                            |
+| `expense.count = 0`                     | Breakdown shows "No expenses in this period"             |
+
+Surplus / Deficit / Balanced is the sign of `net`, decided by the client.
 
 ## Trend
 
-`GET /spaces/:spaceId/stats/trend?period=&tz=[&date=|&from=&to=]`
+`GET /spaces/:spaceId/statistics/trend`
 
-| `period`            | Granularity | Buckets                                    |
-| ------------------- | ----------- | ------------------------------------------ |
-| `week`              | `day`       | 7                                          |
-| `month`             | `day`       | 28–31                                      |
-| `year`              | `month`     | 12                                         |
-| `custom` ≤ 31 days  | `day`       | one per day                                |
-| `custom` ≤ 182 days | `week`      | ISO weeks, first/last clipped to the range |
-| `custom` > 182 days | `month`     | calendar months, first/last clipped        |
+| `period`           | `granularity` | Buckets                                                |
+| ------------------ | ------------- | ------------------------------------------------------ |
+| `week`             | `day`         | 7                                                      |
+| `month`            | `week`        | 4–6 calendar weeks from Monday, clipped to the month   |
+| `year`             | `month`       | 12                                                     |
+| `custom` ≤ 14 days | `day`         | one per day                                            |
+| `custom` ≤ 92 days | `week`        | weeks from Monday, first and last clipped to the range |
+| `custom` > 92 days | `month`       | calendar months, first and last clipped to the range   |
 
 ```ts
 interface TrendBucket {
@@ -230,30 +253,28 @@ interface TrendBucket {
   from: string;
   to: string;
   state: 'past' | 'current' | 'future';
-  income: string | null; // null only when state = 'future'
-  expense: string | null;
-  net: string | null;
-  count: number;
+  income: MoneyCount | null; // null only when state = 'future'
+  expense: MoneyCount | null;
 }
 
-interface StatsTrend {
-  period: StatsPeriod;
+interface StatisticsTrend {
+  period: StatisticsPeriod;
   currency: string;
+  // control sums, equal to Summary income/expense of the same cycle
+  totals: { income: MoneyCount; expense: MoneyCount };
   granularity: 'day' | 'week' | 'month';
   buckets: TrendBucket[]; // chronological, covering the whole period
 }
 ```
 
-Buckets always cover the whole period so the chart axis is stable. A
-`future` bucket has `null` amounts (not drawn), a `current` one covers
-`from..now`. Bucket sums add up exactly to the Summary of the same request
-parameters.
+Buckets always cover the whole period, so the axis is stable. A `future`
+bucket has `null` values (no bars); a past bucket with no transactions has
+`"0.00"` values (a baseline mark). A `current` bucket covers
+`from..as_of`. The buckets add up exactly to `totals`.
 
 ## Breakdown
 
-`GET /spaces/:spaceId/stats/breakdown?period=&tz=&group_by=category|wallet[&date=|&from=&to=]`
-
-Expenses only. `group_by` is required (400 otherwise).
+`GET /spaces/:spaceId/statistics/breakdown` — expenses only.
 
 ```ts
 interface BreakdownBase {
@@ -272,84 +293,108 @@ interface WalletItem extends BreakdownBase {
   wallet: { id: number; wallet_name: string; design: AppColor };
 }
 
-interface OtherItem extends BreakdownBase {
-  kind: 'other';
-  items: (CategoryItem | WalletItem)[]; // members, same order rules
-}
-
 interface DeletedWalletsItem extends BreakdownBase {
   kind: 'deleted_wallets';
   wallets_count: number;
 }
 
-interface StatsBreakdown {
-  period: StatsPeriod;
+interface OtherItem<T> extends BreakdownBase {
+  kind: 'other';
+  items: T[]; // folded groups, same order rules
+}
+
+interface StatisticsBreakdown {
+  period: StatisticsPeriod;
   currency: string;
-  group_by: 'category' | 'wallet';
-  total: MoneyCount; // equals Summary expense
-  items: (CategoryItem | WalletItem | OtherItem | DeletedWalletsItem)[];
+  // control sum, equal to Summary expense of the same cycle
+  total: MoneyCount;
+  by_category: (CategoryItem | OtherItem<CategoryItem>)[];
+  by_wallet: (WalletItem | DeletedWalletsItem | OtherItem<WalletItem | DeletedWalletsItem>)[];
 }
 ```
 
-- A group appears only if it has at least one expense in the actual range
-  (`count > 0`); its amount may be `"0.00"`.
-- Item order: regular items by `amount` desc, ties by name (case-insensitive)
-  then `id` asc; then `other`; then `deleted_wallets`.
-- `category`/`wallet` items are clickable (history filter). `other` is an
-  expandable aggregate, not a category or wallet in the database, and has no
-  id. `deleted_wallets` is **not clickable** and never expands; it merges all
-  soft-deleted wallets of the space.
-- Category names/icons/colors are the current values, archived included.
+- A group appears only with at least one expense in the actual range
+  (`count > 0`); its amount may be `"0.00"`. With `total.count = 0` both
+  lists are empty.
+- Shares are of `total`, including the members of Other.
+- Order: `amount` descending; ties by name (case-insensitive), then `id`;
+  `deleted_wallets` after regular wallets of the same amount.
+- `category` and `wallet` rows are clickable (history filter), archived
+  categories included. `deleted_wallets` merges all soft-deleted wallets of
+  the space; it is never clickable and never expands.
+- Category name, icon and color are the current values.
 
 ### Other
 
-Applied to regular items only (never to `deleted_wallets`), after sorting,
-with exact cent comparisons (`amount × 100 < total × 5`, no rounded shares):
+Each list is folded on its own, after sorting:
 
-1. Keep the first **5** items visible. _(open: constant)_
-2. Of those, an item whose amount is below **5 %** of `total` moves to
-   Other. _(open: constant)_
-3. Every item after the fifth moves to Other.
-4. If Other ends up with exactly one item, that item stays visible and there
-   is no Other.
-5. `other.amount`/`count` are the sums of its members; members keep their
-   own `share_percent` of the full total.
+1. With at most **6** groups, every group is shown and there is no Other.
+2. With more, the first 6 stay and the rest are folded into one `other`
+   item, appended last: its `amount` and `count` are the sums of its
+   members, its `items` are the members.
 
-> _Open:_ the product plan refers to an Other algorithm that was not part of
-> the stage 1 brief. The rules above are the backend's proposal and must be
-> replaced verbatim if the plan defines them differently.
+`other` is an expandable aggregate, not a category or wallet in the
+database: it has no id and opens no history; its members are clickable as
+usual (a folded `deleted_wallets` stays non-clickable).
+
+## Consistency model
+
+A **load cycle** is one set of Summary, Trend and Breakdown requests for the
+same period. It starts when the screen opens, the period changes or the user
+refreshes.
+
+1. The client takes the device time once, as an instant with `Z`, and sends
+   it as `as_of` with identical parameters to all three blocks.
+2. Retrying a failed block reuses the cycle's parameters and `as_of`.
+3. Each response echoes the applied `period`; within a cycle all three must
+   be equal.
+4. `as_of` bounds transaction timestamps, not database state. The requests
+   are separate reads with **no shared snapshot**: a transaction created,
+   edited or deleted by any member between them (for example one backdated
+   to the selected period) can show up in only some of the responses. The
+   API does not promise an atomic view under concurrent editing.
+5. To detect that, the client compares the control sums with Summary, both
+   `amount` and `count`: `trend.totals.income`/`expense` with
+   `summary.income`/`expense`, and `breakdown.total` with `summary.expense`.
+6. On a mismatch the client starts **one** new cycle with a new `as_of`. If
+   the new cycle still disagrees, it shows the new data as they are and
+   does not reload again on its own; the next manual refresh or period
+   change starts over.
+7. If `as_of` is rejected as in the future (device clock far ahead), the
+   client repeats the cycle once without `as_of` and uses the `period.as_of`
+   of the first response for the blocks it has not requested yet.
 
 ## History filters (drill-down)
 
-`GET /spaces/:spaceId/transactions` gains two optional, mutually exclusive
-query parameters:
+`GET /spaces/:spaceId/transactions` gains optional query parameters:
 
-| Param         | Meaning                                                                |
-| ------------- | ---------------------------------------------------------------------- |
-| `category_id` | Only transactions of this category (archived allowed, system rejected) |
-| `wallet_id`   | Only transactions of this wallet (active wallets only)                 |
+| Param              | Meaning                                                               |
+| ------------------ | --------------------------------------------------------------------- |
+| `category_id`      | Only this category's transactions (archived allowed, system rejected) |
+| `wallet_id`        | Only this wallet's transactions (active wallets only)                 |
+| `transaction_type` | `income` or `expense`                                                 |
 
-A foreign, missing or system category, and a foreign, missing or deleted
-wallet, is the existing `403` of that resource; both parameters at once is a 400. To reproduce a breakdown item, the client calls:
+`category_id` and `wallet_id` are mutually exclusive (400). A foreign,
+missing or system category, or a foreign, missing or deleted wallet, is the
+existing `403` of that resource. A breakdown row opens:
 
 ```
 GET /spaces/:spaceId/transactions?from={period.from}&to={period.actual_to}&category_id={id}
+GET /spaces/:spaceId/transactions?from={period.from}&to={period.actual_to}&wallet_id={id}&transaction_type=expense
 ```
 
-`from`/`to` are exact instants, so the history uses the same bounds as the
-statistics regardless of the server's zone. The history list still contains
-starting-balance transactions for a wallet filter; they have
-`transaction_type: "income"` and do not affect the expense breakdown.
+`from`/`to` are exact instants, so the history uses the statistics bounds
+whatever the server's zone, and its rows add up to the row's `amount`.
 
 ## Worked examples
 
-Fixed test clock: **now = `2026-09-28T12:00:00.000Z`** (Monday, 15:00 in
+Fixed test clock: **`as_of = 2026-09-28T12:00:00.000Z`** (Monday, 15:00 in
 `Europe/Moscow`, UTC+3 without DST). The data set, amounts and names are
-test fixtures only; nothing here (a 30-day month, 5 visible categories in a
-design mock, a specific currency) is an application constant.
+test fixtures only; nothing here (and nothing in the design mock-ups) is an
+application constant.
 
-Space currency `EUR`. Wallets: `1` Card, `2` Cash, `4` Savings (active), `3`
-Old card (deleted). Categories: `10` Groceries, `11` Restaurants, `12`
+Space currency `EUR`. Wallets: `1` Card, `2` Cash, `4` Savings (active),
+`3` Old card (deleted). Categories: `10` Groceries, `11` Restaurants, `12`
 Transport, `13` Health, `14` Gifts (archived), `15` Pets, `16` Fees, `20`
 Salary (income), `99` Initial balance (system).
 
@@ -370,22 +415,22 @@ Salary (income), `99` Initial balance (system).
 | S8  | 2026-09-21 09:00 | expense | Fees            | 1      | 0.00    | zero amount                        |
 | S9  | 2026-09-27 23:30 | expense | Groceries       | 1      | 49.75   | `2026-09-27T20:30Z`                |
 | S10 | 2026-09-28 00:30 | expense | Transport       | 2      | 10.00   | `2026-09-27T21:30Z`: Sep 27 in UTC |
-| F1  | 2026-09-29 10:00 | expense | Groceries       | 1      | 500.00  | future: excluded                   |
+| F1  | 2026-09-29 10:00 | expense | Groceries       | 1      | 500.00  | after `as_of`: excluded            |
 
 ### Example 1 — current month
 
-`GET /stats/summary?period=month&tz=Europe/Moscow` (`date` defaults to
-2026-09-28):
+`GET /statistics/summary?period=month&time_zone=Europe/Moscow&as_of=2026-09-28T12:00:00.000Z`
 
 ```json
 {
   "period": {
     "type": "month",
-    "tz": "Europe/Moscow",
+    "time_zone": "Europe/Moscow",
     "start_date": "2026-09-01",
     "end_date": "2026-09-30",
     "from": "2026-08-31T21:00:00.000Z",
     "to": "2026-09-30T20:59:59.999Z",
+    "as_of": "2026-09-28T12:00:00.000Z",
     "actual_to": "2026-09-28T12:00:00.000Z",
     "state": "current"
   },
@@ -409,26 +454,27 @@ Salary (income), `99` Initial balance (system).
     "expense": { "delta": "510.50", "percent": 170.2 },
     "net": { "delta": "-510.50", "percent": -18.9 }
   },
-  "has_any_transactions": true
+  "last_transaction_date": "2026-09-28"
 }
 ```
 
-S0 (starting balance) and F1 (future) are excluded; S5/S6 (deleted wallet,
-archived category) and S8 (zero amount) are included. A4 is after the cut
-at Aug 28 15:00 MSK.
+S0 (starting balance) and F1 (after `as_of`) are excluded; S5/S6 (deleted
+wallet, archived category) and S8 (zero amount) are included. A4 is after
+the cut at August 28, 15:00 MSK. The latest transaction, S10, is on
+September 28 in Moscow.
 
-Trend for the same parameters: `granularity: "day"`, 30 buckets. Selected
-buckets:
+Trend: `granularity: "week"`, `totals` equal to the Summary figures.
 
-| `start_date` | `state`   | `income`  | `expense` | `net`     | `count` |
-| ------------ | --------- | --------- | --------- | --------- | ------- |
-| 2026-09-01   | `past`    | `3000.00` | `0.00`    | `3000.00` | 1       |
-| 2026-09-21   | `past`    | `0.00`    | `0.00`    | `0.00`    | 1       |
-| 2026-09-27   | `past`    | `0.00`    | `49.75`   | `-49.75`  | 1       |
-| 2026-09-28   | `current` | `0.00`    | `10.00`   | `-10.00`  | 1       |
-| 2026-09-29   | `future`  | `null`    | `null`    | `null`    | 0       |
+| `start_date` | `end_date` | `state`   | `income`      | `expense`    |
+| ------------ | ---------- | --------- | ------------- | ------------ |
+| 2026-09-01   | 2026-09-06 | `past`    | `3000.00` / 1 | `570.25` / 2 |
+| 2026-09-07   | 2026-09-13 | `past`    | `0.00` / 0    | `140.00` / 2 |
+| 2026-09-14   | 2026-09-20 | `past`    | `0.00` / 0    | `40.50` / 2  |
+| 2026-09-21   | 2026-09-27 | `past`    | `0.00` / 0    | `49.75` / 2  |
+| 2026-09-28   | 2026-09-30 | `current` | `0.00` / 0    | `10.00` / 1  |
 
-Breakdown `group_by=category` (total `810.50`, 9):
+Breakdown: `total: { "amount": "810.50", "count": 9 }`. `by_category`
+(`icon`/`color` omitted):
 
 ```json
 [
@@ -461,25 +507,25 @@ Breakdown `group_by=category` (total `810.50`, 9):
     "share_percent": 8.6
   },
   {
+    "kind": "category",
+    "category": { "id": 13, "name": "Health", "is_archived": false },
+    "amount": "25.50",
+    "count": 1,
+    "share_percent": 3.1
+  },
+  {
+    "kind": "category",
+    "category": { "id": 15, "name": "Pets", "is_archived": false },
+    "amount": "15.00",
+    "count": 1,
+    "share_percent": 1.9
+  },
+  {
     "kind": "other",
-    "amount": "40.50",
-    "count": 3,
-    "share_percent": 5,
+    "amount": "0.00",
+    "count": 1,
+    "share_percent": 0,
     "items": [
-      {
-        "kind": "category",
-        "category": { "id": 13, "name": "Health", "is_archived": false },
-        "amount": "25.50",
-        "count": 1,
-        "share_percent": 3.1
-      },
-      {
-        "kind": "category",
-        "category": { "id": 15, "name": "Pets", "is_archived": false },
-        "amount": "15.00",
-        "count": 1,
-        "share_percent": 1.9
-      },
       {
         "kind": "category",
         "category": { "id": 16, "name": "Fees", "is_archived": false },
@@ -492,11 +538,10 @@ Breakdown `group_by=category` (total `810.50`, 9):
 ]
 ```
 
-(`icon`/`color` omitted for brevity.) Health, Pets and Fees are each under
-5 % of the total, so they form Other. Other's own share (`40.50 / 810.50` =
-4.997 %) rounds to `5` but is not re-checked against the threshold.
+Seven categories: six stay, Fees is folded. Other is `"0.00"` yet not
+empty (`count: 1`).
 
-Breakdown `group_by=wallet` (total `810.50`, 9):
+`by_wallet`:
 
 | `kind`            | Wallet | `amount` | `count` | `share_percent` |
 | ----------------- | ------ | -------- | ------- | --------------- |
@@ -509,42 +554,49 @@ Savings (4) has no expenses and is absent; `deleted_wallets` has
 
 ### Example 2 — current week, zone boundary, zero comparison
 
-`GET /stats/summary?period=week&tz=Europe/Moscow`: week 2026-09-28 …
-2026-10-04, `from: "2026-09-27T21:00:00.000Z"`. S10 (`2026-09-27T21:30Z`)
-belongs to this week in Moscow; with `tz=UTC` it would belong to the
-previous week.
+`period=week&time_zone=Europe/Moscow`: week 2026-09-28 … 2026-10-04,
+`from: "2026-09-27T21:00:00.000Z"`. S10 (`2026-09-27T21:30Z`) belongs to
+this week in Moscow; with `time_zone=UTC` it belongs to the previous week.
 
-- `expense: { "amount": "10.00", "count": 1 }`, `income: { "amount": "0.00", "count": 0 }`, `net: "-10.00"`.
-- Previous: week 2026-09-21 …, cut at `2026-09-21T12:00:00.000Z` (Monday
-  15:00 MSK): only S8, so `expense: { "amount": "0.00", "count": 1 }`.
-- `change.expense: { "delta": "10.00", "percent": null }` — base is zero,
-  though the previous period is not empty (`transactions_count: 1`).
+- `income: { "amount": "0.00", "count": 0 }`, `expense: { "amount": "10.00", "count": 1 }`, `net: "-10.00"`.
+- Previous: week 2026-09-21 … 2026-09-27, cut at `2026-09-21T12:00:00.000Z`
+  (Monday 15:00 MSK): only S8, `expense: { "amount": "0.00", "count": 1 }`.
+- `change.expense: { "delta": "10.00", "percent": null }`: the base is zero
+  though the previous period is not empty.
+- Trend: 7 `day` buckets; Tuesday to Sunday are `future` with `null` values.
 
 ### Example 3 — past custom range
 
-`GET /stats/summary?period=custom&from=2026-09-10&to=2026-09-20&tz=Europe/Moscow`:
+`period=custom&from_date=2026-09-10&to_date=2026-09-20&time_zone=Europe/Moscow`:
 11 days, `state: "past"`, `actual_to = to = "2026-09-20T20:59:59.999Z"`.
-Previous: 2026-08-30 … 2026-09-09 (11 days, whole).
 
-|         | Current (S5, S6, S7) | Previous (S1–S4; S0 excluded) | `delta`    | `percent` |
-| ------- | -------------------- | ----------------------------- | ---------- | --------- |
-| income  | `0.00` / 0           | `3000.00` / 1                 | `-3000.00` | -100      |
-| expense | `120.50` / 3         | `630.25` / 3                  | `-509.75`  | -80.9     |
-| net     | `-120.50`            | `2369.75`                     | `-2490.25` | -105.1    |
+- `income: { "amount": "0.00", "count": 0 }`, `expense: { "amount": "120.50", "count": 3 }` (S5, S6, S7), `net: "-120.50"`.
+- `previous: null`, `change: null`.
+- Trend: 11 `day` buckets, all `past`.
 
-Trend: `granularity: "day"`, 11 buckets, all `past`.
+A custom 2026-07-01 … 2026-09-28 (90 days) is `current` and trends by
+`week`: 14 buckets, the first 2026-07-01 … 2026-07-05, the last
+2026-09-28 … 2026-09-28.
 
-### Example 4 — DST day
+### Example 4 — year and a future month
 
-`tz=Europe/Berlin`, `period=week&date=2026-10-25`: week 2026-10-19 …
-2026-10-25, `from: "2026-10-18T22:00:00.000Z"` (CEST, UTC+2),
-`to: "2026-10-25T22:59:59.999Z"` (CET, UTC+1). The Oct 25 trend bucket is 25
-hours long: `from: "2026-10-24T22:00:00.000Z"`, `to:
-"2026-10-25T22:59:59.999Z"`. With the fixed `now` the week is `future`.
+- `period=year`: 2026-01-01 … 2026-12-31, `current`; previous 2025 cut at
+  `2025-09-28T12:00:00.000Z`. Trend: 12 `month` buckets, October to
+  December `future`.
+- `period=month&anchor_date=2027-02-10`: `future`, all zeros; trend
+  `week`, 4 buckets (February 2027 starts on a Monday), all `future`.
+
+### Example 5 — DST
+
+`time_zone=Europe/Berlin&period=week&anchor_date=2026-10-25`: week
+2026-10-19 … 2026-10-25, `from: "2026-10-18T22:00:00.000Z"` (CEST, UTC+2),
+`to: "2026-10-25T22:59:59.999Z"` (CET, UTC+1). The October 25 bucket is 25
+hours long: `from: "2026-10-24T22:00:00.000Z"`,
+`to: "2026-10-25T22:59:59.999Z"`.
 
 ## Out of scope
 
 - Income breakdown, cross-space or multi-currency statistics.
-- Planned/recurring transactions: the model has none; a future-dated
-  transaction is simply excluded until its time comes.
-- Caching: every request is computed from the transaction table.
+- Planned or recurring transactions: the model has none; a transaction
+  dated after `as_of` is simply not counted yet.
+- A database snapshot shared by the three blocks, and caching.
