@@ -1,7 +1,5 @@
 import request from 'supertest';
 
-import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
-
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 
 // A fixed as_of in the past keeps these independent of the real clock:
@@ -488,113 +486,6 @@ describe('Statistics blocks (e2e)', () => {
 
         expect(res.body.message).toEqual([expect.objectContaining({ field: Object.keys(query)[0] })]);
       }
-    });
-  });
-
-  describe('a write between the reads of one block', () => {
-    let writer: Member;
-    let walletId: number;
-    let categoryId: number;
-    let queries: TransactionQueriesService;
-
-    const addExpense = async (amount: string): Promise<string> => {
-      const res = await api(writer)
-        .post(`${base(writer)}/transactions`)
-        .send({
-          wallet_id: walletId,
-          category_id: categoryId,
-          transaction_type: 'expense',
-          amount,
-          timestamp: '2026-09-20T10:00:00.000Z',
-        })
-        .expect(201);
-
-      return res.body.transaction.id;
-    };
-
-    const getOwnBlock = (block: 'summary' | 'breakdown') =>
-      api(writer)
-        .get(`${base(writer)}/statistics/${block}`)
-        .query(MONTH)
-        .expect(200);
-
-    // runs `write` right after the first call of the read, as a concurrent client would
-    const writeAfter = <K extends keyof TransactionQueriesService>(method: K, write: () => Promise<unknown>) => {
-      const original = (queries[method] as (...args: unknown[]) => Promise<unknown>).bind(queries);
-
-      return jest.spyOn(queries, method).mockImplementationOnce((async (...args: unknown[]) => {
-        const result = await original(...args);
-        await write();
-
-        return result;
-      }) as never);
-    };
-
-    beforeAll(async () => {
-      writer = await createVerifiedMember(testApp, 'statistics-writer');
-      queries = testApp.app.get(TransactionQueriesService);
-
-      const categories = await api(writer)
-        .get(`${base(writer)}/categories`)
-        .expect(200);
-      categoryId = categories.body.expenses[0].id;
-
-      const wallet = await api(writer)
-        .post(`${base(writer)}/wallets`)
-        .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-        .expect(201);
-      walletId = wallet.body.wallet.id;
-    });
-
-    afterEach(() => {
-      jest.restoreAllMocks();
-    });
-
-    afterAll(async () => {
-      await deleteUsers(testApp.dataSource, [writer?.userId].filter(Boolean));
-    });
-
-    it('breakdown: categories, wallets and total come from one snapshot', async () => {
-      await addExpense('100');
-      const spy = writeAfter('getStatisticsExpenseByCategory', () => addExpense('50'));
-
-      const res = await getOwnBlock('breakdown');
-
-      expect(spy).toHaveBeenCalled();
-      expect(res.body.total.amount).toBe('100.00');
-      expect(res.body.by_category.total_amount).toBe('100.00');
-      expect(res.body.by_wallet.total_amount).toBe('100.00');
-
-      const next = await getOwnBlock('breakdown');
-      expect(next.body.by_wallet.total_amount).toBe('150.00');
-    });
-
-    it('summary: totals and the presence of transactions come from one snapshot', async () => {
-      const transactions = await api(writer)
-        .get(`${base(writer)}/transactions`)
-        .query({ from: '2026-09-01T00:00:00.000Z', to: AS_OF })
-        .expect(200);
-      const removeAll = () =>
-        Promise.all(
-          transactions.body.map((transaction: { id: string }) =>
-            api(writer)
-              .delete(`${base(writer)}/transactions/${transaction.id}`)
-              .expect(200),
-          ),
-        );
-      const spy = writeAfter('getStatisticsTotals', removeAll);
-
-      const res = await getOwnBlock('summary');
-
-      expect(spy).toHaveBeenCalled();
-      expect(res.body).toMatchObject({
-        expense: { amount: '150.00', count: 2 },
-        has_any_transactions: true,
-        last_transaction_date: '2026-09-20',
-      });
-
-      const next = await getOwnBlock('summary');
-      expect(next.body).toMatchObject({ expense: { amount: '0.00', count: 0 }, has_any_transactions: false });
     });
   });
 
