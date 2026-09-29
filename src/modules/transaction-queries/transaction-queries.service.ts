@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { TransactionType } from '@shared/enums';
+import { AppColor, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
 
@@ -23,6 +23,27 @@ const toStatisticsTotals = (row: TotalsRow | undefined): StatisticsTotals => ({
   expense: parseMoney(row?.expense ?? '0'),
   expenseCount: Number(row?.expense_count ?? 0),
 });
+
+export interface StatisticsCategoryExpense {
+  id: number;
+  name: string;
+  icon: string;
+  color: AppColor;
+  isArchived: boolean;
+  // in cents
+  amount: bigint;
+  count: number;
+}
+
+export interface StatisticsWalletExpense {
+  id: number;
+  name: string;
+  design: AppColor;
+  isDeleted: boolean;
+  // in cents
+  amount: bigint;
+  count: number;
+}
 
 // in cents
 export interface StatisticsTotals {
@@ -197,6 +218,82 @@ export class TransactionQueriesService {
     return totals;
   }
 
+  async getStatisticsExpenseByCategory(spaceId: number, from: Date, to: Date): Promise<StatisticsCategoryExpense[]> {
+    const rows = await this.statisticsExpenseScope(spaceId, from, to)
+      .select('category.id', 'id')
+      .addSelect('category.name', 'name')
+      .addSelect('category.icon', 'icon')
+      .addSelect('category.color', 'color')
+      .addSelect('category.is_active', 'is_active')
+      .addSelect('SUM(transaction.amount)', 'amount')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('category.id')
+      .getRawMany<{
+        id: number | string;
+        name: string;
+        icon: string;
+        color: AppColor;
+        is_active: number | string;
+        amount: string;
+        count: number | string;
+      }>();
+
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      icon: row.icon,
+      color: row.color,
+      isArchived: Number(row.is_active) === 0,
+      amount: parseMoney(row.amount),
+      count: Number(row.count),
+    }));
+  }
+
+  async getStatisticsExpenseByWallet(spaceId: number, from: Date, to: Date): Promise<StatisticsWalletExpense[]> {
+    const rows = await this.statisticsExpenseScope(spaceId, from, to)
+      .select('wallet.id', 'id')
+      .addSelect('wallet.wallet_name', 'name')
+      .addSelect('wallet.design', 'design')
+      .addSelect('wallet.is_deleted', 'is_deleted')
+      .addSelect('SUM(transaction.amount)', 'amount')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('wallet.id')
+      .getRawMany<{
+        id: number | string;
+        name: string;
+        design: AppColor;
+        is_deleted: number | string;
+        amount: string;
+        count: number | string;
+      }>();
+
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      design: row.design,
+      isDeleted: Number(row.is_deleted) === 1,
+      amount: parseMoney(row.amount),
+      count: Number(row.count),
+    }));
+  }
+
+  // Latest timestamp of any statistics transaction up to `to`, in any period.
+  async getLastStatisticsTimestamp(spaceId: number, to: Date): Promise<Date | null> {
+    const transaction = await this.statisticsScope(spaceId, null, to)
+      .select(['transaction.id', 'transaction.timestamp'])
+      .orderBy('transaction.timestamp', 'DESC')
+      .limit(1)
+      .getOne();
+
+    return transaction?.timestamp ?? null;
+  }
+
+  private statisticsExpenseScope(spaceId: number, from: Date, to: Date): SelectQueryBuilder<Transaction> {
+    return this.statisticsScope(spaceId, from, to).andWhere('transaction.transaction_type = :expense', {
+      expense: TransactionType.EXPENSE,
+    });
+  }
+
   private selectStatisticsTotals(query: SelectQueryBuilder<Transaction>): SelectQueryBuilder<Transaction> {
     return query
       .select('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
@@ -210,14 +307,18 @@ export class TransactionQueriesService {
   // The selection every statistics block shares (docs/statistics-contract.md):
   // all wallets of the space, soft-deleted ones included, without starting
   // balances, both bounds inclusive.
-  private statisticsScope(spaceId: number, from: Date, to: Date): SelectQueryBuilder<Transaction> {
-    return this.transactionRepository
+  private statisticsScope(spaceId: number, from: Date | null, to: Date): SelectQueryBuilder<Transaction> {
+    const query = this.transactionRepository
       .createQueryBuilder('transaction')
       .innerJoin('transaction.wallet', 'wallet')
       .innerJoin('transaction.category', 'category')
       .where('wallet.space_id = :spaceId', { spaceId })
-      .andWhere('category.is_system = 0')
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to });
+      .andWhere('category.is_system = 0');
+
+    if (from) {
+      query.andWhere('transaction.timestamp >= :from', { from });
+    }
+
+    return query.andWhere('transaction.timestamp <= :to', { to });
   }
 }
