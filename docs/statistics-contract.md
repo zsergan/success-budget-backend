@@ -308,7 +308,7 @@ interface BreakdownItem {
   amount: string;
   percent: number; // of total_amount, one decimal
   is_archived: boolean; // archived category
-  opens_history: boolean; // true for categories (archived too) and wallets
+  opens_history: boolean; // true for categories (archived too) and wallets, see History filters
 }
 
 interface DeletedWalletsItem extends BreakdownItem {
@@ -454,8 +454,8 @@ number; the History screen itself is not redesigned here.
   `transaction_type=transfer`, a repeated parameter) is `400` with the
   standard `message: [{ field, error }]`.
 - There is no filter for Other or for deleted wallets: only items with
-  `opens_history: true` open the history. Inside Other, each child opens its
-  own history; `deleted_wallets` opens nothing.
+  `opens_history: true` open the history, with the template in
+  [Opening a breakdown item](#opening-a-breakdown-item).
 
 ### Bounds
 
@@ -476,19 +476,35 @@ stamped exactly at `to` is in both the statistics and the history, one a
 millisecond later is in neither. The client must not reformat, round or
 drop the milliseconds, and must not replace the instants with local dates.
 
-A breakdown row opens:
+### Opening a breakdown item
+
+Every item with `opens_history: true` opens the history with **one**
+template, the same for both groupings:
 
 ```
-GET /spaces/:spaceId/transactions?from={period.from}&to={period.actual_to}&category_id={id}
-GET /spaces/:spaceId/transactions?from={period.from}&to={period.actual_to}&wallet_id={id}&transaction_type=expense
+GET /spaces/:spaceId/transactions
+    ?from={period.from}
+    &to={period.actual_to}
+    &transaction_type=expense
+    &{category_id | wallet_id}={item.id}
 ```
 
-The wallet row adds `transaction_type=expense` because the breakdown counts
-expenses only. With these bounds and filters the rows of the history add up
-exactly to the item's `amount`, in the same cycle and barring concurrent
-edits (see Consistency model). The history, unlike statistics, still lists
-starting balances; the filters above never match them (they are income on
-the system category).
+- `category_id` for `kind: "category"`, `wallet_id` for `kind: "wallet"`;
+  `period` is the one of the same Breakdown response.
+- It applies alike to `primary_items` and to the `children` of `other`.
+  `other` itself and `deleted_wallets` have `opens_history: false` and open
+  nothing.
+- `transaction_type=expense` is **always** sent, for categories too. The
+  breakdown counts expenses by the type of the transaction, not of the
+  category, and the API does not stop an income on an expense category: a
+  category with a $100 expense and a $20 income shows $100 in Stats, while
+  its history without the type filter would list both.
+
+With this template the history lists only expenses and they add up exactly
+to the item's `amount`, in the same cycle and barring concurrent edits (see
+Consistency model). The history, unlike statistics, still lists starting
+balances; the template never matches them (they are income on the system
+category).
 
 ## Worked examples
 
