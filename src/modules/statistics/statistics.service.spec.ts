@@ -1,5 +1,6 @@
 import { HttpException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { DataSource, type EntityManager } from 'typeorm';
 
 import { StatisticsService } from './statistics.service';
 import type { StatisticsQueryDto } from './dto/statistics-query.dto';
@@ -16,6 +17,8 @@ describe('StatisticsService', () => {
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
   let spacesService: jest.Mocked<SpacesService>;
   let transactionQueriesService: jest.Mocked<TransactionQueriesService>;
+  let dataSource: { transaction: jest.Mock };
+  const manager = {} as EntityManager;
 
   const userId = 1;
   const spaceId = 9;
@@ -27,10 +30,12 @@ describe('StatisticsService', () => {
 
   beforeEach(async () => {
     jest.useFakeTimers({ now });
+    dataSource = { transaction: jest.fn((_isolation, read) => read(manager)) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         StatisticsService,
+        { provide: DataSource, useValue: dataSource },
         {
           provide: SpaceAccessService,
           useValue: { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember()) },
@@ -130,15 +135,24 @@ describe('StatisticsService', () => {
       // 00:30 on Sep 28 in Moscow
       last_transaction_date: '2026-09-28',
     });
-    expect(transactionQueriesService.getLastStatisticsTimestamp).toHaveBeenCalledWith(spaceId, now);
+    expect(transactionQueriesService.getLastStatisticsTimestamp).toHaveBeenCalledWith(spaceId, now, manager);
     expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-    expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(1, spaceId, period.from, now);
+    expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(
+      1,
+      spaceId,
+      period.from,
+      now,
+      manager,
+    );
     expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(
       2,
       spaceId,
       previousFrom,
       previousCut,
+      manager,
     );
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
   });
 
   it('summary: no percent against a zero previous value, a positive one for a rising negative net', async () => {
@@ -220,8 +234,20 @@ describe('StatisticsService', () => {
       deleted_wallets: { kind: 'deleted_wallets', amount: '100.00', wallets_count: 1 },
       other: null,
     });
-    expect(transactionQueriesService.getStatisticsExpenseByCategory).toHaveBeenCalledWith(spaceId, period.from, now);
-    expect(transactionQueriesService.getStatisticsExpenseByWallet).toHaveBeenCalledWith(spaceId, period.from, now);
+    expect(transactionQueriesService.getStatisticsExpenseByCategory).toHaveBeenCalledWith(
+      spaceId,
+      period.from,
+      now,
+      manager,
+    );
+    expect(transactionQueriesService.getStatisticsExpenseByWallet).toHaveBeenCalledWith(
+      spaceId,
+      period.from,
+      now,
+      manager,
+    );
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
   });
 
   it('summary: no transactions at all', async () => {
@@ -274,6 +300,8 @@ describe('StatisticsService', () => {
     expect(trend.buckets.every((bucket) => bucket.state === 'future' && bucket.income === null)).toBe(true);
     expect(transactionQueriesService.getStatisticsTotals).not.toHaveBeenCalled();
     expect(transactionQueriesService.getStatisticsIntervalTotals).not.toHaveBeenCalled();
+    // only the has_any_transactions read of the summary
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('checks membership before anything else', async () => {

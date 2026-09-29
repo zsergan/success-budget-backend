@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { AppColor, TransactionType } from '@shared/enums';
@@ -205,8 +205,12 @@ export class TransactionQueriesService {
     return transaction && withRelations(transaction, 'wallet', 'category');
   }
 
-  async getStatisticsTotals(spaceId: number, from: Date, to: Date): Promise<StatisticsTotals> {
-    const row = await this.selectStatisticsTotals(this.statisticsScope(spaceId, from, to)).getRawOne<TotalsRow>();
+  // The statistics reads below take the manager of the block's transaction,
+  // so that all reads of one response see the same snapshot.
+  async getStatisticsTotals(spaceId: number, from: Date, to: Date, manager: EntityManager): Promise<StatisticsTotals> {
+    const row = await this.selectStatisticsTotals(
+      this.statisticsScope(manager, spaceId, from, to),
+    ).getRawOne<TotalsRow>();
 
     return toStatisticsTotals(row);
   }
@@ -226,7 +230,9 @@ export class TransactionQueriesService {
       .map((_, i) => `WHEN transaction.timestamp <= :intervalEnd${i} THEN ${i}`)
       .join(' ');
 
-    const rows = await this.selectStatisticsTotals(this.statisticsScope(spaceId, from, to))
+    const rows = await this.selectStatisticsTotals(
+      this.statisticsScope(this.transactionRepository.manager, spaceId, from, to),
+    )
       .addSelect(last > 0 ? `CASE ${cases} ELSE ${last} END` : '0', 'interval_index')
       .setParameters(Object.fromEntries(intervalEnds.slice(0, last).map((end, i) => [`intervalEnd${i}`, end])))
       .groupBy('interval_index')
@@ -241,8 +247,13 @@ export class TransactionQueriesService {
     return totals;
   }
 
-  async getStatisticsExpenseByCategory(spaceId: number, from: Date, to: Date): Promise<StatisticsCategoryExpense[]> {
-    const rows = await this.statisticsExpenseScope(spaceId, from, to)
+  async getStatisticsExpenseByCategory(
+    spaceId: number,
+    from: Date,
+    to: Date,
+    manager: EntityManager,
+  ): Promise<StatisticsCategoryExpense[]> {
+    const rows = await this.statisticsExpenseScope(manager, spaceId, from, to)
       .select('category.id', 'id')
       .addSelect('category.name', 'name')
       .addSelect('category.icon', 'icon')
@@ -272,8 +283,13 @@ export class TransactionQueriesService {
     }));
   }
 
-  async getStatisticsExpenseByWallet(spaceId: number, from: Date, to: Date): Promise<StatisticsWalletExpense[]> {
-    const rows = await this.statisticsExpenseScope(spaceId, from, to)
+  async getStatisticsExpenseByWallet(
+    spaceId: number,
+    from: Date,
+    to: Date,
+    manager: EntityManager,
+  ): Promise<StatisticsWalletExpense[]> {
+    const rows = await this.statisticsExpenseScope(manager, spaceId, from, to)
       .select('wallet.id', 'id')
       .addSelect('wallet.wallet_name', 'name')
       .addSelect('wallet.design', 'design')
@@ -301,8 +317,8 @@ export class TransactionQueriesService {
   }
 
   // Latest timestamp of any statistics transaction up to `to`, in any period.
-  async getLastStatisticsTimestamp(spaceId: number, to: Date): Promise<Date | null> {
-    const transaction = await this.statisticsScope(spaceId, null, to)
+  async getLastStatisticsTimestamp(spaceId: number, to: Date, manager: EntityManager): Promise<Date | null> {
+    const transaction = await this.statisticsScope(manager, spaceId, null, to)
       .select(['transaction.id', 'transaction.timestamp'])
       .orderBy('transaction.timestamp', 'DESC')
       .limit(1)
@@ -311,8 +327,13 @@ export class TransactionQueriesService {
     return transaction?.timestamp ?? null;
   }
 
-  private statisticsExpenseScope(spaceId: number, from: Date, to: Date): SelectQueryBuilder<Transaction> {
-    return this.statisticsScope(spaceId, from, to).andWhere('transaction.transaction_type = :expense', {
+  private statisticsExpenseScope(
+    manager: EntityManager,
+    spaceId: number,
+    from: Date,
+    to: Date,
+  ): SelectQueryBuilder<Transaction> {
+    return this.statisticsScope(manager, spaceId, from, to).andWhere('transaction.transaction_type = :expense', {
       expense: TransactionType.EXPENSE,
     });
   }
@@ -330,9 +351,14 @@ export class TransactionQueriesService {
   // The selection every statistics block shares (docs/statistics-contract.md):
   // all wallets of the space, soft-deleted ones included, without starting
   // balances, both bounds inclusive.
-  private statisticsScope(spaceId: number, from: Date | null, to: Date): SelectQueryBuilder<Transaction> {
-    const query = this.transactionRepository
-      .createQueryBuilder('transaction')
+  private statisticsScope(
+    manager: EntityManager,
+    spaceId: number,
+    from: Date | null,
+    to: Date,
+  ): SelectQueryBuilder<Transaction> {
+    const query = manager
+      .createQueryBuilder(Transaction, 'transaction')
       .innerJoin('transaction.wallet', 'wallet')
       .innerJoin('transaction.category', 'category')
       .where('wallet.space_id = :spaceId', { spaceId })

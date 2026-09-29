@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { DataSource, EntityManager } from 'typeorm';
 
 import type { StatisticsQueryDto } from './dto/statistics-query.dto';
 import {
@@ -108,16 +109,25 @@ export class StatisticsService {
     private readonly spaceAccessService: SpaceAccessService,
     private readonly spacesService: SpacesService,
     private readonly transactionQueriesService: TransactionQueriesService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async getSummary(userId: number, spaceId: number, query: StatisticsQueryDto): Promise<StatisticsSummary> {
     const block = await this.openBlock(userId, spaceId, query);
-    const previousPeriod = resolvePreviousPeriod(block.period);
-    const [totals, previousTotals, lastTimestamp] = await Promise.all([
-      this.getTotals(spaceId, block.period),
+    const { period } = block;
+    const previousPeriod = resolvePreviousPeriod(period);
+    const [totals, previousTotals, lastTimestamp] = await this.readSnapshot(async (manager) => [
+      period.actual_to === null
+        ? EMPTY_TOTALS
+        : await this.transactionQueriesService.getStatisticsTotals(spaceId, period.from, period.actual_to, manager),
       previousPeriod &&
-        this.transactionQueriesService.getStatisticsTotals(spaceId, previousPeriod.from, previousPeriod.actual_to),
-      this.transactionQueriesService.getLastStatisticsTimestamp(spaceId, block.period.as_of),
+        (await this.transactionQueriesService.getStatisticsTotals(
+          spaceId,
+          previousPeriod.from,
+          previousPeriod.actual_to,
+          manager,
+        )),
+      await this.transactionQueriesService.getLastStatisticsTimestamp(spaceId, period.as_of, manager),
     ]);
 
     return {
@@ -130,7 +140,7 @@ export class StatisticsService {
         net: changeOf(totals.income - totals.expense, previousTotals.income - previousTotals.expense),
       },
       has_any_transactions: lastTimestamp !== null,
-      last_transaction_date: lastTimestamp && formatCalendarDate(calendarDateAt(lastTimestamp, block.period.time_zone)),
+      last_transaction_date: lastTimestamp && formatCalendarDate(calendarDateAt(lastTimestamp, period.time_zone)),
     };
   }
 
@@ -167,12 +177,13 @@ export class StatisticsService {
   async getBreakdown(userId: number, spaceId: number, query: StatisticsQueryDto): Promise<StatisticsBreakdown> {
     const block = await this.openBlock(userId, spaceId, query);
     const { period } = block;
+    const { actual_to: to } = period;
     const [categories, wallets] =
-      period.actual_to === null
+      to === null
         ? [[], []]
-        : await Promise.all([
-            this.transactionQueriesService.getStatisticsExpenseByCategory(spaceId, period.from, period.actual_to),
-            this.transactionQueriesService.getStatisticsExpenseByWallet(spaceId, period.from, period.actual_to),
+        : await this.readSnapshot(async (manager) => [
+            await this.transactionQueriesService.getStatisticsExpenseByCategory(spaceId, period.from, to, manager),
+            await this.transactionQueriesService.getStatisticsExpenseByWallet(spaceId, period.from, to, manager),
           ]);
 
     return {
@@ -196,11 +207,9 @@ export class StatisticsService {
     return { period, currency: space.currency.code };
   }
 
-  private async getTotals(spaceId: number, period: StatisticsPeriod): Promise<StatisticsTotals> {
-    if (period.actual_to === null) {
-      return EMPTY_TOTALS;
-    }
-
-    return this.transactionQueriesService.getStatisticsTotals(spaceId, period.from, period.actual_to);
+  // InnoDB takes the snapshot at the first read, so the later reads of a
+  // block see no commits made in between. Plain reads, no locks.
+  private readSnapshot<T>(read: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return this.dataSource.transaction('REPEATABLE READ', read);
   }
 }

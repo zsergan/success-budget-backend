@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import type { EntityManager } from 'typeorm';
 
 import { TransactionQueriesService } from './transaction-queries.service';
 import { Transaction } from '@entities/transaction.entity';
@@ -8,7 +9,8 @@ import { TransactionType } from '@shared/enums';
 describe('TransactionQueriesService', () => {
   let service: TransactionQueriesService;
   let queryBuilder: Record<string, jest.Mock>;
-  let transactionRepository: { createQueryBuilder: jest.Mock };
+  let transactionRepository: { createQueryBuilder: jest.Mock; manager: { createQueryBuilder: jest.Mock } };
+  let manager: EntityManager;
 
   beforeEach(async () => {
     queryBuilder = {
@@ -30,8 +32,10 @@ describe('TransactionQueriesService', () => {
       getRawOne: jest.fn(),
     };
 
+    manager = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) } as unknown as EntityManager;
     transactionRepository = {
       createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+      manager: { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) },
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -238,9 +242,11 @@ describe('TransactionQueriesService', () => {
         expense_count: '9',
       });
 
-      const result = await service.getStatisticsTotals(7, from, to);
+      const result = await service.getStatisticsTotals(7, from, to, manager);
 
       expect(result).toEqual({ income: 300000n, incomeCount: 1, expense: 81050n, expenseCount: 9 });
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(Transaction, 'transaction');
+      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 7 });
@@ -258,7 +264,7 @@ describe('TransactionQueriesService', () => {
         expense_count: null,
       });
 
-      const result = await service.getStatisticsTotals(7, from, to);
+      const result = await service.getStatisticsTotals(7, from, to, manager);
 
       expect(result).toEqual({ income: 0n, incomeCount: 0, expense: 0n, expenseCount: 0 });
     });
@@ -312,7 +318,7 @@ describe('TransactionQueriesService', () => {
         { id: 14, name: 'Gifts', icon: 'gift', color: 'rose', is_active: 0, amount: '80.00', count: '1' },
       ]);
 
-      const result = await service.getStatisticsExpenseByCategory(7, from, to);
+      const result = await service.getStatisticsExpenseByCategory(7, from, to, manager);
 
       expect(result).toEqual([
         { id: 14, name: 'Gifts', icon: 'gift', color: 'rose', isArchived: true, amount: 8000n, count: 1 },
@@ -329,7 +335,7 @@ describe('TransactionQueriesService', () => {
         { id: '3', name: 'Old card', design: 'slate', is_deleted: '1', amount: '105.50', count: '2' },
       ]);
 
-      const result = await service.getStatisticsExpenseByWallet(7, from, to);
+      const result = await service.getStatisticsExpenseByWallet(7, from, to, manager);
 
       expect(result).toEqual([{ id: 3, name: 'Old card', design: 'slate', isDeleted: true, amount: 10550n, count: 2 }]);
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('wallet.id');
@@ -344,7 +350,7 @@ describe('TransactionQueriesService', () => {
       const timestamp = new Date('2026-09-27T21:30:00.000Z');
       queryBuilder.getOne.mockResolvedValue({ id: 1, timestamp });
 
-      await expect(service.getLastStatisticsTimestamp(7, to)).resolves.toBe(timestamp);
+      await expect(service.getLastStatisticsTimestamp(7, to, manager)).resolves.toBe(timestamp);
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to });
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('transaction.timestamp >= :from', expect.anything());
@@ -354,7 +360,7 @@ describe('TransactionQueriesService', () => {
     it('returns null without transactions', async () => {
       queryBuilder.getOne.mockResolvedValue(null);
 
-      await expect(service.getLastStatisticsTimestamp(7, to)).resolves.toBeNull();
+      await expect(service.getLastStatisticsTimestamp(7, to, manager)).resolves.toBeNull();
     });
   });
 });
