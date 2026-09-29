@@ -8,18 +8,14 @@ the rules below apply to all three endpoints identically.
 
 Anything marked _open_ needs sign-off before the stage that implements it.
 
-## Implementation status
+## Implementation
 
-| Part                                                           | Status      |
-| -------------------------------------------------------------- | ----------- |
-| Routes, query parameters, validation, `as_of`, access check    | implemented |
-| `period` metadata, `currency`                                  | implemented |
-| Summary `income`, `expense`, `net`, `transactions_count`       | implemented |
-| Summary `previous`, `change`                                   | implemented |
-| Trend `totals`, `granularity`, `buckets`                       | implemented |
-| Summary `has_any_transactions`, `last_transaction_date`        | implemented |
-| Breakdown `total`, `by_category`, `by_wallet`, Other           | implemented |
-| History filters `category_id`, `wallet_id`, `transaction_type` | implemented |
+Everything in this document is implemented. Code: `src/modules/statistics`
+(calendar, periods, Other) and the SQL reads in
+`TransactionQueriesService`; Swagger describes the query parameters, the
+response types are the ones below. Tests: `statistics-*.spec.ts`,
+`transaction-queries.service.spec.ts` and `test/statistics.e2e-spec.ts`
+against MySQL.
 
 ## Endpoints
 
@@ -744,6 +740,33 @@ Comparing across a DST change keeps the local wall-clock time: `as_of =
 
 In `America/Santiago` midnight of 2026-09-06 does not exist (clocks jump to
 01:00): that day starts at `2026-09-06T04:00:00.000Z` and is 23 hours long.
+
+## Performance
+
+Every block is one or two SQL queries that aggregate in MySQL
+(`SUM`/`COUNT` with `GROUP BY` per category, per wallet or per trend
+bucket); only aggregated rows reach Node.js. Summary: current and previous
+totals plus the latest timestamp (3 queries, in parallel). Trend: 1 query
+for all buckets. Breakdown: 2 queries (categories, wallets). A `future`
+period sends none for its own range.
+
+All period reads go through the space's wallets and then the
+`transactions` rows of each wallet in a time range. The index
+`IDX_transactions_wallet_id_timestamp (wallet_id, timestamp)` (migration
+`AddTransactionWalletTimestampIndex`) serves them; it also serves the wallet
+foreign key, so it replaces the former single-column index on `wallet_id`.
+Checked with `EXPLAIN ANALYZE` on MySQL 8.4 with 500,000 transactions
+(500 spaces, 4 wallets each, about 3 years) for one month:
+
+| Query                     | Before: rows read per wallet    | After: rows read per wallet               |
+| ------------------------- | ------------------------------- | ----------------------------------------- |
+| Totals, per-category sums | 250 (all its history), filtered | about 7 (range scan with index condition) |
+| History with a category   | 250, filtered                   | about 7                                   |
+
+`last_transaction_date` has only an upper bound (`as_of`), so it still
+reads the space's history up to `as_of` through the same index; a
+per-wallet reverse scan did not get a better plan from MySQL. This is linear
+in the size of one space's history and runs once per Summary.
 
 ## Out of scope
 
