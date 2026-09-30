@@ -19,10 +19,14 @@ mixed amount types across responses are a **gap** kept for API compatibility.
 | `GET /limits` → `amount` / `spent`, `in_percent`, `over_allocation.*`                                          | —                                      | `string` / `number`                                                                                         |
 | Derived: `wallet.balance`, `previous_balance`, `total_balance`, `total_income`, `total_spend`, `delta_percent` | `number`                               | `number`                                                                                                    |
 | Raw `SUM(...)`, `COUNT(*)` (`getRawMany`)                                                                      | `string`                               | `string` (TypeORM enables `bigNumberStrings`), money sums parsed into cents; raw `INT` columns are `number` |
+| `GET /statistics/*` → every amount (`amount`, `net`, `delta`, `total_amount`, bucket `income`/`expense`)       | `string`                               | decimal `string` with exactly two decimals, `-` only for negatives; may exceed `99999999.99`                |
+| `GET /statistics/*` → `percent`, `change.*.percent`                                                            | `number` / `number \| null`            | one decimal, `roundPercentToTenth`; `null` when the comparison base is zero                                 |
 
 The same transaction amount still leaves the API as a number, the echoed
 input string, or a normalized DECIMAL string depending on the endpoint
-(**gap**, kept for API compatibility).
+(**gap**, kept for API compatibility). The statistics endpoints are new and
+use strings for every amount; their full types and rules are in
+[`statistics-contract.md`](statistics-contract.md).
 
 Derived amounts (wallet balances and totals, limit `spent`,
 `over_allocation`) and percentages are computed in integer cents: `SUM`
@@ -70,12 +74,16 @@ value is local time, as TypeORM parses strings for timestamp columns; a
 `Z`/offset value is an exact instant. Week, ordinal, year-only, year-month,
 compact and epoch forms are rejected.
 
-| Where                                                     | Declared | Actual                                                                                                                                                                                         |
-| --------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Request `timestamp` (`@IsIsoDate`, `@IsInTimestampRange`) | `string` | ISO string within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z); converted with `toDate` before it is saved                                                       |
-| Query `from`/`to` on `GET /transactions`, `GET /wallets`  | `Date`   | `ParseOptionalDatePipe`: absent → handler default (current month, inclusive to 23:59:59.999 local); present → `Date`; invalid, empty or repeated → 400 `<field> must be a valid ISO 8601 date` |
-| `TIMESTAMP` columns read                                  | `Date`   | `Date`; serialized as ISO-8601 UTC string                                                                                                                                                      |
-| `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`) | `Date`   | read in the Node process's local time zone, so shifted when it differs from the MySQL session zone; app-written values round-trip. Out of scope for typing.                                    |
+| Where                                                                              | Declared | Actual                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Request `timestamp` (`@IsIsoDate`, `@IsInTimestampRange`)                          | `string` | ISO string within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z); converted with `toDate` before it is saved                                                       |
+| Query `from`/`to` on `GET /transactions`, `GET /wallets`                           | `Date`   | `ParseOptionalDatePipe`: absent → handler default (current month, inclusive to 23:59:59.999 local); present → `Date`; invalid, empty or repeated → 400 `<field> must be a valid ISO 8601 date` |
+| Query `anchor_date`/`from_date`/`to_date` on `GET /statistics/*` (`@IsLocalDate`)  | `string` | a real calendar date `YYYY-MM-DD`, no time; interpreted in `time_zone`                                                                                                                         |
+| Query `time_zone` on `GET /statistics/*` (`@IsTimeZone`)                           | `string` | IANA name, echoed canonical; a fixed offset (`+03:00`) is a 400                                                                                                                                |
+| Query `as_of` on `GET /statistics/*` (`@IsIsoInstant`)                             | `string` | ISO instant **with** `Z` or an offset (no local-time reading), in the `TIMESTAMP` range, at most 60 s ahead of the server                                                                      |
+| `period.from`/`to`/`as_of`/`actual_to`, bucket `from`/`to` in statistics responses | `Date`   | ISO-8601 UTC string with milliseconds; passed verbatim as history `from`/`to`                                                                                                                  |
+| `TIMESTAMP` columns read                                                           | `Date`   | `Date`; serialized as ISO-8601 UTC string                                                                                                                                                      |
+| `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`)                          | `Date`   | read in the Node process's local time zone, so shifted when it differs from the MySQL session zone; app-written values round-trip. Out of scope for typing.                                    |
 
 Period filters stay inclusive on both ends. Compared with the raw strings
 MySQL used to receive, date-only and offset-less values select the same
@@ -114,13 +122,14 @@ removes internal fields such as `space_id`, `wallet_id`, `category_id`,
 `is_deleted`, `deleted_at`, `sort`, `is_system`, `currency_id`, `password`
 and `email_verified`. Exact key sets are pinned in the e2e contract spec.
 
-| Response                                        | Type                      | Difference                                                                                           |
-| ----------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `GET /transactions`, `GET /transactions/latest` | `TransactionView`         | `wallet` is `null` when the wallet was soft-deleted; `category` always present                       |
-| `POST /transactions`                            | `CreateTransactionResult` | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                     |
-| `POST /wallets`                                 | `CreateWalletResult`      | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)     |
-| `GET /wallets`                                  | `WalletsOverview`         | `wallets[].wallet: WalletWithBalance`                                                                |
-| `POST /categories`                              | `Category`                | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior) |
+| Response                                          | Type                                                          | Difference                                                                                                                                                                  |
+| ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /transactions`, `GET /transactions/latest`   | `TransactionView`                                             | `wallet` is `null` when the wallet was soft-deleted; `category` always present                                                                                              |
+| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                                                                                            |
+| `POST /wallets`                                   | `CreateWalletResult`                                          | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)                                                                            |
+| `GET /wallets`                                    | `WalletsOverview`                                             | `wallets[].wallet: WalletWithBalance`                                                                                                                                       |
+| `POST /categories`                                | `Category`                                                    | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior)                                                                        |
+| `GET /statistics/summary`, `/trend`, `/breakdown` | `StatisticsSummary`, `StatisticsTrend`, `StatisticsBreakdown` | not entities: computed views, typed in `statistics.service.ts` and `statistics-breakdown.ts`, OpenAPI schemas in `dto/statistics-responses.ts`; see the statistics contract |
 
 ## Absent vs `null` vs empty
 
@@ -129,18 +138,20 @@ is used only where `null` is meaningful. Fields that may be omitted but not
 nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 `undefined`.
 
-| Case                                                                                                              | Behavior                                                                       |
-| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Field absent in an update DTO                                                                                     | left unchanged                                                                 |
-| `null` for a nullable field (`Limit.name`, transaction `description`)                                             | stored as `null` (typed `string \| null`)                                      |
-| `null` for a NOT NULL field (`wallet_name`, `design`, category `name`/`icon`/`color`/`is_active`, limit `amount`) | 400 `<field> must not be null`                                                 |
-| `category_ids` (limit create/update)                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400 |
-| `invites` (space create)                                                                                          | absent or `[]`: no invites; `null`: 400                                        |
-| `""` for a field required non-empty on create (`wallet_name`, category `name`)                                    | 400 on update as on create                                                     |
-| `""` for `description`                                                                                            | stored as `""`, not normalized to `null`                                       |
-| Query param absent                                                                                                | controller default applies                                                     |
-| Query date param `""`                                                                                             | 400                                                                            |
-| Response for a `void` handler (`PUT /wallets/:id`)                                                                | 200, empty body                                                                |
+| Case                                                                                                                              | Behavior                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Field absent in an update DTO                                                                                                     | left unchanged                                                                                |
+| `null` for a nullable field (`Limit.name`, transaction `description`)                                                             | stored as `null` (typed `string \| null`)                                                     |
+| `null` for a NOT NULL field (`wallet_name`, `design`, category `name`/`icon`/`color`/`is_active`, limit `amount`)                 | 400 `<field> must not be null`                                                                |
+| `category_ids` (limit create/update)                                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400                |
+| `invites` (space create)                                                                                                          | absent or `[]`: no invites; `null`: 400                                                       |
+| `""` for a field required non-empty on create (`wallet_name`, category `name`)                                                    | 400 on update as on create                                                                    |
+| `""` for `description`                                                                                                            | stored as `""`, not normalized to `null`                                                      |
+| Query param absent                                                                                                                | controller default applies                                                                    |
+| `GET /transactions` `transaction_type`, `category_id`, `wallet_id` absent                                                         | no filter; malformed, empty or repeated: 400 (`ParseOptionalEnumPipe`, `ParseOptionalIdPipe`) |
+| Statistics `null` fields (`actual_to`, `previous`, `change`, bucket amounts, `other`, `deleted_wallets`, `last_transaction_date`) | always present, `null` when not applicable; never omitted                                     |
+| Query date param `""`                                                                                                             | 400                                                                                           |
+| Response for a `void` handler (`PUT /wallets/:id`)                                                                                | 200, empty body                                                                               |
 
 Validation errors keep the `message: [{ field, error }]` shape; nested errors
 are reported under a dotted `field` path.
