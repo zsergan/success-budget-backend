@@ -8,6 +8,7 @@ import { configureApp } from '../src/app.config';
 import { UsersService } from '@modules/users/users.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { moneyToNumber, parseMoney } from '@shared/utils';
+import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
 // Pins the runtime types at the HTTP/DB boundary described in
 // docs/type-contract.md.
@@ -469,14 +470,14 @@ describe('Boundary type contract (e2e)', () => {
   });
 
   describe('missing values', () => {
-    it('stores description as given: absent and null become null, empty string stays empty', async () => {
+    it('reads a missing description as null: absent, null and an empty string', async () => {
       const absent = await createTransaction().expect(201);
       const explicitNull = await createTransaction({ description: null }).expect(201);
       const empty = await createTransaction({ description: '' }).expect(201);
 
       expect((await readTransaction(absent.body.transaction.id)).description).toBeNull();
       expect((await readTransaction(explicitNull.body.transaction.id)).description).toBeNull();
-      expect((await readTransaction(empty.body.transaction.id)).description).toBe('');
+      expect((await readTransaction(empty.body.transaction.id)).description).toBeNull();
     });
 
     it('treats an absent update field as "leave unchanged"', async () => {
@@ -723,6 +724,8 @@ describe('Boundary type contract (e2e)', () => {
     const WALLET_WITH_BALANCE = [...WALLET, 'balance'].sort();
     const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type', 'version'];
     const CATEGORY = ['color', 'created_at', 'icon', 'id', 'is_active', 'name', 'transaction_type', 'updated_at'];
+    const TRANSACTION_VIEW = [...TRANSACTION, 'category', 'kind', 'wallet'].sort();
+    const TRANSACTION_CATEGORY = [...CATEGORY, 'is_archived'].sort();
 
     it('wallet creation and overview', async () => {
       const funded = await api()
@@ -754,9 +757,41 @@ describe('Boundary type contract (e2e)', () => {
       expect(keys(created.body.wallet)).toEqual(WALLET_WITH_BALANCE);
 
       const read = await readTransaction(created.body.transaction.id);
-      expect(keys(read)).toEqual([...TRANSACTION, 'category', 'wallet'].sort());
+      expect(keys(read)).toEqual(TRANSACTION_VIEW);
       expect(keys(read.wallet)).toEqual(WALLET);
-      expect(keys(read.category)).toEqual(CATEGORY);
+      expect(keys(read.category)).toEqual(TRANSACTION_CATEGORY);
+      expect(read).toEqual(expect.objectContaining({ kind: 'regular', version: 1 }));
+      expect(read.category.is_archived).toBe(false);
+
+      const document = createOpenApiDocument(app);
+      const list = await api().get(`${base()}/transactions?from=2000-01-01&to=2100-01-01`).expect(200);
+      expect(schemaErrors(document, okResponseSchema(document, '/transactions'), list.body)).toEqual([]);
+      const latest = await api().get(`${base()}/transactions/latest`).expect(200);
+      expect(schemaErrors(document, okResponseSchema(document, '/transactions/latest'), latest.body)).toEqual([]);
+    });
+
+    it('marks the initial balance by kind, not by the category name', async () => {
+      const funded = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Kind', initial_balance: '5', design: 'slate' })
+        .expect(201);
+      await dataSource.query('UPDATE categories SET name = ? WHERE space_id = ? AND is_system = 1', [
+        'Renamed',
+        spaceId,
+      ]);
+
+      try {
+        const read = await readTransaction(funded.body.transaction.id);
+
+        expect(read.kind).toBe('initial_balance');
+        expect(read.category.name).toBe('Renamed');
+        expect(keys(read.category)).toEqual(TRANSACTION_CATEGORY);
+      } finally {
+        await dataSource.query('UPDATE categories SET name = ? WHERE space_id = ? AND is_system = 1', [
+          'Initial balance',
+          spaceId,
+        ]);
+      }
     });
 
     it('nulls the wallet of a soft-deleted wallet in transaction reads, keeping the key', async () => {
@@ -772,13 +807,13 @@ describe('Boundary type contract (e2e)', () => {
 
       const res = await api().get(`${base()}/transactions?from=2037-12-30&to=2038-01-01`).expect(200);
       expect(res.body).toHaveLength(1);
-      expect(keys(res.body[0])).toEqual([...TRANSACTION, 'category', 'wallet'].sort());
+      expect(keys(res.body[0])).toEqual(TRANSACTION_VIEW);
       expect(res.body[0].wallet).toBeNull();
 
       const latest = await api().get(`${base()}/transactions/latest`).expect(200);
       expect(latest.body.id).toBe(created.body.transaction.id);
       expect(latest.body.wallet).toBeNull();
-      expect(keys(latest.body.category)).toEqual(CATEGORY);
+      expect(keys(latest.body.category)).toEqual(TRANSACTION_CATEGORY);
 
       const overview = await api().get(`${base()}/wallets`).expect(200);
       expect(overview.body.wallets.map((summary: { wallet: { id: number } }) => summary.wallet.id)).not.toContain(

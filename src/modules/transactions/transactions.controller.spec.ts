@@ -4,6 +4,7 @@ import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { TransactionType } from '@shared/enums';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import { toTransactionView } from './transaction-view';
 import type { AuthedRequest } from '@shared/types';
 import { withRelations } from '@shared/utils';
 import { buildCategory, buildTransaction, buildWallet } from '@testing';
@@ -72,7 +73,7 @@ describe('TransactionsController', () => {
     const from = new Date(2026, 0, 1);
     const to = new Date(2026, 0, 31);
     const transactions = [buildTransaction({ wallet: buildWallet(), category: buildCategory() })].map((transaction) =>
-      withRelations(transaction, 'wallet', 'category'),
+      toTransactionView(withRelations(transaction, 'wallet', 'category')),
     );
     transactionsService.getAll.mockResolvedValue(transactions);
 

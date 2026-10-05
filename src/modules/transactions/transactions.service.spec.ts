@@ -5,6 +5,7 @@ import type { Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import { toTransactionView } from './transaction-view';
 import { Transaction } from '@entities/transaction.entity';
 import type { Category } from '@entities/category.entity';
 import type { Wallet } from '@entities/wallet.entity';
@@ -220,7 +221,6 @@ describe('TransactionsService', () => {
 
     it('nulls out the wallet on transactions whose wallet was soft-deleted', async () => {
       const active = loadedTransaction('1', { id: 1 });
-      const activeWallet = active.wallet;
       const deleted = loadedTransaction('2', { id: 2, is_deleted: 1, deleted_at: new Date() });
       transactionQueriesService.getForAllWallets.mockResolvedValue([active, deleted]);
 
@@ -231,7 +231,8 @@ describe('TransactionsService', () => {
       expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to, {});
       expect(walletsService.getOne).not.toHaveBeenCalled();
       expect(categoriesService.getOne).not.toHaveBeenCalled();
-      expect(result[0].wallet).toBe(activeWallet);
+      expect(result).toEqual([toTransactionView(active), toTransactionView(deleted)]);
+      expect(result[0].wallet).toEqual(expect.objectContaining({ id: 1 }));
       expect(result[1].wallet).toBeNull();
     });
 
@@ -308,12 +309,12 @@ describe('TransactionsService', () => {
 
     it('keeps the wallet when it is active', async () => {
       const latest = loadedTransaction('1', { id: 1 });
-      const wallet = latest.wallet;
       transactionQueriesService.getLatest.mockResolvedValue(latest);
 
       const result = await service.getLatest(userId, spaceId);
 
-      expect(result?.wallet).toBe(wallet);
+      expect(result).toEqual(toTransactionView(latest));
+      expect(result?.wallet).toEqual(expect.objectContaining({ id: 1 }));
     });
   });
 

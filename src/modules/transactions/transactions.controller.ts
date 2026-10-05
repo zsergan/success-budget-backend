@@ -11,10 +11,11 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
+import { TransactionView } from './dto/transaction-responses';
 import type { AuthedRequest } from '@shared/types';
 import { TransactionType } from '@shared/enums';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
@@ -38,7 +39,7 @@ export class TransactionsController {
     return this.transactionsService.create(req.user.id, spaceId, createTransactionDto);
   }
 
-  @UseInterceptors(ClassSerializerInterceptor)
+  @ApiOkResponse({ type: TransactionView, description: 'Empty body when the space has no transactions.' })
   @Get('latest')
   async getLatest(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
     return this.transactionsService.getLatest(req.user.id, spaceId);
@@ -58,7 +59,7 @@ export class TransactionsController {
     description: 'A category of the space, archived allowed; the system one is refused.',
   })
   @ApiQuery({ name: 'wallet_id', required: false, type: Number, description: 'An active wallet of the space.' })
-  @UseInterceptors(ClassSerializerInterceptor)
+  @ApiOkResponse({ type: TransactionView, isArray: true })
   @Get()
   async getAll(
     @Request() req: AuthedRequest,

@@ -6,12 +6,13 @@ import { Transaction } from '@entities/transaction.entity';
 import type { Category } from '@entities/category.entity';
 import type { Wallet, WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import type { TransactionView } from './dto/transaction-responses';
+import { toTransactionView } from './transaction-view';
 import { TransactionType } from '@shared/enums';
 import { ApiException } from '@shared/api.exception';
 import { assertBelongsToSpace, moneyToNumber, parseMoney, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
-  type LoadedTransaction,
   type TransactionFilters,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
@@ -23,9 +24,6 @@ export interface CreateTransactionResult {
   wallet: WalletWithBalance;
   previous_balance: number;
 }
-
-// GET reads: the wallet is always joined, but hidden (null) once soft-deleted
-export type TransactionView = Omit<LoadedTransaction, 'wallet'> & { wallet: Wallet | null };
 
 @Injectable()
 export class TransactionsService {
@@ -93,7 +91,7 @@ export class TransactionsService {
 
     const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to, filters);
 
-    return transactions.map((transaction) => this.toView(transaction));
+    return transactions.map(toTransactionView);
   }
 
   async getLatest(userId: number, spaceId: number): Promise<TransactionView | null> {
@@ -101,7 +99,7 @@ export class TransactionsService {
 
     const transaction = await this.transactionQueriesService.getLatest(spaceId);
 
-    return transaction ? this.toView(transaction) : null;
+    return transaction ? toTransactionView(transaction) : null;
   }
 
   async remove(userId: number, spaceId: number, transactionId: string): Promise<void> {
@@ -134,16 +132,5 @@ export class TransactionsService {
     }
 
     return category;
-  }
-
-  // mutates the entity instead of copying it, so @Exclude() still applies
-  private toView(transaction: LoadedTransaction): TransactionView {
-    const view: TransactionView = transaction;
-
-    if (transaction.wallet.is_deleted) {
-      view.wallet = null;
-    }
-
-    return view;
   }
 }
