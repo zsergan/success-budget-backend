@@ -15,6 +15,7 @@ import { TransactionQueriesService } from '@modules/transaction-queries/transact
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { IdempotencyService } from '@modules/idempotency/idempotency.service';
 import { buildCategory, buildSpaceMember, buildTransaction, buildWallet } from '@testing';
 
 describe('TransactionsService', () => {
@@ -26,6 +27,7 @@ describe('TransactionsService', () => {
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
   let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembership' | 'lockSpace'>>;
+  let idempotencyService: { run: jest.Mock; purgeExpired: jest.Mock };
   let manager: EntityManager;
   let lockedRows: Map<unknown, unknown[]>;
 
@@ -76,6 +78,10 @@ describe('TransactionsService', () => {
       })),
       getRepository: jest.fn(() => transactionRepository),
     } as unknown as EntityManager;
+    idempotencyService = {
+      run: jest.fn((_manager, _request, work) => work()),
+      purgeExpired: jest.fn(),
+    };
     const dataSource = {
       transaction: jest.fn((_level: string, work: (m: EntityManager) => Promise<unknown>) => work(manager)),
     };
@@ -88,6 +94,7 @@ describe('TransactionsService', () => {
         { provide: CategoriesService, useValue: categoriesService },
         { provide: SpaceAccessService, useValue: spaceAccessService },
         { provide: DataSource, useValue: dataSource },
+        { provide: IdempotencyService, useValue: idempotencyService },
       ],
     }).compile();
 
@@ -245,6 +252,66 @@ describe('TransactionsService', () => {
 
       expect(transactionRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ description: null, timestamp: new Date(2026, 0, 15) }),
+      );
+    });
+  });
+
+  describe('idempotency', () => {
+    const dto: CreateTransactionDto = {
+      wallet_id: 1,
+      category_id: 5,
+      amount: '10',
+      transaction_type: TransactionType.INCOME,
+      timestamp: '2026-01-15T10:00:00.000Z',
+    };
+
+    it('writes without a key, outside the idempotency store', async () => {
+      await service.create(userId, spaceId, dto);
+
+      expect(idempotencyService.run).not.toHaveBeenCalled();
+      expect(idempotencyService.purgeExpired).not.toHaveBeenCalled();
+    });
+
+    it('runs a keyed create through the store, after the access locks', async () => {
+      spaceAccessService.lockSpace.mockImplementation(async () => {
+        expect(idempotencyService.run).not.toHaveBeenCalled();
+      });
+
+      await service.create(userId, spaceId, dto, { idempotencyKey: 'key-1' });
+
+      expect(idempotencyService.run).toHaveBeenCalledWith(
+        manager,
+        { operation: 'transactions.create', key: 'key-1', payload: dto, userId, spaceId },
+        expect.any(Function),
+      );
+      expect(idempotencyService.purgeExpired).toHaveBeenCalled();
+    });
+
+    it('returns a stored result without writing again', async () => {
+      const stored = { transaction: { id: 'tx-1' } };
+      idempotencyService.run.mockResolvedValue(stored);
+
+      await expect(service.create(userId, spaceId, dto, { idempotencyKey: 'key-1' })).resolves.toBe(stored);
+      expect(transactionRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('keys a delete by the transaction and the expected version', async () => {
+      const transaction = loadedTransaction('tx-1', { id: 1 });
+      lockedRows.set(Transaction, [transaction]);
+      transactionQueriesService.getOneInSpace.mockResolvedValue(transaction);
+
+      await service.remove(userId, spaceId, 'tx-1', { idempotencyKey: 'key-2' });
+
+      expect(idempotencyService.run).toHaveBeenCalledWith(
+        manager,
+        {
+          operation: 'transactions.delete',
+          key: 'key-2',
+          payload: { transactionId: 'tx-1', expectedVersion: null },
+          userId,
+          spaceId,
+        },
+        expect.any(Function),
       );
     });
   });
@@ -435,7 +502,7 @@ describe('TransactionsService', () => {
     it('refuses the initial balance, even with the right version', async () => {
       lockedTransaction({ category: buildCategory({ is_system: 1 }) });
 
-      await expect(service.remove(userId, spaceId, 'tx-1', 1)).rejects.toMatchObject(
+      await expect(service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 })).rejects.toMatchObject(
         new HttpException(ErrorMessages.TRANSACTION_IS_SYSTEM, 400),
       );
       expect(transactionRepository.delete).not.toHaveBeenCalled();
@@ -444,7 +511,7 @@ describe('TransactionsService', () => {
     it('refuses a stale version', async () => {
       lockedTransaction({ version: 3 });
 
-      await expect(service.remove(userId, spaceId, 'tx-1', 2)).rejects.toMatchObject(
+      await expect(service.remove(userId, spaceId, 'tx-1', { expectedVersion: 2 })).rejects.toMatchObject(
         new HttpException(ErrorMessages.TRANSACTION_VERSION_CONFLICT, 409),
       );
       expect(transactionRepository.delete).not.toHaveBeenCalled();
@@ -456,7 +523,7 @@ describe('TransactionsService', () => {
     ])('deletes with %s', async (_, version) => {
       lockedTransaction({ version: 3 });
 
-      await service.remove(userId, spaceId, 'tx-1', version);
+      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: version });
 
       expect(transactionRepository.delete).toHaveBeenCalledWith('tx-1');
     });

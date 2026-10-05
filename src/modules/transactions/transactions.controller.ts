@@ -32,7 +32,16 @@ import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
 import { ParseOptionalEnumPipe } from '@shared/pipes/parse-optional-enum.pipe';
 import { ParseOptionalIdPipe } from '@shared/pipes/parse-optional-id.pipe';
 import { ParseIfMatchVersionPipe } from '@shared/pipes/parse-if-match-version.pipe';
+import { ParseIdempotencyKeyPipe } from '@shared/pipes/parse-idempotency-key.pipe';
 import { RequestHeader } from '@shared/decorators/request-header.decorator';
+
+const IDEMPOTENCY_KEY_HEADER = {
+  name: 'Idempotency-Key',
+  required: false,
+  description:
+    'A client-generated key, e.g. a UUID. A repeat with the same key and request within 24 hours ' +
+    'returns the original result instead of applying the write again.',
+};
 
 @ApiTags('transactions')
 @ApiBearerAuth()
@@ -40,14 +49,17 @@ import { RequestHeader } from '@shared/decorators/request-header.decorator';
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
+  @ApiHeader(IDEMPOTENCY_KEY_HEADER)
+  @ApiConflictResponse({ description: 'IDEMPOTENCY_KEY_REUSED: the key was used for a different request.' })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
   async create(
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Body() createTransactionDto: CreateTransactionDto,
+    @RequestHeader('Idempotency-Key', ParseIdempotencyKeyPipe) idempotencyKey?: string,
   ) {
-    return this.transactionsService.create(req.user.id, spaceId, createTransactionDto);
+    return this.transactionsService.create(req.user.id, spaceId, createTransactionDto, { idempotencyKey });
   }
 
   @ApiOkResponse({ type: TransactionView, description: 'Empty body when the space has no transactions.' })
@@ -100,18 +112,24 @@ export class TransactionsController {
     required: false,
     description: 'The version the client read, e.g. "3". Without it the delete is unconditional.',
   })
+  @ApiHeader(IDEMPOTENCY_KEY_HEADER)
   @ApiOkResponse({ type: Boolean })
   @ApiBadRequestResponse({ description: 'TRANSACTION_IS_SYSTEM: the initial balance cannot be deleted.' })
   @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND: missing, malformed id, or of another space.' })
-  @ApiConflictResponse({ description: 'TRANSACTION_VERSION_CONFLICT: If-Match differs from the stored version.' })
+  @ApiConflictResponse({
+    description:
+      'TRANSACTION_VERSION_CONFLICT: If-Match differs from the stored version. ' +
+      'IDEMPOTENCY_KEY_REUSED: the key was used for a different request.',
+  })
   @Delete(':transactionId')
   async remove(
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('transactionId') transactionId: string,
     @RequestHeader('If-Match', ParseIfMatchVersionPipe) expectedVersion?: number,
+    @RequestHeader('Idempotency-Key', ParseIdempotencyKeyPipe) idempotencyKey?: string,
   ): Promise<boolean> {
-    await this.transactionsService.remove(req.user.id, spaceId, transactionId, expectedVersion);
+    await this.transactionsService.remove(req.user.id, spaceId, transactionId, { expectedVersion, idempotencyKey });
 
     return true;
   }

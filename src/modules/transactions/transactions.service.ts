@@ -26,6 +26,13 @@ import {
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { IdempotencyService } from '@modules/idempotency/idempotency.service';
+
+export interface WriteOptions {
+  idempotencyKey?: string;
+  // the version the client read; without it the write is unconditional
+  expectedVersion?: number;
+}
 
 export interface CreateTransactionResult {
   transaction: Transaction;
@@ -40,6 +47,7 @@ export class TransactionsService {
     private readonly walletsService: WalletsService,
     private readonly categoriesService: CategoriesService,
     private readonly spaceAccessService: SpaceAccessService,
+    private readonly idempotencyService: IdempotencyService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -47,8 +55,15 @@ export class TransactionsService {
     userId: number,
     spaceId: number,
     createTransactionDto: CreateTransactionDto,
+    options: WriteOptions = {},
   ): Promise<CreateTransactionResult> {
-    return this.write(userId, spaceId, async (manager) => {
+    const idempotency = {
+      operation: 'transactions.create',
+      key: options.idempotencyKey,
+      payload: createTransactionDto,
+    };
+
+    return this.write(userId, spaceId, idempotency, async (manager) => {
       const [wallet] = await lockRows(manager, Wallet, [createTransactionDto.wallet_id], 'exclusive');
       assertActiveWallet(wallet, spaceId);
       const [category] = await lockRows(manager, Category, [createTransactionDto.category_id], 'shared');
@@ -122,9 +137,15 @@ export class TransactionsService {
     return toTransactionView(transaction);
   }
 
-  // Without expectedVersion the delete is unconditional, as before If-Match.
-  async remove(userId: number, spaceId: number, transactionId: string, expectedVersion?: number): Promise<void> {
-    await this.write(userId, spaceId, async (manager) => {
+  async remove(userId: number, spaceId: number, transactionId: string, options: WriteOptions = {}): Promise<void> {
+    const { expectedVersion, idempotencyKey } = options;
+    const idempotency = {
+      operation: 'transactions.delete',
+      key: idempotencyKey,
+      payload: { transactionId, expectedVersion: expectedVersion ?? null },
+    };
+
+    await this.write(userId, spaceId, idempotency, async (manager) => {
       const transaction = await this.lockTransaction(manager, spaceId, transactionId);
 
       if (transaction.category.is_system) {
@@ -134,6 +155,8 @@ export class TransactionsService {
       assertVersion(transaction, expectedVersion);
 
       await manager.getRepository(Transaction).delete(transaction.id);
+
+      return true;
     });
   }
 
@@ -152,16 +175,31 @@ export class TransactionsService {
   }
 
   // One DB transaction per write, locks taken in one order across the app:
-  // the acting member's row, the space row, the transaction row, wallet rows
-  // by ascending id, category rows. Access is checked under these locks, so
-  // a membership removed or a category archived meanwhile is seen.
-  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
-    return runWriteTransaction(this.dataSource, async (manager) => {
+  // the acting member's row, the space row, the idempotency key, the
+  // transaction row, wallet rows by ascending id, category rows. Access is
+  // checked under these locks, so a membership removed or a category archived
+  // meanwhile is seen, and a repeat with the same key gets the stored result.
+  private async write<T>(
+    userId: number,
+    spaceId: number,
+    idempotency: { operation: string; key: string | undefined; payload: unknown },
+    work: (manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    const { key } = idempotency;
+    const result = await runWriteTransaction(this.dataSource, async (manager) => {
       await this.spaceAccessService.lockMembership(spaceId, userId, manager);
       await this.spaceAccessService.lockSpace(spaceId, manager, 'shared');
 
-      return work(manager);
+      return key === undefined
+        ? work(manager)
+        : this.idempotencyService.run(manager, { ...idempotency, key, userId, spaceId }, () => work(manager));
     });
+
+    if (key !== undefined) {
+      await this.idempotencyService.purgeExpired();
+    }
+
+    return result;
   }
 
   private async getActiveWallet(spaceId: number, walletId: number): Promise<Wallet> {

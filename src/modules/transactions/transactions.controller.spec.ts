@@ -57,9 +57,9 @@ describe('TransactionsController', () => {
     };
     transactionsService.create.mockResolvedValue(created);
 
-    const result = await controller.create(req, spaceId, dto);
+    const result = await controller.create(req, spaceId, dto, 'key-1');
 
-    expect(transactionsService.create).toHaveBeenCalledWith(1, spaceId, dto);
+    expect(transactionsService.create).toHaveBeenCalledWith(1, spaceId, dto, { idempotencyKey: 'key-1' });
     expect(result).toBe(created);
   });
 
@@ -133,9 +133,12 @@ describe('TransactionsController', () => {
   });
 
   it('remove delegates to TransactionsService.remove and returns true', async () => {
-    const result = await controller.remove(req, spaceId, 'tx-1', 3);
+    const result = await controller.remove(req, spaceId, 'tx-1', 3, 'key-1');
 
-    expect(transactionsService.remove).toHaveBeenCalledWith(1, spaceId, 'tx-1', 3);
+    expect(transactionsService.remove).toHaveBeenCalledWith(1, spaceId, 'tx-1', {
+      expectedVersion: 3,
+      idempotencyKey: 'key-1',
+    });
     expect(result).toBe(true);
   });
 });
