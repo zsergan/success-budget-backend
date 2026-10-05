@@ -14,7 +14,7 @@ mixed amount types across responses are a **gap** kept for API compatibility.
 | Request `amount`, `initial_balance` (`@IsMoneyAmount`)                                                         | `string`                               | decimal `string` only; a JSON number is a 400                                                               |
 | `DECIMAL(10,2)` column (`Transaction.amount`, `Limit.amount`)                                                  | `string`                               | written as the validated request string, read back with 2 decimals (`"12.30"`)                              |
 | `POST /wallets` → `transaction.amount`                                                                         | `number` (`InitialBalanceTransaction`) | `number`, converted from cents                                                                              |
-| `POST /transactions` → `transaction.amount`                                                                    | `string`                               | the request string echoed as sent (`"12.3"`)                                                                |
+| `POST /transactions`, `PATCH /transactions/:id` → `transaction.amount`                                         | `string`                               | re-read from DB, 2 decimals (`"12.30"`)                                                                     |
 | `POST/PUT /limits` → `amount`                                                                                  | `string`                               | `string` (re-read from DB)                                                                                  |
 | `GET /limits` → `amount` / `spent`, `in_percent`, `over_allocation.*`                                          | —                                      | `string` / `number`                                                                                         |
 | Derived: `wallet.balance`, `previous_balance`, `total_balance`, `total_income`, `total_spend`, `delta_percent` | `number`                               | `number`                                                                                                    |
@@ -22,9 +22,9 @@ mixed amount types across responses are a **gap** kept for API compatibility.
 | `GET /statistics/*` → every amount (`amount`, `net`, `delta`, `total_amount`, bucket `income`/`expense`)       | `string`                               | decimal `string` with exactly two decimals, `-` only for negatives; may exceed `99999999.99`                |
 | `GET /statistics/*` → `percent`, `change.*.percent`                                                            | `number` / `number \| null`            | one decimal, `roundPercentToTenth`; `null` when the comparison base is zero                                 |
 
-The same transaction amount still leaves the API as a number, the echoed
-input string, or a normalized DECIMAL string depending on the endpoint
-(**gap**, kept for API compatibility). The statistics endpoints are new and
+The same transaction amount still leaves the API as a number from
+`POST /wallets` and as a normalized DECIMAL string everywhere else (**gap**,
+kept for API compatibility). The statistics endpoints are new and
 use strings for every amount; their full types and rules are in
 [`statistics-contract.md`](statistics-contract.md).
 
@@ -128,7 +128,8 @@ and `email_verified`. Exact key sets are pinned in the e2e contract spec.
 | Response                                          | Type                                                          | Difference                                                                                                                                                                  |
 | ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /transactions`, `/latest`, `/:id`            | `TransactionView`                                             | not an entity: built field by field (`toTransactionView`); adds `kind` and `category.is_archived`; `wallet` is `null` when soft-deleted; see the transactions contract      |
-| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                                                                                            |
+| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction: TransactionView`; `wallet: WalletWithBalance`; `previous_balance`                                                                                             |
+| `PATCH /transactions/:id`                         | `UpdateTransactionResult`                                     | `transaction: TransactionView`; `wallets: { id, balance, is_deleted }[]`                                                                                                    |
 | `POST /wallets`                                   | `CreateWalletResult`                                          | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)                                                                            |
 | `GET /wallets`                                    | `WalletsOverview`                                             | `wallets[].wallet: WalletWithBalance`                                                                                                                                       |
 | `POST /categories`                                | `Category`                                                    | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior)                                                                        |

@@ -18,8 +18,8 @@ Differences from the behavior before this contract are collected under
 | `GET /transactions/:id`                                             | implemented |
 | One locked DB transaction per write, `Idempotency-Key`              | implemented |
 | Reworked `DELETE` with `If-Match`                                   | implemented |
-| Stricter `POST`, description normalization on write                 | planned     |
-| `PATCH /transactions/:id` with `If-Match`                           | planned     |
+| Stricter `POST`, description normalization on write                 | implemented |
+| `PATCH /transactions/:id` with `If-Match`                           | implemented |
 | Initial balance out of `GET /wallets` income                        | planned     |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
@@ -235,19 +235,29 @@ interface CreateTransactionRequest {
 }
 ```
 
-`201`, response unchanged in shape:
+`201`, with the same three keys as before:
 
 ```ts
 interface CreateTransactionResult {
-  // no relations and no kind: a created transaction is always regular
-  transaction: Pick<TransactionView, 'id' | 'transaction_type' | 'amount' | 'timestamp' | 'description' | 'version'>;
+  transaction: TransactionView; // the stored record, as GET /:id reads it
   wallet: TransactionWallet & { balance: number }; // balance after the transaction
-  previous_balance: number;
+  previous_balance: number; // balance before it
 }
 ```
 
-`transaction.amount` keeps echoing the request string (`"12.3"`), a gap kept
-for compatibility (see [`type-contract.md`](type-contract.md#money)).
+`transaction` is the [transaction view](#transaction-view), re-read after the
+insert: every field it had before keeps its name and type, `kind`,
+`wallet` and `category` are added, and `amount` has two decimals (`"12.30"`
+for a request of `"12.3"`; it used to echo the request string).
+
+`previous_balance` and `wallet.balance` are both sums of the wallet's
+history, read in the same DB transaction under the wallet's lock, before
+and after the insert. No other write to the wallet can land between them,
+so `wallet.balance - previous_balance` is exactly the transaction's effect.
+
+The server checks the wallet (of the space, not deleted), then the category
+(of the space, not the system one, not archived, of the same type as
+`transaction_type`).
 
 Takes an optional `Idempotency-Key` header (see
 [Idempotency-Key](#idempotency-key)); the mobile client sends one with every
@@ -340,7 +350,10 @@ interface UpdateTransactionResult {
 ```
 
 `wallets` holds the current balance of every wallet the edit touched: one
-entry, or two when `wallet_id` changed (the old wallet first). A no-op edit
+entry, or two when `wallet_id` changed (the old wallet first). Each balance is
+the sum of the wallet's history read after the edit, in the same DB
+transaction and under the wallets' locks; nothing is added back or
+subtracted by hand, and no balance is stored. A no-op edit
 still returns its wallet and does not bump `version`.
 
 ### `DELETE /spaces/:spaceId/transactions/:transactionId`
@@ -528,7 +541,7 @@ English display text and may change.
 | 404    | `TRANSACTION_NOT_FOUND`        | No such transaction in the space, or a malformed id                    |
 | 409    | `TRANSACTION_VERSION_CONFLICT` | `If-Match` differs from the stored version                             |
 | 409    | `IDEMPOTENCY_KEY_REUSED`       | The `Idempotency-Key` was used for a different request                 |
-| 428    | `TRANSACTION_VERSION_REQUIRED` | `PATCH` without `If-Match` (planned with `PATCH`)                      |
+| 428    | `TRANSACTION_VERSION_REQUIRED` | `PATCH` without `If-Match`                                             |
 | 429    | `TOO_MANY_REQUESTS`            | Rate limit                                                             |
 
 Codes are the same on every endpoint of the API, not only on transactions:
@@ -548,16 +561,18 @@ contract ship:
 - **New (shipped):** `GET /transactions/:id`; `kind`, `version` and
   `category.is_archived` on every transaction read; `version` on the `POST`
   results' `transaction`; `code` on every error of the API; optional
-  `Idempotency-Key` on `POST` and `DELETE` and optional `If-Match` on
-  `DELETE`.
+  `Idempotency-Key` on every write and optional `If-Match` on `DELETE`;
+  `PATCH /transactions/:id` with a required `If-Match`.
 - **Changed (shipped):** a blank description (legacy `""`) reads as `null`.
-- **New (planned):** `PATCH /transactions/:id`.
-- **`POST` is stricter:** a zero amount, a future timestamp, an archived
-  category and a category of the other type are refused (all were
-  accepted). A deleted wallet is `400 WALLET_DELETED` instead of
-  `403 FORBIDDEN_WALLET`.
-- **`description`:** `""` and whitespace-only input are stored as `null`,
-  input is trimmed, and legacy `""` is read as `null`.
+- **`POST` is stricter (shipped):** a zero amount, a timestamp more than a
+  minute ahead, an archived category and a category of the other type are
+  refused (all were accepted). A deleted wallet is `400 WALLET_DELETED`
+  instead of `403 FORBIDDEN_WALLET`. The `CATEGORY_ARCHIVED` message is now
+  generic ("The category is archived"), also on limits.
+- **`POST` response (shipped):** `transaction` is the full transaction view;
+  its `amount` has two decimals instead of echoing the request string.
+- **`description` (shipped):** `""` and whitespace-only input are stored as
+  `null`, input is trimmed, and legacy `""` is read as `null`.
 - **`DELETE` (shipped):** a missing or foreign transaction is
   `404 TRANSACTION_NOT_FOUND` instead of `403 FORBIDDEN_WALLET`; the initial
   balance can no longer be deleted (`400 TRANSACTION_IS_SYSTEM`).
