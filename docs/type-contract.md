@@ -108,7 +108,10 @@ from the JSON, never `null`. Queries that join a relation return
 
 A missing resource keeps its existing response: `assertBelongsToSpace()`
 turns a missing wallet, category, limit or transaction into the same 403 as
-a foreign one, and invites, members and confirmation codes stay 404. A row
+a foreign one, and invites, members and confirmation codes stay 404. The
+exception is `GET /transactions/:id`: a missing, malformed or foreign id is
+`404 TRANSACTION_NOT_FOUND` (see the
+[transactions contract](transactions-contract.md)). A row
 that disappears between the access check and the read (a concurrent delete)
 is a 404 via `assertFound()` instead of an empty 200 or a 500.
 
@@ -124,7 +127,7 @@ and `email_verified`. Exact key sets are pinned in the e2e contract spec.
 
 | Response                                          | Type                                                          | Difference                                                                                                                                                                  |
 | ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /transactions`, `GET /transactions/latest`   | `TransactionView`                                             | `wallet` is `null` when the wallet was soft-deleted; `category` always present                                                                                              |
+| `GET /transactions`, `/latest`, `/:id`            | `TransactionView`                                             | not an entity: built field by field (`toTransactionView`); adds `kind` and `category.is_archived`; `wallet` is `null` when soft-deleted; see the transactions contract      |
 | `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                                                                                            |
 | `POST /wallets`                                   | `CreateWalletResult`                                          | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)                                                                            |
 | `GET /wallets`                                    | `WalletsOverview`                                             | `wallets[].wallet: WalletWithBalance`                                                                                                                                       |
@@ -146,7 +149,7 @@ nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 | `category_ids` (limit create/update)                                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400                |
 | `invites` (space create)                                                                                                          | absent or `[]`: no invites; `null`: 400                                                       |
 | `""` for a field required non-empty on create (`wallet_name`, category `name`)                                                    | 400 on update as on create                                                                    |
-| `""` for `description`                                                                                                            | stored as `""`, not normalized to `null`                                                      |
+| `""` for `description`                                                                                                            | stored as `""`; transaction reads return a blank description as `null`                        |
 | Query param absent                                                                                                                | controller default applies                                                                    |
 | `GET /transactions` `transaction_type`, `category_id`, `wallet_id` absent                                                         | no filter; malformed, empty or repeated: 400 (`ParseOptionalEnumPipe`, `ParseOptionalIdPipe`) |
 | Statistics `null` fields (`actual_to`, `previous`, `change`, bucket amounts, `other`, `deleted_wallets`, `last_transaction_date`) | always present, `null` when not applicable; never omitted                                     |
@@ -155,3 +158,11 @@ nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 
 Validation errors keep the `message: [{ field, error }]` shape; nested errors
 are reported under a dotted `field` path.
+
+## Error codes
+
+Every error body carries `code` next to `message`: the `ErrorMessages` key
+for a domain error (`ApiException`, `assertBelongsToSpace`, `assertFound`,
+`RetryAfterException`), `VALIDATION_FAILED` for field errors, and the HTTP
+status name otherwise (`UNAUTHORIZED`, `TOO_MANY_REQUESTS`, `BAD_REQUEST`
+for a non-numeric path id). Clients branch on `code`, not on `message`.

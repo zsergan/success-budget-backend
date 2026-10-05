@@ -9,6 +9,26 @@ Anything marked _open_ needs sign-off before the stage that implements it.
 Differences from the behavior before this contract are collected under
 [Changes against the current API](#changes-against-the-current-api).
 
+## Implementation status
+
+| Part                                                                | Status      |
+| ------------------------------------------------------------------- | ----------- |
+| `code` on every error response                                      | implemented |
+| Transaction view (`kind`, `version`, compact category) on all reads | implemented |
+| `GET /transactions/:id`                                             | implemented |
+| Stricter `POST`, description normalization on write                 | planned     |
+| `PATCH /transactions/:id`, version check                            | planned     |
+| Reworked `DELETE`                                                   | planned     |
+| Initial balance out of `GET /wallets` income                        | planned     |
+
+Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
+schemas in `dto/transaction-responses.ts`), error codes in
+`src/shared/api.exception.ts` and `http-exception.filter.ts`. Tests:
+`transaction-view.spec.ts`, `transactions.service.spec.ts`,
+`test/transactions.e2e-spec.ts` and the response shapes in
+`test/type-contract.e2e-spec.ts`; the e2e tests check the list, latest and
+details responses against their OpenAPI schemas.
+
 ## Domain rules
 
 1. **One wallet, one category, one space.** A regular transaction belongs to
@@ -70,8 +90,11 @@ in the space. Checks run in this order: request shape
 design's "PUT" label is not part of the contract; there is no `PUT`.
 
 `:transactionId` is a UUID. A malformed id, an unknown id and the id of a
-transaction of another space all give `404 TRANSACTION_NOT_FOUND`. `latest`
-is a reserved path segment, never an id.
+transaction of another space all give `404 TRANSACTION_NOT_FOUND`, so a
+member cannot tell a foreign transaction from a missing one. A transaction
+belongs to the space of its own wallet, soft-deleted wallets included.
+`latest` is a reserved path segment, never an id. A non-numeric `:spaceId`
+is `400 BAD_REQUEST`.
 
 ## Field rules
 
@@ -135,12 +158,17 @@ description, or a category whose type differs from the transaction type.
 
 ## Responses
 
-### Transaction views
+### Transaction view
+
+One shape for every read: the list, `latest`, `GET /:id`, and the
+`transaction` of a `PATCH` result. It is built field by field
+(`toTransactionView`), so an entity column never reaches the client unless
+it is listed here.
 
 ```ts
 type TransactionKind = 'regular' | 'initial_balance';
 
-interface WalletRef {
+interface TransactionWallet {
   id: number;
   wallet_name: string;
   design: AppColor;
@@ -148,42 +176,45 @@ interface WalletRef {
   updated_at: string;
 }
 
-interface CategoryRef {
+// Not the Categories API item: transaction_count, limit and sort are absent.
+interface TransactionCategory {
   id: number;
   name: string;
   transaction_type: 'income' | 'expense';
   icon: CategoryIcon;
   color: AppColor;
-  is_active: 0 | 1; // 0: archived
+  is_active: 0 | 1; // kept for compatibility; prefer is_archived
+  is_archived: boolean;
   created_at: string;
   updated_at: string;
 }
 
-// GET /transactions, GET /transactions/latest
 interface TransactionView {
   id: string; // UUID
   kind: TransactionKind;
   transaction_type: 'income' | 'expense';
   amount: string; // "12.30": always two decimals
   timestamp: string; // ISO-8601 UTC with milliseconds
-  description: string | null;
-  wallet: WalletRef | null; // null when the wallet is deleted
-  category: CategoryRef;
-}
-
-// GET /transactions/:id, PATCH /transactions/:id
-interface TransactionDetails extends Omit<TransactionView, 'wallet'> {
-  wallet: WalletRef & { is_deleted: boolean }; // always present
+  description: string | null; // never ""
+  version: number; // starts at 1, bumped by every change of the record
+  wallet: TransactionWallet | null; // null when the wallet is deleted
+  category: TransactionCategory;
 }
 ```
 
-`kind` is the only supported way to recognize the initial balance; the
-system category's name is display text, not an identifier. A client renders
-an `initial_balance` row read-only and offers no edit or delete for it.
+`kind` is the only supported way to recognize the initial balance. It comes
+from the server's own data (the category's `is_system` flag, which stays
+hidden), never from the category name, which is display text and can be
+renamed. A client renders an `initial_balance` record read-only and offers
+no edit or delete for it.
 
-The list keeps `wallet: null` for deleted wallets for compatibility. The
-details view always returns the wallet with `is_deleted`, because the edit
-screen has to show the original wallet and offer to keep it.
+`wallet` is `null` for a deleted wallet in every read, as the list always
+did. The edit screen therefore shows a deleted wallet without its name, and
+keeps it by leaving `wallet_id` out of the `PATCH`.
+
+`version` is the record's concurrency token: the client keeps the value it
+read and sends it back with an edit (see
+[Retries and concurrency](#retries-and-concurrency)).
 
 ### `POST /spaces/:spaceId/transactions`
 
@@ -204,8 +235,9 @@ interface CreateTransactionRequest {
 
 ```ts
 interface CreateTransactionResult {
-  transaction: Omit<TransactionView, 'wallet' | 'category'>; // no relations
-  wallet: WalletRef & { balance: number }; // balance after the transaction
+  // no relations and no kind: a created transaction is always regular
+  transaction: Pick<TransactionView, 'id' | 'transaction_type' | 'amount' | 'timestamp' | 'description' | 'version'>;
+  wallet: TransactionWallet & { balance: number }; // balance after the transaction
   previous_balance: number;
 }
 ```
@@ -219,20 +251,22 @@ Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
 
 ### `GET /spaces/:spaceId/transactions`, `GET .../latest`
 
-Unchanged apart from the new `kind` field and the `description`
-normalization: `TransactionView[]` (newest first) and
-`TransactionView | null`. Initial balance records are listed, marked
+`TransactionView[]` (newest first) and `TransactionView`, or an empty body
+when the space has no transactions. Every pre-existing field keeps its name
+and type; `kind`, `version` and `category.is_archived` are new, and a blank
+description reads as `null`. Initial balance records are listed, marked
 `kind: 'initial_balance'`. Query parameters and their errors stay as in
 [`type-contract.md`](type-contract.md#absent-vs-null-vs-empty) and the
 [statistics contract](statistics-contract.md).
 
 ### `GET /spaces/:spaceId/transactions/:transactionId`
 
-`200 TransactionDetails` for any transaction of the space: regular or
-initial balance, on an active or deleted wallet, on an active or archived
-category.
+`200 TransactionView` for any transaction of the space: regular or initial
+balance, on an active or deleted wallet, on an active or archived category.
+It is the same object the list returns for that transaction.
 
-Errors: `FORBIDDEN_SPACE`, `TRANSACTION_NOT_FOUND`.
+Errors: `FORBIDDEN_SPACE` (checked first, so a non-member learns nothing
+about the id), `TRANSACTION_NOT_FOUND`.
 
 ### `PATCH /spaces/:spaceId/transactions/:transactionId`
 
@@ -240,6 +274,7 @@ Request: any subset of the create fields.
 
 ```ts
 interface UpdateTransactionRequest {
+  version: number; // required: the version the client read
   wallet_id?: number;
   category_id?: number;
   transaction_type?: 'income' | 'expense';
@@ -256,7 +291,7 @@ interface UpdateTransactionRequest {
 | `null` for `description`                      | clear the description                               |
 | `null` for any other field                    | `400 VALIDATION_FAILED`, `<field> must not be null` |
 | unknown field (`id`, `space_id`, `kind`, ...) | `400 VALIDATION_FAILED`                             |
-| `{}`                                          | no-op, `200` with the current state                 |
+| only `version`                                | no-op, `200` with the current state                 |
 
 `null` is never a wallet or category id: a transaction on a deleted wallet
 keeps it by leaving `wallet_id` out (or sending its own id).
@@ -264,16 +299,17 @@ keeps it by leaving `wallet_id` out (or sending its own id).
 The server merges the request into the current record and validates the
 result:
 
-| Check                                                       | Applies when                                | Error                        |
-| ----------------------------------------------------------- | ------------------------------------------- | ---------------------------- |
-| The transaction is not the initial balance                  | always                                      | `400 TRANSACTION_IS_SYSTEM`  |
-| Amount `0.01`–`99999999.99`, two decimals                   | `amount` changes                            | `400 VALIDATION_FAILED`      |
-| Timestamp in range, not in the future                       | `timestamp` changes                         | `400 VALIDATION_FAILED`      |
-| Wallet exists in the space                                  | `wallet_id` changes                         | `403 FORBIDDEN_WALLET`       |
-| Wallet is not deleted                                       | `wallet_id` changes                         | `400 WALLET_DELETED`         |
-| Category exists in the space and is not the system one      | `category_id` changes                       | `403 FORBIDDEN_CATEGORY`     |
-| Category is not archived                                    | `category_id` changes                       | `400 CATEGORY_ARCHIVED`      |
-| Resulting category type equals resulting `transaction_type` | `transaction_type` or `category_id` changes | `400 CATEGORY_TYPE_MISMATCH` |
+| Check                                                       | Applies when                                | Error                              |
+| ----------------------------------------------------------- | ------------------------------------------- | ---------------------------------- |
+| The transaction is not the initial balance                  | always                                      | `400 TRANSACTION_IS_SYSTEM`        |
+| `version` equals the stored version                         | always                                      | `409 TRANSACTION_VERSION_CONFLICT` |
+| Amount `0.01`–`99999999.99`, two decimals                   | `amount` changes                            | `400 VALIDATION_FAILED`            |
+| Timestamp in range, not in the future                       | `timestamp` changes                         | `400 VALIDATION_FAILED`            |
+| Wallet exists in the space                                  | `wallet_id` changes                         | `403 FORBIDDEN_WALLET`             |
+| Wallet is not deleted                                       | `wallet_id` changes                         | `400 WALLET_DELETED`               |
+| Category exists in the space and is not the system one      | `category_id` changes                       | `403 FORBIDDEN_CATEGORY`           |
+| Category is not archived                                    | `category_id` changes                       | `400 CATEGORY_ARCHIVED`            |
+| Resulting category type equals resulting `transaction_type` | `transaction_type` or `category_id` changes | `400 CATEGORY_TYPE_MISMATCH`       |
 
 Request-shape errors (types, formats, description length, `null`s and
 unknown fields) come before the record is loaded, so a malformed request to
@@ -286,29 +322,33 @@ loaded. A failed edit changes nothing.
 
 ```ts
 interface UpdateTransactionResult {
-  transaction: TransactionDetails; // the stored state after the edit
+  transaction: TransactionView; // the stored state after the edit, new version
   wallets: Array<{ id: number; balance: number; is_deleted: boolean }>;
 }
 ```
 
 `wallets` holds the current balance of every wallet the edit touched: one
 entry, or two when `wallet_id` changed (the old wallet first). A no-op edit
-still returns its wallet.
+still returns its wallet and does not bump `version`.
 
 ### `DELETE /spaces/:spaceId/transactions/:transactionId`
 
 Deletes a regular transaction, also one on a deleted wallet or an archived
 category. `200` with the body `true`, as today.
 
-Errors: `VALIDATION_FAILED` (path parameters), `FORBIDDEN_SPACE`,
-`TRANSACTION_NOT_FOUND`, `TRANSACTION_IS_SYSTEM`.
+Errors: `FORBIDDEN_SPACE`, `TRANSACTION_NOT_FOUND`, `TRANSACTION_IS_SYSTEM`.
+_open_: whether `DELETE` also takes the `version` it saw; undo right after
+create does not need it.
 
 ## Retries and concurrency
 
 - `GET` is safe to repeat.
-- `PATCH` sets values, so repeating the same request gives the same record.
-  Concurrent edits by members of a shared space are last write wins per
-  sent field; there is no version check.
+- `PATCH` carries the `version` the client read. If the record changed
+  since, by another member of a shared space or by another device, the edit
+  is refused with `409 TRANSACTION_VERSION_CONFLICT` and nothing is
+  written; the client re-reads `GET /:id` and lets the user decide.
+  Repeating a `PATCH` whose response was lost therefore also gets the `409`
+  (its own edit bumped the version); a re-read shows whether it applied.
 - `DELETE` repeated after a success (for example after a lost response)
   gets `404 TRANSACTION_NOT_FOUND`; a client that sent the delete treats
   that as done.
@@ -351,32 +391,41 @@ English display text and may change.
 }
 ```
 
-| Status | `code`                   | When                                                                  |
-| ------ | ------------------------ | --------------------------------------------------------------------- |
-| 400    | `VALIDATION_FAILED`      | Request shape or field rule; `message` is `[{ field, error }]`        |
-| 400    | `TRANSACTION_IS_SYSTEM`  | `PATCH`/`DELETE` of the initial balance                               |
-| 400    | `WALLET_DELETED`         | A deleted wallet chosen on create, or a different deleted one on edit |
-| 400    | `CATEGORY_ARCHIVED`      | An archived category chosen on create, or a different one on edit     |
-| 400    | `CATEGORY_TYPE_MISMATCH` | The resulting category type differs from the transaction type         |
-| 403    | `FORBIDDEN_SPACE`        | Not a member, or no such space                                        |
-| 403    | `FORBIDDEN_WALLET`       | No such wallet in the space                                           |
-| 403    | `FORBIDDEN_CATEGORY`     | No such category in the space, or the system category                 |
-| 404    | `TRANSACTION_NOT_FOUND`  | No such transaction in the space, or a malformed id                   |
+| Status | `code`                         | When                                                                  |
+| ------ | ------------------------------ | --------------------------------------------------------------------- |
+| 400    | `VALIDATION_FAILED`            | Request shape or field rule; `message` is `[{ field, error }]`        |
+| 400    | `TRANSACTION_IS_SYSTEM`        | `PATCH`/`DELETE` of the initial balance                               |
+| 400    | `WALLET_DELETED`               | A deleted wallet chosen on create, or a different deleted one on edit |
+| 400    | `CATEGORY_ARCHIVED`            | An archived category chosen on create, or a different one on edit     |
+| 400    | `CATEGORY_TYPE_MISMATCH`       | The resulting category type differs from the transaction type         |
+| 400    | `BAD_REQUEST`                  | A non-numeric `:spaceId`                                              |
+| 401    | `UNAUTHORIZED`                 | Missing, invalid or revoked token                                     |
+| 403    | `FORBIDDEN_SPACE`              | Not a member, or no such space                                        |
+| 403    | `FORBIDDEN_WALLET`             | No such wallet in the space                                           |
+| 403    | `FORBIDDEN_CATEGORY`           | No such category in the space, or the system category                 |
+| 404    | `TRANSACTION_NOT_FOUND`        | No such transaction in the space, or a malformed id                   |
+| 409    | `TRANSACTION_VERSION_CONFLICT` | The record changed since the client read it                           |
+| 429    | `TOO_MANY_REQUESTS`            | Rate limit                                                            |
 
-Other errors carry the status name as `code` (`UNAUTHORIZED`,
-`TOO_MANY_REQUESTS`). A `5xx` may lack `code` and is always safe to retry
-for `GET`, `PATCH` and `DELETE`.
+Codes are the same on every endpoint of the API, not only on transactions:
+a domain error carries its own code (`FORBIDDEN_LIMIT`, `CATEGORY_IS_SYSTEM`,
+...), field errors carry `VALIDATION_FAILED`, and any other error carries
+the HTTP status name. A `5xx` may lack `code`; `GET` is always safe to
+retry, `PATCH` too thanks to the version check.
 
-In `VALIDATION_FAILED`, `field` is stable and names the request field (or
-`transactionId`, `spaceId` for path parameters); `error` is display text.
+In `VALIDATION_FAILED`, `field` is stable and names the request field;
+`error` is display text.
 
 ## Changes against the current API
 
 What the mobile client has to adapt to once the stages implementing this
 contract ship:
 
-- **New:** `GET` and `PATCH /transactions/:id`; `kind` on every transaction
-  view; `code` on every error.
+- **New (shipped):** `GET /transactions/:id`; `kind`, `version` and
+  `category.is_archived` on every transaction read; `version` on the `POST`
+  results' `transaction`; `code` on every error of the API.
+- **Changed (shipped):** a blank description (legacy `""`) reads as `null`.
+- **New (planned):** `PATCH /transactions/:id`.
 - **`POST` is stricter:** a zero amount, a future timestamp, an archived
   category and a category of the other type are refused (all were
   accepted). A deleted wallet is `400 WALLET_DELETED` instead of
