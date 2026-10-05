@@ -321,5 +321,65 @@ describe('Transaction writes (e2e)', () => {
       expect(first.status).toBe(200);
       expect(second.status).toBe(404);
     });
+
+    it('applies one of two concurrent edits from the same version and refuses the other', async () => {
+      const s = await setup();
+      const created = await api(s.member)
+        .post(`${base(s.member)}/transactions`)
+        .send(expense(s))
+        .expect(201);
+      const url = `${base(s.member)}/transactions/${created.body.transaction.id}`;
+      const checkpoint = pauseAfterFirstCall(queries(), 'getOneInSpace', insideWrite);
+
+      const [first, second] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        LOCK_TRANSACTION,
+        () => api(s.member).patch(url).set('If-Match', '"1"').send({ amount: '20' }),
+        () => api(s.member).patch(url).set('If-Match', '"1"').send({ amount: '30' }),
+      );
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(409);
+      const read = await api(s.member).get(url).expect(200);
+      expect(read.body).toEqual(expect.objectContaining({ amount: '20.00', version: 2 }));
+    });
+
+    it('moves two transactions crosswise between two wallets without a deadlock', async () => {
+      const s = await setup();
+      const other = await api(s.member)
+        .post(`${base(s.member)}/wallets`)
+        .send({ wallet_name: 'Other', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const otherId = other.body.wallet.id as number;
+      const inFirst = await api(s.member)
+        .post(`${base(s.member)}/transactions`)
+        .send(expense(s, '1.00'))
+        .expect(201);
+      const inOther = await api(s.member)
+        .post(`${base(s.member)}/transactions`)
+        .send({ ...expense(s, '2.00'), wallet_id: otherId })
+        .expect(201);
+      const move = (id: string, walletId: number) =>
+        api(s.member)
+          .patch(`${base(s.member)}/transactions/${id}`)
+          .set('If-Match', '"1"')
+          .send({ wallet_id: walletId });
+      const checkpoint = pauseAfterFirstCall(queries(), 'getBalances', insideWrite);
+
+      const [first, second] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        LOCK_WALLET,
+        () => move(inFirst.body.transaction.id, otherId),
+        () => move(inOther.body.transaction.id, s.walletId),
+      );
+
+      expect([first.status, second.status]).toEqual([200, 200]);
+      expect(second.body.wallets).toEqual([
+        { id: otherId, balance: -1, is_deleted: false },
+        { id: s.walletId, balance: -2, is_deleted: false },
+      ]);
+    });
   });
 });

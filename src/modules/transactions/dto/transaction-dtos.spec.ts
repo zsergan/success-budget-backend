@@ -2,6 +2,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
 import { CreateTransactionDto } from './create-transaction.dto';
+import { UpdateTransactionDto } from './update-transaction.dto';
 
 const errorsOf = async <T extends object>(type: new () => T, plain: object) => {
   const dto = plainToInstance(type, plain);
@@ -67,5 +68,37 @@ describe('CreateTransactionDto', () => {
     expect((await errorsOf(CreateTransactionDto, { ...valid, description: 'x'.repeat(141) })).errors).toEqual({
       description: ['description must be at most 140 characters'],
     });
+  });
+});
+
+describe('UpdateTransactionDto', () => {
+  it('accepts an empty body', async () => {
+    expect((await errorsOf(UpdateTransactionDto, {})).errors).toEqual({});
+  });
+
+  it('leaves the amount and timestamp rules for new values to the service', async () => {
+    const { errors } = await errorsOf(UpdateTransactionDto, { amount: '0', timestamp: '2037-01-01T00:00:00.000Z' });
+
+    expect(errors).toEqual({});
+  });
+
+  it.each(['wallet_id', 'category_id', 'transaction_type', 'amount', 'timestamp'])(
+    'refuses a null %s',
+    async (field) => {
+      expect((await errorsOf(UpdateTransactionDto, { [field]: null })).errors[field]).toContain(
+        `${field} must not be null`,
+      );
+    },
+  );
+
+  it('takes a null description as clearing it', async () => {
+    const { dto, errors } = await errorsOf(UpdateTransactionDto, { description: null });
+
+    expect(errors).toEqual({});
+    expect(dto.description).toBeNull();
+  });
+
+  it('refuses an unknown field', async () => {
+    expect(Object.keys((await errorsOf(UpdateTransactionDto, { kind: 'regular' })).errors)).toEqual(['kind']);
   });
 });

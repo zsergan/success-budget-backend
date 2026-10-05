@@ -1,13 +1,20 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpStatus, Injectable } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { Category } from '@entities/category.entity';
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
-import type { TransactionView } from './dto/transaction-responses';
+import type { UpdateTransactionDto } from './dto/update-transaction.dto';
+import type { TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
-import { normalizeDescription } from './transaction-rules';
+import {
+  AMOUNT_NOT_POSITIVE,
+  TIMESTAMP_IN_FUTURE,
+  isNotInFuture,
+  isPositiveAmount,
+  normalizeDescription,
+} from './transaction-rules';
 import {
   assertCategoryActive,
   assertCategoryType,
@@ -18,7 +25,7 @@ import {
   assertWalletInSpace,
 } from './transaction-checks';
 import { ApiException } from '@shared/api.exception';
-import { assertFound, lockRows, moneyToNumber, runWriteTransaction, toDate } from '@shared/utils';
+import { assertFound, lockRows, moneyToNumber, parseMoney, runWriteTransaction, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
@@ -40,6 +47,10 @@ export interface CreateTransactionResult {
   wallet: WalletWithBalance;
   previous_balance: number;
 }
+
+type TransactionChanges = Partial<
+  Pick<Transaction, 'wallet_id' | 'category_id' | 'transaction_type' | 'amount' | 'timestamp' | 'description'>
+>;
 
 @Injectable()
 export class TransactionsService {
@@ -95,6 +106,85 @@ export class TransactionsService {
         transaction: toTransactionView(created),
         wallet: Object.assign(wallet, { balance: moneyToNumber(balance) }),
         previous_balance: moneyToNumber(previousBalance),
+      };
+    });
+  }
+
+  // Merges the request into the stored record and checks the result. Only
+  // changed values are checked against the rules for new values, so an edit
+  // keeps a deleted wallet, an archived category or a legacy value it does
+  // not change. An edit that changes nothing writes nothing and keeps the
+  // version.
+  async update(
+    userId: number,
+    spaceId: number,
+    transactionId: string,
+    updateTransactionDto: UpdateTransactionDto,
+    options: WriteOptions = {},
+  ): Promise<UpdateTransactionResult> {
+    const { expectedVersion, idempotencyKey } = options;
+
+    if (expectedVersion === undefined) {
+      throw new ApiException('TRANSACTION_VERSION_REQUIRED', HttpStatus.PRECONDITION_REQUIRED);
+    }
+
+    const idempotency = {
+      operation: 'transactions.update',
+      key: idempotencyKey,
+      payload: { transactionId, expectedVersion, body: updateTransactionDto },
+    };
+
+    return this.write(userId, spaceId, idempotency, async (manager) => {
+      const original = await this.lockTransaction(manager, spaceId, transactionId);
+      assertNotSystem(original);
+      assertVersion(original, expectedVersion);
+
+      const changes = changedFields(original, updateTransactionDto);
+      assertNewValues(changes);
+
+      const walletIds = [original.wallet_id, ...(changes.wallet_id === undefined ? [] : [changes.wallet_id])];
+      const wallets = await lockRows(manager, Wallet, walletIds, 'exclusive');
+
+      if (changes.wallet_id !== undefined) {
+        const target = wallets.find((wallet) => wallet.id === changes.wallet_id);
+        assertWalletInSpace(target, spaceId);
+        assertWalletActive(target);
+      }
+
+      let category: Category = original.category;
+
+      if (changes.category_id !== undefined) {
+        const [target] = await lockRows(manager, Category, [changes.category_id], 'shared');
+        assertUserCategory(target, spaceId);
+        assertCategoryActive(target);
+        category = target;
+      }
+
+      if (changes.category_id !== undefined || changes.transaction_type !== undefined) {
+        assertCategoryType(category, changes.transaction_type ?? original.transaction_type);
+      }
+
+      if (Object.keys(changes).length > 0) {
+        // the update query also bumps the @VersionColumn
+        await manager
+          .createQueryBuilder()
+          .update(Transaction)
+          .set(changes)
+          .where('id = :id', { id: original.id })
+          .execute();
+      }
+
+      const updated = await this.transactionQueriesService.getOneInSpace(spaceId, original.id, manager);
+      assertFound(updated, 'TRANSACTION_NOT_FOUND');
+      const balances = await this.transactionQueriesService.getBalances(walletIds, manager);
+
+      return {
+        transaction: toTransactionView(updated),
+        wallets: walletIds.map((id) => ({
+          id,
+          balance: moneyToNumber(balances.get(id) ?? 0n),
+          is_deleted: Boolean(wallets.find((wallet) => wallet.id === id)?.is_deleted),
+        })),
       };
     });
   }
@@ -226,5 +316,48 @@ export class TransactionsService {
     }
 
     return wallet;
+  }
+}
+
+// Equality is by value: a field equal to the stored one is not a change.
+function changedFields(original: Transaction, dto: UpdateTransactionDto): TransactionChanges {
+  const changes: TransactionChanges = {};
+
+  if (dto.wallet_id !== undefined && dto.wallet_id !== original.wallet_id) {
+    changes.wallet_id = dto.wallet_id;
+  }
+
+  if (dto.category_id !== undefined && dto.category_id !== original.category_id) {
+    changes.category_id = dto.category_id;
+  }
+
+  if (dto.transaction_type !== undefined && dto.transaction_type !== original.transaction_type) {
+    changes.transaction_type = dto.transaction_type;
+  }
+
+  if (dto.amount !== undefined && parseMoney(dto.amount) !== parseMoney(original.amount)) {
+    changes.amount = dto.amount;
+  }
+
+  if (dto.timestamp !== undefined && toDate(dto.timestamp).getTime() !== original.timestamp.getTime()) {
+    changes.timestamp = toDate(dto.timestamp);
+  }
+
+  const description = normalizeDescription(dto.description);
+
+  if (dto.description !== undefined && description !== normalizeDescription(original.description)) {
+    changes.description = description;
+  }
+
+  return changes;
+}
+
+function assertNewValues(changes: TransactionChanges): void {
+  if (changes.amount !== undefined && !isPositiveAmount(changes.amount)) {
+    throw new BadRequestException([{ field: 'amount', error: AMOUNT_NOT_POSITIVE }]);
+  }
+
+  if (changes.timestamp !== undefined && !isNotInFuture(changes.timestamp.toISOString())) {
+    throw new BadRequestException([{ field: 'timestamp', error: TIMESTAMP_IN_FUTURE }]);
   }
 }

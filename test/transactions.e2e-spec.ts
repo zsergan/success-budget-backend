@@ -8,6 +8,7 @@ describe('Transactions (e2e)', () => {
   let owner: Member;
   let outsider: Member;
   let expenseCategoryId: number;
+  let secondExpenseCategoryId: number;
   let incomeCategoryId: number;
 
   beforeAll(async () => {
@@ -19,6 +20,7 @@ describe('Transactions (e2e)', () => {
       .get(`${base(owner)}/categories`)
       .expect(200);
     expenseCategoryId = categories.body.expenses[0].id;
+    secondExpenseCategoryId = categories.body.expenses[1].id;
     incomeCategoryId = categories.body.incomes[0].id;
   });
 
@@ -407,6 +409,221 @@ describe('Transactions (e2e)', () => {
 
       expect(mismatch.body.code).toBe('CATEGORY_TYPE_MISMATCH');
       expect(archivedRes.body.code).toBe('CATEGORY_ARCHIVED');
+    });
+  });
+
+  describe('PATCH /transactions/:id', () => {
+    async function setup(initialBalance = '100') {
+      const { wallet } = await createWallet(owner, initialBalance);
+      const id = await createTransaction(owner, wallet.id);
+
+      return { walletId: wallet.id as number, id };
+    }
+
+    function patch(id: string, version: number | null, body: object): request.Test {
+      const req = api(owner).patch(`${base(owner)}/transactions/${id}`);
+      return (version === null ? req : req.set('If-Match', `"${version}"`)).send(body);
+    }
+
+    async function balanceOf(walletId: number): Promise<number> {
+      const res = await api(owner)
+        .get(`${base(owner)}/wallets`)
+        .expect(200);
+      return res.body.wallets.find((entry: { wallet: { id: number } }) => entry.wallet.id === walletId).wallet.balance;
+    }
+
+    it('changes the amount, bumps the version and returns what GET /:id reads, as the schema describes', async () => {
+      const { walletId, id } = await setup();
+
+      const res = await patch(id, 1, { amount: '20' }).expect(200);
+      const read = await api(owner)
+        .get(`${base(owner)}/transactions/${id}`)
+        .expect(200);
+
+      expect(res.body).toEqual({
+        transaction: read.body,
+        wallets: [{ id: walletId, balance: 80, is_deleted: false }],
+      });
+      expect(read.body).toEqual(expect.objectContaining({ amount: '20.00', version: 2 }));
+      expect(await balanceOf(walletId)).toBe(80);
+
+      const document = createOpenApiDocument(testApp.app);
+      expect(
+        schemaErrors(document, okResponseSchema(document, '/transactions/{transactionId}', 'patch'), res.body),
+      ).toEqual([]);
+    });
+
+    it('changes the type together with a matching category, and refuses a mismatch', async () => {
+      const { walletId, id } = await setup();
+
+      const mismatch = await patch(id, 1, { transaction_type: 'income' }).expect(400);
+      expect(mismatch.body.code).toBe('CATEGORY_TYPE_MISMATCH');
+
+      const res = await patch(id, 1, { transaction_type: 'income', category_id: incomeCategoryId }).expect(200);
+
+      expect(res.body.transaction).toEqual(
+        expect.objectContaining({
+          transaction_type: 'income',
+          category: expect.objectContaining({ id: incomeCategoryId }),
+        }),
+      );
+      expect(await balanceOf(walletId)).toBe(112.3);
+    });
+
+    it('moves the transaction between periods and categories in statistics', async () => {
+      const { id } = await setup();
+      const summary = async (anchor: string) =>
+        (
+          await api(owner)
+            .get(`${base(owner)}/statistics/breakdown`)
+            .query({ period: 'month', time_zone: 'UTC', anchor_date: anchor })
+            .expect(200)
+        ).body;
+      const amountOf = (
+        block: { by_category: { primary_items: { id: number; amount: string }[] } },
+        categoryId: number,
+      ) => block.by_category.primary_items.find((item) => item.id === categoryId)?.amount;
+      const before = await summary('2026-08-01');
+
+      await patch(id, 1, { timestamp: '2026-08-20T10:00:00.000Z', category_id: secondExpenseCategoryId }).expect(200);
+
+      const after = await summary('2026-08-01');
+      const previous = Number(amountOf(before, secondExpenseCategoryId) ?? 0);
+      expect(Number(amountOf(after, secondExpenseCategoryId))).toBeCloseTo(previous + 12.3, 2);
+    });
+
+    it('moves to another active wallet and returns both balances, the old one first', async () => {
+      const { walletId, id } = await setup();
+      const { wallet: target } = await createWallet(owner, '50');
+
+      const res = await patch(id, 1, { wallet_id: target.id }).expect(200);
+
+      expect(res.body.wallets).toEqual([
+        { id: walletId, balance: 100, is_deleted: false },
+        { id: target.id, balance: 37.7, is_deleted: false },
+      ]);
+      expect(res.body.transaction.wallet).toEqual(expect.objectContaining({ id: target.id }));
+      expect(await balanceOf(walletId)).toBe(100);
+      expect(await balanceOf(target.id)).toBe(37.7);
+    });
+
+    it('refuses moving to a deleted wallet or a wallet of another space', async () => {
+      const { id } = await setup();
+      const { wallet: deleted } = await createWallet(owner);
+      await api(owner)
+        .delete(`${base(owner)}/wallets/${deleted.id}`)
+        .expect(200);
+      const { wallet: foreign } = await createWallet(outsider);
+
+      expect((await patch(id, 1, { wallet_id: deleted.id }).expect(400)).body.code).toBe('WALLET_DELETED');
+      expect((await patch(id, 1, { wallet_id: foreign.id }).expect(403)).body.code).toBe('FORBIDDEN_WALLET');
+    });
+
+    it('keeps its own deleted wallet and archived category while other fields change', async () => {
+      const { wallet } = await createWallet(owner);
+      const category = await api(owner)
+        .post(`${base(owner)}/categories`)
+        .send({ name: 'Fading', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+        .expect(201);
+      const id = await createTransaction(owner, wallet.id, category.body.id);
+      await api(owner)
+        .delete(`${base(owner)}/categories/${category.body.id}`)
+        .expect(200);
+      await api(owner)
+        .delete(`${base(owner)}/wallets/${wallet.id}`)
+        .expect(200);
+
+      const res = await patch(id, 1, {
+        wallet_id: wallet.id,
+        category_id: category.body.id,
+        description: 'Still here',
+      }).expect(200);
+
+      expect(res.body.transaction).toEqual(
+        expect.objectContaining({
+          description: 'Still here',
+          wallet: null,
+          category: expect.objectContaining({ id: category.body.id, is_archived: true }),
+        }),
+      );
+      expect(res.body.wallets).toEqual([{ id: wallet.id, balance: -12.3, is_deleted: true }]);
+    });
+
+    it('keeps the version when nothing changes', async () => {
+      const { id } = await setup();
+
+      const res = await patch(id, 1, {
+        amount: '12.30',
+        description: ' Lunch ',
+        timestamp: '2026-09-15T13:00:00.000+03:00',
+      }).expect(200);
+
+      expect(res.body.transaction.version).toBe(1);
+    });
+
+    it('keeps a legacy zero amount when another field changes, but refuses setting zero', async () => {
+      const { id } = await setup();
+      await testApp.dataSource.query('UPDATE transactions SET amount = 0 WHERE id = ?', [id]);
+
+      const res = await patch(id, 1, { amount: '0', description: 'Legacy' }).expect(200);
+      expect(res.body.transaction).toEqual(expect.objectContaining({ amount: '0.00', description: 'Legacy' }));
+
+      const zero = await patch(id, 2, { amount: '5' }).expect(200);
+      expect(zero.body.transaction.amount).toBe('5.00');
+      const refused = await patch(id, 3, { amount: '0' }).expect(400);
+      expect(refused.body.message).toEqual([{ field: 'amount', error: 'amount must be greater than 0' }]);
+    });
+
+    it('refuses a stale version and a missing If-Match', async () => {
+      const { id } = await setup();
+      await patch(id, 1, { amount: '20' }).expect(200);
+
+      const stale = await patch(id, 1, { amount: '30' }).expect(409);
+      const missing = await patch(id, null, { amount: '30' }).expect(428);
+
+      expect(stale.body.code).toBe('TRANSACTION_VERSION_CONFLICT');
+      expect(missing.body.code).toBe('TRANSACTION_VERSION_REQUIRED');
+    });
+
+    it.each<[string, object]>([
+      ['a null wallet', { wallet_id: null }],
+      ['an unknown field', { kind: 'regular' }],
+      ['a malformed amount', { amount: '1.234' }],
+    ])('rejects %s before If-Match and the record are looked at', async (_, body) => {
+      const res = await patch('not-a-uuid', null, body).expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('refuses the initial balance', async () => {
+      const funded = await createWallet(owner, '25');
+
+      const res = await patch(funded.transaction.id, 1, { amount: '30' }).expect(400);
+
+      expect(res.body.code).toBe('TRANSACTION_IS_SYSTEM');
+    });
+
+    it('answers a repeat with the same Idempotency-Key with the original result', async () => {
+      const { id } = await setup();
+      const send = () => patch(id, 1, { amount: '20' }).set('Idempotency-Key', `patch-${id}`);
+
+      const first = await send().expect(200);
+      const repeat = await send().expect(200);
+
+      expect(repeat.body).toEqual(first.body);
+      expect(repeat.body.transaction.version).toBe(2);
+    });
+
+    it('is not found for a transaction of another space', async () => {
+      const { wallet } = await createWallet(outsider);
+      const categories = await api(outsider)
+        .get(`${base(outsider)}/categories`)
+        .expect(200);
+      const foreignId = await createTransaction(outsider, wallet.id, categories.body.expenses[0].id);
+
+      const res = await patch(foreignId, 1, { amount: '1' }).expect(404);
+
+      expect(res.body.code).toBe('TRANSACTION_NOT_FOUND');
     });
   });
 });

@@ -4,6 +4,7 @@ import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { TransactionType } from '@shared/enums';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import type { UpdateTransactionResult } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
 import type { AuthedRequest } from '@shared/types';
 import { withRelations } from '@shared/utils';
@@ -24,6 +25,7 @@ describe('TransactionsController', () => {
             getAll: jest.fn(),
             getLatest: jest.fn(),
             getById: jest.fn(),
+            update: jest.fn(),
             remove: jest.fn(),
           },
         },
@@ -131,6 +133,20 @@ describe('TransactionsController', () => {
 
     expect(transactionsService.getById).toHaveBeenCalledWith(1, spaceId, 'tx-1');
     expect(result).toBe(view);
+  });
+
+  it('update delegates the body and both headers to TransactionsService.update', async () => {
+    const dto = { amount: '5.00' };
+    const updated = { transaction: {}, wallets: [] } as unknown as UpdateTransactionResult;
+    transactionsService.update.mockResolvedValue(updated);
+
+    const result = await controller.update(req, spaceId, 'tx-1', dto, 2, 'key-1');
+
+    expect(transactionsService.update).toHaveBeenCalledWith(1, spaceId, 'tx-1', dto, {
+      expectedVersion: 2,
+      idempotencyKey: 'key-1',
+    });
+    expect(result).toBe(updated);
   });
 
   it('remove delegates to TransactionsService.remove and returns true', async () => {

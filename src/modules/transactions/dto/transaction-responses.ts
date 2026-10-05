@@ -88,3 +88,26 @@ export class TransactionView {
   @ApiProperty({ type: TransactionCategory })
   category!: TransactionCategory;
 }
+
+export class TransactionWalletBalance {
+  @ApiProperty({ type: 'integer', example: 7 })
+  id!: number;
+
+  @ApiProperty({ example: 120.5, description: 'Current balance, from the whole history.' })
+  balance!: number;
+
+  @ApiProperty()
+  is_deleted!: boolean;
+}
+
+export class UpdateTransactionResult {
+  @ApiProperty({ type: TransactionView, description: 'The stored state after the edit.' })
+  transaction!: TransactionView;
+
+  @ApiProperty({
+    type: TransactionWalletBalance,
+    isArray: true,
+    description: 'Every wallet the edit touched: the old one first, then the new one when the wallet changed.',
+  })
+  wallets!: TransactionWalletBalance[];
+}

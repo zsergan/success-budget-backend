@@ -6,6 +6,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Request,
@@ -19,12 +20,14 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiQuery,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
-import { TransactionView } from './dto/transaction-responses';
+import { UpdateTransactionDto } from './dto/update-transaction.dto';
+import { TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
 import type { AuthedRequest } from '@shared/types';
 import { TransactionType } from '@shared/enums';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
@@ -105,6 +108,31 @@ export class TransactionsController {
     @Param('transactionId') transactionId: string,
   ): Promise<TransactionView> {
     return this.transactionsService.getById(req.user.id, spaceId, transactionId);
+  }
+
+  @ApiHeader({ name: 'If-Match', required: true, description: 'The version the client read, e.g. "3".' })
+  @ApiHeader(IDEMPOTENCY_KEY_HEADER)
+  @ApiOkResponse({ type: UpdateTransactionResult })
+  @ApiBadRequestResponse({
+    description:
+      'VALIDATION_FAILED, TRANSACTION_IS_SYSTEM, WALLET_DELETED, CATEGORY_ARCHIVED or CATEGORY_TYPE_MISMATCH.',
+  })
+  @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND: missing, malformed id, or of another space.' })
+  @ApiConflictResponse({ description: 'TRANSACTION_VERSION_CONFLICT or IDEMPOTENCY_KEY_REUSED.' })
+  @ApiResponse({ status: 428, description: 'TRANSACTION_VERSION_REQUIRED: If-Match is missing.' })
+  @Patch(':transactionId')
+  async update(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('transactionId') transactionId: string,
+    @Body() updateTransactionDto: UpdateTransactionDto,
+    @RequestHeader('If-Match', ParseIfMatchVersionPipe) expectedVersion?: number,
+    @RequestHeader('Idempotency-Key', ParseIdempotencyKeyPipe) idempotencyKey?: string,
+  ): Promise<UpdateTransactionResult> {
+    return this.transactionsService.update(req.user.id, spaceId, transactionId, updateTransactionDto, {
+      expectedVersion,
+      idempotencyKey,
+    });
   }
 
   @ApiHeader({

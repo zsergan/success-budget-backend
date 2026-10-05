@@ -4,6 +4,7 @@ import { DataSource, type EntityManager, type Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import type { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { toTransactionView } from './transaction-view';
 import { Transaction } from '@entities/transaction.entity';
 import { Category } from '@entities/category.entity';
@@ -11,7 +12,10 @@ import { Wallet } from '@entities/wallet.entity';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { withRelations } from '@shared/utils';
-import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+import {
+  TransactionQueriesService,
+  type LoadedTransaction,
+} from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -325,6 +329,237 @@ describe('TransactionsService', () => {
           userId,
           spaceId,
         },
+        expect.any(Function),
+      );
+    });
+  });
+
+  describe('update', () => {
+    const expense = (overrides: Partial<Category> = {}) =>
+      buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.EXPENSE, ...overrides });
+    let original: LoadedTransaction;
+
+    const stored = (overrides: Partial<Transaction> = {}) => {
+      original = withRelations(
+        buildTransaction({
+          id: 'tx-1',
+          wallet_id: 1,
+          category_id: 5,
+          transaction_type: TransactionType.EXPENSE,
+          amount: '12.30',
+          timestamp: new Date('2026-09-15T10:00:00.000Z'),
+          description: 'Lunch',
+          version: 3,
+          wallet: buildWallet({ id: 1, space_id: spaceId }),
+          category: expense(),
+          ...overrides,
+        }),
+        'wallet',
+        'category',
+      );
+      lockedRows.set(Transaction, [original]);
+      lockedRows.set(Wallet, [original.wallet]);
+      transactionQueriesService.getOneInSpace.mockResolvedValue(original);
+    };
+
+    const update = (body: UpdateTransactionDto, expectedVersion: number | null = 3) =>
+      service.update(userId, spaceId, 'tx-1', body, { expectedVersion: expectedVersion ?? undefined });
+
+    beforeEach(() => stored());
+
+    it('requires the version the client read, before any access check', async () => {
+      await expect(update({ amount: '1' }, null)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_VERSION_REQUIRED, 428),
+      );
+      expect(spaceAccessService.lockMembership).not.toHaveBeenCalled();
+    });
+
+    it('is not found when no row could be locked', async () => {
+      lockedRows.set(Transaction, []);
+
+      await expect(update({ amount: '1' })).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_NOT_FOUND, 404),
+      );
+    });
+
+    it('refuses the initial balance before the version', async () => {
+      stored({ category: buildCategory({ is_system: 1 }) });
+
+      await expect(update({ amount: '1' }, 99)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_IS_SYSTEM, 400),
+      );
+    });
+
+    it('refuses a stale version', async () => {
+      await expect(update({ amount: '1' }, 2)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_VERSION_CONFLICT, 409),
+      );
+      expect(updateQuery.execute).not.toHaveBeenCalled();
+    });
+
+    it('writes only the fields that change', async () => {
+      await update({ amount: '20', description: '  Dinner ', transaction_type: TransactionType.EXPENSE });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ amount: '20', description: 'Dinner' });
+      expect(updateQuery.where).toHaveBeenCalledWith('id = :id', { id: 'tx-1' });
+    });
+
+    it.each<[string, UpdateTransactionDto]>([
+      ['an empty body', {}],
+      [
+        'the current values in another spelling',
+        {
+          wallet_id: 1,
+          category_id: 5,
+          transaction_type: TransactionType.EXPENSE,
+          amount: '12.3',
+          timestamp: '2026-09-15T12:00:00.000+02:00',
+          description: ' Lunch ',
+        },
+      ],
+    ])('writes nothing and keeps the version for %s', async (_, body) => {
+      const result = await update(body);
+
+      expect(updateQuery.execute).not.toHaveBeenCalled();
+      expect(result.transaction.version).toBe(3);
+    });
+
+    it('treats a cleared legacy blank description as unchanged', async () => {
+      stored({ description: '' });
+
+      await update({ description: null });
+
+      expect(updateQuery.execute).not.toHaveBeenCalled();
+    });
+
+    it('clears the description with null', async () => {
+      await update({ description: null });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ description: null });
+    });
+
+    it.each<[string, UpdateTransactionDto, string]>([
+      ['a zero amount', { amount: '0.00' }, 'amount must be greater than 0'],
+      ['a future timestamp', { timestamp: '2999-01-01T00:00:00.000Z' }, 'timestamp must not be in the future'],
+    ])('refuses %s as a new value', async (_, body, error) => {
+      await expect(update(body)).rejects.toMatchObject({
+        response: { message: [{ field: Object.keys(body)[0], error }] },
+        status: 400,
+      });
+    });
+
+    it('keeps a legacy zero amount and future timestamp when other fields change', async () => {
+      stored({ amount: '0.00', timestamp: new Date('2999-01-01T00:00:00.000Z') });
+
+      await update({ amount: '0', timestamp: '2999-01-01T00:00:00.000Z', description: 'x' });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ description: 'x' });
+    });
+
+    it('keeps its own deleted wallet and archived category', async () => {
+      stored({
+        wallet: buildWallet({ id: 1, space_id: spaceId, is_deleted: 1 }),
+        category: expense({ is_active: 0 }),
+      });
+
+      const result = await update({ wallet_id: 1, category_id: 5, amount: '1' });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ amount: '1' });
+      expect(result.wallets).toEqual([{ id: 1, balance: 0, is_deleted: true }]);
+    });
+
+    it.each<[string, Wallet[], string, number]>([
+      ['missing', [], ErrorMessages.FORBIDDEN_WALLET, 403],
+      ['of another space', [buildWallet({ id: 2, space_id: 20 })], ErrorMessages.FORBIDDEN_WALLET, 403],
+      ['deleted', [buildWallet({ id: 2, space_id: spaceId, is_deleted: 1 })], ErrorMessages.WALLET_DELETED, 400],
+    ])('refuses moving to a %s wallet', async (_, targets, message, status) => {
+      lockedRows.set(Wallet, [original.wallet, ...targets]);
+
+      await expect(update({ wallet_id: 2 })).rejects.toMatchObject(new HttpException(message, status));
+      expect(updateQuery.execute).not.toHaveBeenCalled();
+    });
+
+    it('moves to an active wallet, locking both, and returns both balances, the old one first', async () => {
+      lockedRows.set(Wallet, [original.wallet, buildWallet({ id: 2, space_id: spaceId })]);
+      transactionQueriesService.getBalances.mockResolvedValue(
+        new Map([
+          [1, 500n],
+          [2, -1230n],
+        ]),
+      );
+
+      const result = await update({ wallet_id: 2 });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ wallet_id: 2 });
+      expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1, 2], manager);
+      expect(result.wallets).toEqual([
+        { id: 1, balance: 5, is_deleted: false },
+        { id: 2, balance: -12.3, is_deleted: false },
+      ]);
+    });
+
+    it.each<[string, Category[], string, number]>([
+      ['missing', [], ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['of another space', [expense({ id: 6, space_id: 20 })], ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['the system one', [expense({ id: 6, is_system: 1 })], ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['archived', [expense({ id: 6, is_active: 0 })], ErrorMessages.CATEGORY_ARCHIVED, 400],
+      [
+        'of the other type',
+        [expense({ id: 6, transaction_type: TransactionType.INCOME })],
+        ErrorMessages.CATEGORY_TYPE_MISMATCH,
+        400,
+      ],
+    ])('refuses moving to a %s category', async (_, targets, message, status) => {
+      lockedRows.set(Category, targets);
+
+      await expect(update({ category_id: 6 })).rejects.toMatchObject(new HttpException(message, status));
+    });
+
+    it('refuses a type change the current category does not match', async () => {
+      await expect(update({ transaction_type: TransactionType.INCOME })).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CATEGORY_TYPE_MISMATCH, 400),
+      );
+    });
+
+    it('changes the type together with a matching category', async () => {
+      lockedRows.set(Category, [buildCategory({ id: 6, space_id: spaceId, transaction_type: TransactionType.INCOME })]);
+
+      await update({ transaction_type: TransactionType.INCOME, category_id: 6 });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ transaction_type: TransactionType.INCOME, category_id: 6 });
+    });
+
+    it('keeps a legacy type mismatch while neither type nor category changes', async () => {
+      stored({ category: buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.INCOME }) });
+
+      await update({ amount: '1' });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ amount: '1' });
+    });
+
+    it('returns the record as read after the write', async () => {
+      const after = withRelations(
+        buildTransaction({ id: 'tx-1', amount: '20.00', version: 4, wallet: original.wallet, category: expense() }),
+        'wallet',
+        'category',
+      );
+      transactionQueriesService.getOneInSpace.mockResolvedValueOnce(original).mockResolvedValueOnce(after);
+
+      const result = await update({ amount: '20' });
+
+      expect(result.transaction).toEqual(toTransactionView(after));
+    });
+
+    it('keys an idempotent edit by the transaction, the version and the body', async () => {
+      await service.update(userId, spaceId, 'tx-1', { amount: '20' }, { expectedVersion: 3, idempotencyKey: 'k' });
+
+      expect(idempotencyService.run).toHaveBeenCalledWith(
+        manager,
+        expect.objectContaining({
+          operation: 'transactions.update',
+          key: 'k',
+          payload: { transactionId: 'tx-1', expectedVersion: 3, body: { amount: '20' } },
+        }),
         expect.any(Function),
       );
     });
