@@ -19,7 +19,13 @@ describe('TransactionsController', () => {
       providers: [
         {
           provide: TransactionsService,
-          useValue: { create: jest.fn(), getAll: jest.fn(), getLatest: jest.fn(), remove: jest.fn() },
+          useValue: {
+            create: jest.fn(),
+            getAll: jest.fn(),
+            getLatest: jest.fn(),
+            getById: jest.fn(),
+            remove: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -108,6 +114,22 @@ describe('TransactionsController', () => {
 
     expect(transactionsService.getLatest).toHaveBeenCalledWith(1, spaceId);
     expect(result).toBeNull();
+  });
+
+  it('getById delegates to TransactionsService.getById', async () => {
+    const view = toTransactionView(
+      withRelations(
+        buildTransaction({ id: 'tx-1', wallet: buildWallet(), category: buildCategory() }),
+        'wallet',
+        'category',
+      ),
+    );
+    transactionsService.getById.mockResolvedValue(view);
+
+    const result = await controller.getById(req, spaceId, 'tx-1');
+
+    expect(transactionsService.getById).toHaveBeenCalledWith(1, spaceId, 'tx-1');
+    expect(result).toBe(view);
   });
 
   it('remove delegates to TransactionsService.remove and returns true', async () => {

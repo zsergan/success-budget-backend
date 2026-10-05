@@ -11,7 +11,7 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiNotFoundResponse, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -71,6 +71,17 @@ export class TransactionsController {
     @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
   ) {
     return this.transactionsService.getAll(req.user.id, spaceId, from, to, { transactionType, categoryId, walletId });
+  }
+
+  @ApiOkResponse({ type: TransactionView })
+  @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND: missing, malformed id, or of another space.' })
+  @Get(':transactionId')
+  async getById(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('transactionId') transactionId: string,
+  ): Promise<TransactionView> {
+    return this.transactionsService.getById(req.user.id, spaceId, transactionId);
   }
 
   @Delete(':transactionId')

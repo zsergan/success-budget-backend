@@ -22,7 +22,10 @@ describe('TransactionsService', () => {
   let service: TransactionsService;
   let transactionRepository: jest.Mocked<Pick<Repository<Transaction>, 'create' | 'save' | 'delete'>>;
   let transactionQueriesService: jest.Mocked<
-    Pick<TransactionQueriesService, 'getBalances' | 'getForAllWallets' | 'getLatest' | 'getOneWithWallet'>
+    Pick<
+      TransactionQueriesService,
+      'getBalances' | 'getForAllWallets' | 'getLatest' | 'getOneWithWallet' | 'getOneInSpace'
+    >
   >;
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
@@ -51,6 +54,7 @@ describe('TransactionsService', () => {
       getForAllWallets: jest.fn(),
       getLatest: jest.fn(),
       getOneWithWallet: jest.fn(),
+      getOneInSpace: jest.fn(),
     };
     walletsService = { getOne: jest.fn().mockResolvedValue(buildWallet({ id: 1, space_id: spaceId })) };
     categoriesService = {
@@ -315,6 +319,36 @@ describe('TransactionsService', () => {
 
       expect(result).toEqual(toTransactionView(latest));
       expect(result?.wallet).toEqual(expect.objectContaining({ id: 1 }));
+    });
+  });
+
+  describe('getById', () => {
+    it('rejects a non-member before loading the transaction', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
+
+      await expect(service.getById(userId, spaceId, 'tx-1')).rejects.toMatchObject(forbidden());
+      expect(transactionQueriesService.getOneInSpace).not.toHaveBeenCalled();
+    });
+
+    it('reports a transaction outside the space as not found', async () => {
+      transactionQueriesService.getOneInSpace.mockResolvedValue(null);
+
+      await expect(service.getById(userId, spaceId, 'tx-1')).rejects.toMatchObject({
+        status: 404,
+        response: { code: 'TRANSACTION_NOT_FOUND', message: ErrorMessages.TRANSACTION_NOT_FOUND },
+      });
+      expect(transactionQueriesService.getOneInSpace).toHaveBeenCalledWith(spaceId, 'tx-1');
+    });
+
+    it('returns the view of a transaction on a soft-deleted wallet', async () => {
+      const transaction = loadedTransaction('tx-1', { id: 1, is_deleted: 1, deleted_at: new Date() });
+      transactionQueriesService.getOneInSpace.mockResolvedValue(transaction);
+
+      const result = await service.getById(userId, spaceId, 'tx-1');
+
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(toTransactionView(transaction));
+      expect(result.wallet).toBeNull();
     });
   });
 

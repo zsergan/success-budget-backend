@@ -217,6 +217,19 @@ describe('TransactionQueriesService', () => {
     });
   });
 
+  describe('getOneInSpace', () => {
+    it('loads the transaction with both relations, scoped by its wallet space', async () => {
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      expect(await service.getOneInSpace(9, 'tx-1')).toBeNull();
+
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+    });
+  });
+
   describe('getLatest', () => {
     it('orders by timestamp descending and limits to one row', async () => {
       queryBuilder.getOne.mockResolvedValue(null);

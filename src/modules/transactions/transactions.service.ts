@@ -10,7 +10,7 @@ import type { TransactionView } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
 import { TransactionType } from '@shared/enums';
 import { ApiException } from '@shared/api.exception';
-import { assertBelongsToSpace, moneyToNumber, parseMoney, toDate } from '@shared/utils';
+import { assertBelongsToSpace, assertFound, moneyToNumber, parseMoney, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
   type TransactionFilters,
@@ -100,6 +100,15 @@ export class TransactionsService {
     const transaction = await this.transactionQueriesService.getLatest(spaceId);
 
     return transaction ? toTransactionView(transaction) : null;
+  }
+
+  async getById(userId: number, spaceId: number, transactionId: string): Promise<TransactionView> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    const transaction = await this.transactionQueriesService.getOneInSpace(spaceId, transactionId);
+    assertFound(transaction, 'TRANSACTION_NOT_FOUND');
+
+    return toTransactionView(transaction);
   }
 
   async remove(userId: number, spaceId: number, transactionId: string): Promise<void> {

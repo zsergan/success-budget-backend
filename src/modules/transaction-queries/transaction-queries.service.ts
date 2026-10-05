@@ -104,6 +104,20 @@ export class TransactionQueriesService {
     return transaction && withRelations(transaction, 'wallet');
   }
 
+  // Scoped through the transaction's own wallet, soft-deleted included, so a
+  // transaction of another space is not found rather than forbidden.
+  async getOneInSpace(spaceId: number, transactionId: string): Promise<LoadedTransaction | null> {
+    const transaction = await this.transactionRepository
+      .createQueryBuilder('transaction')
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
+      .where('transaction.id = :transactionId', { transactionId })
+      .andWhere('wallet.space_id = :spaceId', { spaceId })
+      .getOne();
+
+    return transaction && withRelations(transaction, 'wallet', 'category');
+  }
+
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
   // income/spend per wallet, grouped in SQL instead of filtering a raw
   // transaction-row fetch in JS. All-time balance is a separate concern,
