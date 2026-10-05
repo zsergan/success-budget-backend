@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 
@@ -8,7 +8,7 @@ import { SpaceInvite } from '@entities/space-invite.entity';
 import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { assertFound, generateRandomNumberString, withRelations } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -41,11 +41,11 @@ export class SpacesService {
     const invites = dto.invites ?? [];
 
     if (dto.type === SpaceType.PERSONAL && invites.length) {
-      throw new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, HttpStatus.BAD_REQUEST);
+      throw new ApiException('SPACE_PERSONAL_NO_INVITES', HttpStatus.BAD_REQUEST);
     }
 
     if (invites.length > SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE) {
-      throw new HttpException(ErrorMessages.SPACE_INVITE_LIMIT_REACHED, HttpStatus.BAD_REQUEST);
+      throw new ApiException('SPACE_INVITE_LIMIT_REACHED', HttpStatus.BAD_REQUEST);
     }
 
     const spaceId = await this.dataSource.transaction(async (manager) => {
@@ -141,7 +141,7 @@ export class SpacesService {
     const spaceCount = await this.spaceMemberRepository.count({ where: { user_id: userId } });
 
     if (spaceCount <= 1) {
-      throw new HttpException(ErrorMessages.SPACE_LAST_REMAINING, HttpStatus.BAD_REQUEST);
+      throw new ApiException('SPACE_LAST_REMAINING', HttpStatus.BAD_REQUEST);
     }
 
     await this.dataSource.transaction(async (manager) => {

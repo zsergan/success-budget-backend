@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
@@ -6,7 +6,7 @@ import { Limit } from '@entities/limit.entity';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitType } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import {
   assertBelongsToSpace,
   assertFound,
@@ -224,7 +224,7 @@ export class LimitsService {
 
   private async getSpaceLimit(spaceId: number, limitId: number, manager?: EntityManager): Promise<LimitWithCategories> {
     const limit = await this.getOne(limitId, manager);
-    assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
+    assertBelongsToSpace(limit, spaceId, 'FORBIDDEN_LIMIT');
 
     return limit;
   }
@@ -246,21 +246,21 @@ export class LimitsService {
 
     for (const categoryId of ids) {
       const category = categoriesById.get(categoryId);
-      assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+      assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
 
       if (category.is_system) {
-        throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+        throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
       }
 
       if (category.is_active === 0) {
-        throw new HttpException(ErrorMessages.CATEGORY_ARCHIVED, HttpStatus.BAD_REQUEST);
+        throw new ApiException('CATEGORY_ARCHIVED', HttpStatus.BAD_REQUEST);
       }
     }
   }
 
   private assertHasNameIfGroup(categoryIds: number[], name?: string | null): void {
     if (categoryIds.length > 1 && !name) {
-      throw new HttpException(ErrorMessages.LIMIT_NAME_REQUIRED, HttpStatus.BAD_REQUEST);
+      throw new ApiException('LIMIT_NAME_REQUIRED', HttpStatus.BAD_REQUEST);
     }
   }
 
@@ -284,7 +284,7 @@ export class LimitsService {
     const conflicting = await query.getCount();
 
     if (conflicting > 0) {
-      throw new HttpException(ErrorMessages.LIMIT_EXISTS, HttpStatus.BAD_REQUEST);
+      throw new ApiException('LIMIT_EXISTS', HttpStatus.BAD_REQUEST);
     }
   }
 
@@ -306,7 +306,7 @@ export class LimitsService {
     const existing = await query.getCount();
 
     if (existing > 0) {
-      throw new HttpException(ErrorMessages.LIMIT_EXISTS, HttpStatus.BAD_REQUEST);
+      throw new ApiException('LIMIT_EXISTS', HttpStatus.BAD_REQUEST);
     }
   }
 }

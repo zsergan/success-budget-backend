@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
@@ -8,7 +8,7 @@ import { Limit } from '@entities/limit.entity';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { TransactionType } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { assertBelongsToSpace } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
@@ -154,14 +154,14 @@ export class CategoriesService {
     const categories = await this.categoryRepository.find({ where: { id: In(categoryIds) } });
 
     if (categories.length !== categoryIds.length) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
+      throw new ApiException('FORBIDDEN_CATEGORY', HttpStatus.FORBIDDEN);
     }
 
     for (const category of categories) {
-      assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+      assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
 
       if (category.is_system) {
-        throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+        throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
       }
     }
 
@@ -169,7 +169,7 @@ export class CategoriesService {
     const hasArchived = categories.some((category) => category.is_active === 0);
 
     if (types.size > 1 || hasArchived) {
-      throw new HttpException(ErrorMessages.INVALID_REORDER, HttpStatus.BAD_REQUEST);
+      throw new ApiException('INVALID_REORDER', HttpStatus.BAD_REQUEST);
     }
 
     // 100/200 partition income vs expense sort ranges so they never collide
@@ -181,10 +181,10 @@ export class CategoriesService {
 
   private async getEditableCategory(spaceId: number, categoryId: number, manager: EntityManager): Promise<Category> {
     const category = await this.getOne(categoryId, manager);
-    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+    assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
 
     if (category.is_system) {
-      throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+      throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
     }
 
     return category;

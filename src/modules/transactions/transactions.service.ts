@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -7,7 +7,7 @@ import type { Category } from '@entities/category.entity';
 import type { Wallet, WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { TransactionType } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { assertBelongsToSpace, moneyToNumber, parseMoney, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
@@ -108,17 +108,17 @@ export class TransactionsService {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
     const transaction = await this.transactionQueriesService.getOneWithWallet(transactionId);
-    assertBelongsToSpace(transaction?.wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
+    assertBelongsToSpace(transaction?.wallet, spaceId, 'FORBIDDEN_WALLET');
 
     await this.transactionRepository.delete(transaction.id);
   }
 
   private async getActiveWallet(spaceId: number, walletId: number): Promise<Wallet> {
     const wallet = await this.walletsService.getOne(walletId);
-    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
+    assertBelongsToSpace(wallet, spaceId, 'FORBIDDEN_WALLET');
 
     if (wallet.is_deleted) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_WALLET, HttpStatus.FORBIDDEN);
+      throw new ApiException('FORBIDDEN_WALLET', HttpStatus.FORBIDDEN);
     }
 
     return wallet;
@@ -127,10 +127,10 @@ export class TransactionsService {
   // any category of the space but the system one, archived included
   private async getUserCategory(spaceId: number, categoryId: number): Promise<Category> {
     const category = await this.categoriesService.getOne(categoryId);
-    assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+    assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
 
     if (category.is_system) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, HttpStatus.FORBIDDEN);
+      throw new ApiException('FORBIDDEN_CATEGORY', HttpStatus.FORBIDDEN);
     }
 
     return category;

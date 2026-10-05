@@ -15,7 +15,7 @@ import type { VerifyUserDto } from './dto/verify-user.dto';
 import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
 import { MailService } from '@modules/mail/mail.service';
 import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/space-setup';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
 import { assertFound, constantTimeEquals } from '@shared/utils';
@@ -122,7 +122,7 @@ export class UsersService {
 
       // the caller's check ran before the lock; a verification may have committed since
       if (user.email_verified) {
-        throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+        throw new ApiException('EMAIL_ALREADY_EXISTS', HttpStatus.BAD_REQUEST);
       }
 
       await manager.getRepository(User).update(id, { name: createUserDto.name, password });
@@ -146,7 +146,7 @@ export class UsersService {
     const found = await this.findByEmail(verifyUserDto.email);
 
     if (!found) {
-      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
     }
 
     // A rejected code is returned rather than thrown so the transaction
@@ -155,27 +155,27 @@ export class UsersService {
       const user = await this.lockUser(manager, found.id);
 
       if (!user) {
-        throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+        throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
       }
 
       if (user.email_verified) {
-        throw new HttpException(ErrorMessages.EMAIL_ALREADY_VERIFIED, HttpStatus.CONFLICT);
+        throw new ApiException('EMAIL_ALREADY_VERIFIED', HttpStatus.CONFLICT);
       }
 
       const confirmationCode = await this.confirmationCodesService.lockActive(user.id, ConfirmationType.EMAIL, manager);
 
       if (!confirmationCode) {
-        throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+        throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
       }
 
       if (confirmationCode.attempts >= MAX_CONFIRMATION_CODE_ATTEMPTS) {
         await this.confirmationCodesService.expire(confirmationCode.id, manager);
-        return new HttpException(ErrorMessages.TOO_MANY_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+        return new ApiException('TOO_MANY_ATTEMPTS', HttpStatus.TOO_MANY_REQUESTS);
       }
 
       if (!constantTimeEquals(confirmationCode.confirmation_code, verifyUserDto.code)) {
         await this.confirmationCodesService.incrementAttempts(confirmationCode.id, manager);
-        return new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.BAD_REQUEST);
+        return new ApiException('INVALID_CREDENTIALS', HttpStatus.BAD_REQUEST);
       }
 
       await this.confirmationCodesService.expire(confirmationCode.id, manager);
@@ -198,11 +198,11 @@ export class UsersService {
     const isPasswordValid = await bcrypt.compare(password, user ? user.password : DUMMY_PASSWORD_HASH);
 
     if (!user || !isPasswordValid) {
-      throw new HttpException(ErrorMessages.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
+      throw new ApiException('INVALID_CREDENTIALS', HttpStatus.UNAUTHORIZED);
     }
 
     if (!user.email_verified) {
-      throw new HttpException(ErrorMessages.EMAIL_NOT_VERIFIED, HttpStatus.FORBIDDEN);
+      throw new ApiException('EMAIL_NOT_VERIFIED', HttpStatus.FORBIDDEN);
     }
 
     return this.generateAccessToken(user);
@@ -225,7 +225,7 @@ export class UsersService {
 
   private async refreshUnverified(existing: User, createUserDto: CreateUserDto): Promise<User> {
     if (existing.email_verified) {
-      throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+      throw new ApiException('EMAIL_ALREADY_EXISTS', HttpStatus.BAD_REQUEST);
     }
 
     return this.updateUnverified(existing.id, createUserDto);

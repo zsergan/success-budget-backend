@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, MoreThan, IsNull, Repository } from 'typeorm';
 
@@ -7,7 +7,7 @@ import { SpaceInvite } from '@entities/space-invite.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { assertFound, generateRandomNumberString, withRelations } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
@@ -39,13 +39,13 @@ export class SpaceInvitesService {
     assertFound(space);
 
     if (space.type === SpaceType.PERSONAL) {
-      throw new HttpException(ErrorMessages.SPACE_PERSONAL_NO_INVITES, HttpStatus.BAD_REQUEST);
+      throw new ApiException('SPACE_PERSONAL_NO_INVITES', HttpStatus.BAD_REQUEST);
     }
 
     const activeCount = await this.getActive(space.id).then((invites) => invites.length);
 
     if (activeCount >= SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE) {
-      throw new HttpException(ErrorMessages.SPACE_INVITE_LIMIT_REACHED, HttpStatus.BAD_REQUEST);
+      throw new ApiException('SPACE_INVITE_LIMIT_REACHED', HttpStatus.BAD_REQUEST);
     }
 
     const invite = this.spaceInviteRepository.create({
@@ -78,7 +78,7 @@ export class SpaceInvitesService {
     });
 
     if (!invite) {
-      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
     }
 
     await this.spaceInviteRepository.update(invite.id, { revoked_at: new Date() });
@@ -99,13 +99,13 @@ export class SpaceInvitesService {
     });
 
     if (!invite) {
-      throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
     }
 
     const memberCount = await this.spaceMemberRepository.count({ where: { space_id: invite.space_id } });
 
     if (memberCount >= SPACE_LIMITS.MAX_MEMBERS_PER_SPACE) {
-      throw new HttpException(ErrorMessages.SPACE_MEMBER_LIMIT_REACHED, HttpStatus.BAD_REQUEST);
+      throw new ApiException('SPACE_MEMBER_LIMIT_REACHED', HttpStatus.BAD_REQUEST);
     }
 
     return this.dataSource.transaction(async (manager) => {

@@ -1,5 +1,4 @@
-import { HttpException } from '@nestjs/common';
-
+import { ApiException } from '@shared/api.exception';
 import { assertFound } from './assert-found';
 
 describe('assertFound', () => {
@@ -9,8 +8,10 @@ describe('assertFound', () => {
     expect(() => assertFound('')).not.toThrow();
   });
 
-  it('throws a 404 for null or undefined', () => {
-    expect(() => assertFound(null)).toThrow(new HttpException('Not found', 404));
-    expect(() => assertFound(undefined, 'gone')).toThrow(new HttpException('gone', 404));
+  it('throws a coded 404 for null or undefined', () => {
+    expect(() => assertFound(null)).toThrow(new ApiException('NOT_FOUND', 404));
+    expect(() => assertFound(undefined, 'TRANSACTION_NOT_FOUND')).toThrow(
+      new ApiException('TRANSACTION_NOT_FOUND', 404),
+    );
   });
 });

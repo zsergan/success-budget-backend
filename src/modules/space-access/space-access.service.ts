@@ -1,11 +1,11 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 
 @Injectable()
 export class SpaceAccessService {
@@ -24,7 +24,7 @@ export class SpaceAccessService {
     const member = await repository.findOne({ where: { space_id: spaceId, user_id: userId } });
 
     if (!member || (minRole === SpaceRole.OWNER && member.role !== SpaceRole.OWNER)) {
-      throw new HttpException(ErrorMessages.FORBIDDEN_SPACE, HttpStatus.FORBIDDEN);
+      throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
     }
 
     return member;

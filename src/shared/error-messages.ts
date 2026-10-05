@@ -19,4 +19,7 @@ export const ErrorMessages = {
   SPACE_INVITE_LIMIT_REACHED: 'This space has reached its limit of pending invites',
   SPACE_MEMBER_LIMIT_REACHED: 'This space has reached its member limit',
   SPACE_LAST_REMAINING: 'You cannot leave or delete your only remaining space',
-};
+  TRANSACTION_NOT_FOUND: 'Transaction not found',
+} as const;
+
+export type ErrorCode = keyof typeof ErrorMessages;
