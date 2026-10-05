@@ -46,12 +46,13 @@ describe('TransactionsController', () => {
       timestamp: '2026-01-15T10:00:00.000Z',
     };
     const created = {
-      transaction: buildTransaction({
-        id: '99',
-        category_id: 5,
-        transaction_type: TransactionType.INCOME,
-        amount: '50',
-      }),
+      transaction: toTransactionView(
+        withRelations(
+          buildTransaction({ id: '99', amount: '50.00', wallet: buildWallet(), category: buildCategory() }),
+          'wallet',
+          'category',
+        ),
+      ),
       wallet: Object.assign(buildWallet(), { balance: 150 }),
       previous_balance: 100,
     };

@@ -18,6 +18,9 @@ export const SPACE_LIMITS = {
 
 export const SPACE_INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
+// device clocks drift; a slightly early server must not reject the client's now
+export const CLOCK_SKEW_MS = 60_000;
+
 export const IDEMPOTENCY_KEY_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
 
 export const DEFAULT_CATEGORIES: CreateCategoryDto[] = [

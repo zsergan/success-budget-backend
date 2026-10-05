@@ -1072,8 +1072,8 @@ describe('App (e2e)', () => {
         amount: '1.00',
         timestamp: new Date().toISOString(),
       })
-      .expect(403);
-    expect(rejected.body.message).toBe(ErrorMessages.FORBIDDEN_WALLET);
+      .expect(400);
+    expect(rejected.body.code).toBe('WALLET_DELETED');
   });
 
   it('a plain member sees the roster without remove rights and cannot run owner-only space operations', async () => {

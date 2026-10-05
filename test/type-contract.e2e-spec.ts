@@ -209,14 +209,14 @@ describe('Boundary type contract (e2e)', () => {
       },
     );
 
-    it('accepts zero and the upper bound on every money field', async () => {
-      for (const [amount, stored] of [
-        ['0', '0.00'],
-        ['99999999.99', '99999999.99'],
-      ]) {
-        const transaction = await createTransaction({ amount }).expect(201);
-        expect((await readTransaction(transaction.body.transaction.id)).amount).toBe(stored);
-        await api().delete(`${base()}/transactions/${transaction.body.transaction.id}`).expect(200);
+    it('accepts the upper bound on every money field, and zero everywhere but on a transaction', async () => {
+      const transaction = await createTransaction({ amount: '99999999.99' }).expect(201);
+      expect((await readTransaction(transaction.body.transaction.id)).amount).toBe('99999999.99');
+      await api().delete(`${base()}/transactions/${transaction.body.transaction.id}`).expect(200);
+
+      for (const amount of ['0', '0.00']) {
+        const zero = await createTransaction({ amount }).expect(400);
+        expect(zero.body.message).toEqual([{ field: 'amount', error: 'amount must be greater than 0' }]);
       }
 
       const limit = await api().post(`${base()}/limits`).send({ amount: '0' }).expect(201);
@@ -255,13 +255,13 @@ describe('Boundary type contract (e2e)', () => {
           category_id: incomeCategoryId,
           transaction_type: 'income',
           amount: '0.2',
-          timestamp: '2030-01-15T12:00:00.000Z',
+          timestamp: '2026-01-15T12:00:00.000Z',
         })
         .expect(201);
       expect(income.body.previous_balance).toBe(0.1);
       expect(income.body.wallet.balance).toBe(0.3);
 
-      const period = await api().get(`${spaceBase}/wallets?from=2030-01-01&to=2030-01-31`).expect(200);
+      const period = await api().get(`${spaceBase}/wallets?from=2026-01-01&to=2026-01-31`).expect(200);
       expect(period.body).toMatchObject({ total_balance: 0.5, delta_percent: 66.7 });
       expect(period.body.wallets).toEqual([
         expect.objectContaining({
@@ -290,10 +290,10 @@ describe('Boundary type contract (e2e)', () => {
       expect(read.amount).toBe('100.50');
     });
 
-    it('echoes the request amount string on create, reads it back normalized to 2 decimals, and derives balances as numbers', async () => {
+    it('returns the created amount normalized to 2 decimals, as reads do, and derives balances as numbers', async () => {
       const created = await createTransaction({ amount: '12.3' }).expect(201);
 
-      expect(created.body.transaction.amount).toBe('12.3');
+      expect(created.body.transaction.amount).toBe('12.30');
       expect(typeof created.body.previous_balance).toBe('number');
       expect(created.body.wallet.balance).toBe(
         moneyToNumber(parseMoney(created.body.previous_balance.toFixed(2)) - 1230n),
@@ -756,7 +756,7 @@ describe('Boundary type contract (e2e)', () => {
     it('transaction creation and reads', async () => {
       const created = await createTransaction({ description: 'Lunch' }).expect(201);
       expect(keys(created.body)).toEqual(['previous_balance', 'transaction', 'wallet']);
-      expect(keys(created.body.transaction)).toEqual(TRANSACTION);
+      expect(keys(created.body.transaction)).toEqual(TRANSACTION_VIEW);
       expect(keys(created.body.wallet)).toEqual(WALLET_WITH_BALANCE);
 
       const read = await readTransaction(created.body.transaction.id);
@@ -803,12 +803,11 @@ describe('Boundary type contract (e2e)', () => {
         .send({ wallet_name: 'Doomed', initial_balance: '0', design: 'slate' })
         .expect(201);
       const doomedId = wallet.body.wallet.id;
-      const created = await createTransaction({ wallet_id: doomedId, timestamp: '2037-12-31T00:00:00.000Z' }).expect(
-        201,
-      );
+      const at = new Date().toISOString();
+      const created = await createTransaction({ wallet_id: doomedId, timestamp: at }).expect(201);
       await api().delete(`${base()}/wallets/${doomedId}`).expect(200);
 
-      const res = await api().get(`${base()}/transactions?from=2037-12-30&to=2038-01-01`).expect(200);
+      const res = await api().get(`${base()}/transactions?from=${at}&to=${at}`).expect(200);
       expect(res.body).toHaveLength(1);
       expect(keys(res.body[0])).toEqual(TRANSACTION_VIEW);
       expect(res.body[0].wallet).toBeNull();
@@ -823,7 +822,7 @@ describe('Boundary type contract (e2e)', () => {
         doomedId,
       );
 
-      await createTransaction({ wallet_id: doomedId }).expect(403);
+      await createTransaction({ wallet_id: doomedId }).expect(400);
       await api().delete(`${base()}/transactions/${created.body.transaction.id}`).expect(200);
     });
 

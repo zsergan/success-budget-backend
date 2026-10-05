@@ -7,17 +7,18 @@ import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { TransactionView } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
-import { TransactionType } from '@shared/enums';
-import { ApiException } from '@shared/api.exception';
+import { normalizeDescription } from './transaction-rules';
 import {
-  assertBelongsToSpace,
-  assertFound,
-  lockRows,
-  moneyToNumber,
-  parseMoney,
-  runWriteTransaction,
-  toDate,
-} from '@shared/utils';
+  assertCategoryActive,
+  assertCategoryType,
+  assertNotSystem,
+  assertUserCategory,
+  assertVersion,
+  assertWalletActive,
+  assertWalletInSpace,
+} from './transaction-checks';
+import { ApiException } from '@shared/api.exception';
+import { assertFound, lockRows, moneyToNumber, runWriteTransaction, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
@@ -35,7 +36,7 @@ export interface WriteOptions {
 }
 
 export interface CreateTransactionResult {
-  transaction: Transaction;
+  transaction: TransactionView;
   wallet: WalletWithBalance;
   previous_balance: number;
 }
@@ -65,34 +66,35 @@ export class TransactionsService {
 
     return this.write(userId, spaceId, idempotency, async (manager) => {
       const [wallet] = await lockRows(manager, Wallet, [createTransactionDto.wallet_id], 'exclusive');
-      assertActiveWallet(wallet, spaceId);
+      assertWalletInSpace(wallet, spaceId);
+      assertWalletActive(wallet);
       const [category] = await lockRows(manager, Category, [createTransactionDto.category_id], 'shared');
       assertUserCategory(category, spaceId);
+      assertCategoryActive(category);
+      assertCategoryType(category, createTransactionDto.transaction_type);
 
-      const balances = await this.transactionQueriesService.getBalances([wallet.id], manager);
-      const previousBalance = balances.get(wallet.id) ?? 0n;
-      const amount = parseMoney(createTransactionDto.amount);
-      const balanceChange = createTransactionDto.transaction_type === TransactionType.INCOME ? amount : -amount;
-      // converted before saving, so a failed conversion leaves nothing written
-      const previousBalanceValue = moneyToNumber(previousBalance);
-      const balanceValue = moneyToNumber(previousBalance + balanceChange);
-
+      // both balances are sums of history read under the wallet lock, before
+      // and after the insert, not a computed difference
+      const previousBalance = await this.getBalance(manager, wallet.id);
       const transactionRepository = manager.getRepository(Transaction);
-      const savedTransaction = await transactionRepository.save(
+      const saved = await transactionRepository.save(
         transactionRepository.create({
-          wallet_id: createTransactionDto.wallet_id,
-          category_id: createTransactionDto.category_id,
+          wallet_id: wallet.id,
+          category_id: category.id,
           transaction_type: createTransactionDto.transaction_type,
           amount: createTransactionDto.amount,
           timestamp: toDate(createTransactionDto.timestamp),
-          description: createTransactionDto.description ?? null,
+          description: normalizeDescription(createTransactionDto.description),
         }),
       );
+      const balance = await this.getBalance(manager, wallet.id);
+      const created = await this.transactionQueriesService.getOneInSpace(spaceId, saved.id, manager);
+      assertFound(created, 'TRANSACTION_NOT_FOUND');
 
       return {
-        transaction: savedTransaction,
-        wallet: Object.assign(wallet, { balance: balanceValue }),
-        previous_balance: previousBalanceValue,
+        transaction: toTransactionView(created),
+        wallet: Object.assign(wallet, { balance: moneyToNumber(balance) }),
+        previous_balance: moneyToNumber(previousBalance),
       };
     });
   }
@@ -147,11 +149,7 @@ export class TransactionsService {
 
     await this.write(userId, spaceId, idempotency, async (manager) => {
       const transaction = await this.lockTransaction(manager, spaceId, transactionId);
-
-      if (transaction.category.is_system) {
-        throw new ApiException('TRANSACTION_IS_SYSTEM', HttpStatus.BAD_REQUEST);
-      }
-
+      assertNotSystem(transaction);
       assertVersion(transaction, expectedVersion);
       // its balance changes: writes to one wallet queue on its row
       await lockRows(manager, Wallet, [transaction.wallet_id], 'exclusive');
@@ -160,6 +158,12 @@ export class TransactionsService {
 
       return true;
     });
+  }
+
+  private async getBalance(manager: EntityManager, walletId: number): Promise<bigint> {
+    const balances = await this.transactionQueriesService.getBalances([walletId], manager);
+
+    return balances.get(walletId) ?? 0n;
   }
 
   private async lockTransaction(
@@ -204,40 +208,23 @@ export class TransactionsService {
     return result;
   }
 
-  private async getActiveWallet(spaceId: number, walletId: number): Promise<Wallet> {
-    const wallet = await this.walletsService.getOne(walletId);
-    assertActiveWallet(wallet, spaceId);
-
-    return wallet;
-  }
-
+  // a list filter: any category of the space but the system one, archived included
   private async getUserCategory(spaceId: number, categoryId: number): Promise<Category> {
     const category = await this.categoriesService.getOne(categoryId);
     assertUserCategory(category, spaceId);
 
     return category;
   }
-}
 
-function assertActiveWallet(wallet: Wallet | null | undefined, spaceId: number): asserts wallet is Wallet {
-  assertBelongsToSpace(wallet, spaceId, 'FORBIDDEN_WALLET');
+  // a list filter: an active wallet of the space; a deleted one is forbidden
+  private async getActiveWallet(spaceId: number, walletId: number): Promise<Wallet> {
+    const wallet = await this.walletsService.getOne(walletId);
+    assertWalletInSpace(wallet, spaceId);
 
-  if (wallet.is_deleted) {
-    throw new ApiException('FORBIDDEN_WALLET', HttpStatus.FORBIDDEN);
-  }
-}
+    if (wallet.is_deleted) {
+      throw new ApiException('FORBIDDEN_WALLET', HttpStatus.FORBIDDEN);
+    }
 
-function assertVersion(transaction: Transaction, expectedVersion: number | undefined): void {
-  if (expectedVersion !== undefined && transaction.version !== expectedVersion) {
-    throw new ApiException('TRANSACTION_VERSION_CONFLICT', HttpStatus.CONFLICT);
-  }
-}
-
-// any category of the space but the system one, archived included
-function assertUserCategory(category: Category | null | undefined, spaceId: number): asserts category is Category {
-  assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
-
-  if (category.is_system) {
-    throw new ApiException('FORBIDDEN_CATEGORY', HttpStatus.FORBIDDEN);
+    return wallet;
   }
 }

@@ -1,8 +1,9 @@
-import { IsNotEmpty, IsOptional, IsString, IsNumber, IsEnum, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsEnum } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
 import { IsInTimestampRange, IsIsoDate } from '@shared/decorators/is-iso-date.decorator';
 import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
+import { IsDescription, IsNotInFuture, IsPositiveAmount } from './transaction-field.decorators';
 
 export class CreateTransactionDto {
   @IsNotEmpty()
@@ -19,15 +20,15 @@ export class CreateTransactionDto {
 
   @IsNotEmpty()
   @IsMoneyAmount()
+  @IsPositiveAmount()
   amount!: string;
 
   @IsNotEmpty()
   @IsIsoDate()
   @IsInTimestampRange()
+  @IsNotInFuture()
   timestamp!: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(140)
+  @IsDescription()
   description?: string | null;
 }

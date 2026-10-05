@@ -8,6 +8,7 @@ describe('Transactions (e2e)', () => {
   let owner: Member;
   let outsider: Member;
   let expenseCategoryId: number;
+  let incomeCategoryId: number;
 
   beforeAll(async () => {
     testApp = await createTestApp();
@@ -18,6 +19,7 @@ describe('Transactions (e2e)', () => {
       .get(`${base(owner)}/categories`)
       .expect(200);
     expenseCategoryId = categories.body.expenses[0].id;
+    incomeCategoryId = categories.body.incomes[0].id;
   });
 
   afterAll(async () => {
@@ -35,11 +37,11 @@ describe('Transactions (e2e)', () => {
   function api(member: Member) {
     const agent = request(testApp.app.getHttpServer());
     const withAuth =
-      (method: 'get' | 'post' | 'delete') =>
+      (method: 'get' | 'post' | 'patch' | 'delete') =>
       (url: string): request.Test =>
         agent[method](url).set('Authorization', `Bearer ${member.token}`);
 
-    return { get: withAuth('get'), post: withAuth('post'), delete: withAuth('delete') };
+    return { get: withAuth('get'), post: withAuth('post'), patch: withAuth('patch'), delete: withAuth('delete') };
   }
 
   async function createWallet(member: Member, initialBalance = '0') {
@@ -296,6 +298,115 @@ describe('Transactions (e2e)', () => {
 
       expect(res.body.code).toBe('FORBIDDEN_SPACE');
       expect(await exists(id)).toBe(true);
+    });
+  });
+
+  describe('POST /transactions', () => {
+    const body = (walletId: number, overrides: Record<string, unknown> = {}) => ({
+      wallet_id: walletId,
+      category_id: expenseCategoryId,
+      transaction_type: 'expense',
+      amount: '12.3',
+      timestamp: '2026-09-15T10:00:00.000Z',
+      ...overrides,
+    });
+
+    it('returns the created transaction as GET /:id reads it, with the balance before and after', async () => {
+      const { wallet } = await createWallet(owner, '100');
+
+      const res = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send(body(wallet.id, { description: '  Lunch  ' }))
+        .expect(201);
+      const read = await api(owner)
+        .get(`${base(owner)}/transactions/${res.body.transaction.id}`)
+        .expect(200);
+
+      expect(res.body.transaction).toEqual(read.body);
+      expect(res.body.transaction).toEqual(expect.objectContaining({ amount: '12.30', description: 'Lunch' }));
+      expect(res.body).toEqual(
+        expect.objectContaining({
+          previous_balance: 100,
+          wallet: expect.objectContaining({ id: wallet.id, balance: 87.7 }),
+        }),
+      );
+    });
+
+    it.each<[string, Record<string, unknown>, string]>([
+      ['a zero amount', { amount: '0.00' }, 'amount must be greater than 0'],
+      [
+        'a timestamp in the future',
+        { timestamp: new Date(Date.now() + 10 * 60_000).toISOString() },
+        'timestamp must not be in the future',
+      ],
+      [
+        'a description over 140 characters',
+        { description: 'x'.repeat(141) },
+        'description must be at most 140 characters',
+      ],
+    ])('refuses %s', async (_, overrides, error) => {
+      const { wallet } = await createWallet(owner);
+
+      const res = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send(body(wallet.id, overrides))
+        .expect(400);
+
+      expect(res.body).toEqual(
+        expect.objectContaining({ code: 'VALIDATION_FAILED', message: [{ field: Object.keys(overrides)[0], error }] }),
+      );
+    });
+
+    it('accepts a timestamp within the clock drift margin and 140 emoji', async () => {
+      const { wallet } = await createWallet(owner);
+
+      const res = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send(
+          body(wallet.id, { timestamp: new Date(Date.now() + 30_000).toISOString(), description: '🙂'.repeat(140) }),
+        )
+        .expect(201);
+
+      expect([...res.body.transaction.description]).toHaveLength(140);
+    });
+
+    it('stores a blank description as null', async () => {
+      const { wallet } = await createWallet(owner);
+
+      const res = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send(body(wallet.id, { description: '   ' }))
+        .expect(201);
+      const [row] = await testApp.dataSource.query('SELECT description FROM transactions WHERE id = ?', [
+        res.body.transaction.id,
+      ]);
+
+      expect(row.description).toBeNull();
+    });
+
+    it('refuses a category of the other type and an archived category', async () => {
+      const { wallet } = await createWallet(owner);
+      const archived = await api(owner)
+        .post(`${base(owner)}/categories`)
+        .send({ name: 'Old', transaction_type: 'expense', icon: 'Other', color: 'slate' })
+        .expect(201);
+      // with history, deleting a category archives it
+      await createTransaction(owner, wallet.id, archived.body.id);
+      await api(owner)
+        .delete(`${base(owner)}/categories/${archived.body.id}`)
+        .expect(200);
+
+      const mismatch = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send(body(wallet.id, { category_id: incomeCategoryId }))
+        .expect(400);
+      const archivedRes = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send(body(wallet.id, { category_id: archived.body.id }))
+        .expect(400);
+
+      expect(mismatch.body.code).toBe('CATEGORY_TYPE_MISMATCH');
+      expect(archivedRes.body.code).toBe('CATEGORY_ARCHIVED');
     });
   });
 });

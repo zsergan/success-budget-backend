@@ -55,11 +55,17 @@ describe('Transaction writes (e2e)', () => {
   function api(member: Member) {
     const agent = request(testApp.app.getHttpServer());
     const withAuth =
-      (method: 'get' | 'post' | 'put' | 'delete') =>
+      (method: 'get' | 'post' | 'put' | 'patch' | 'delete') =>
       (url: string): request.Test =>
         agent[method](url).set('Authorization', `Bearer ${member.token}`);
 
-    return { get: withAuth('get'), post: withAuth('post'), put: withAuth('put'), delete: withAuth('delete') };
+    return {
+      get: withAuth('get'),
+      post: withAuth('post'),
+      put: withAuth('put'),
+      patch: withAuth('patch'),
+      delete: withAuth('delete'),
+    };
   }
 
   const expense = ({ walletId, categoryId }: Setup, amount = '12.30') => ({

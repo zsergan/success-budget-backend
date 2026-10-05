@@ -30,6 +30,7 @@ describe('TransactionsService', () => {
   let idempotencyService: { run: jest.Mock; purgeExpired: jest.Mock };
   let manager: EntityManager;
   let lockedRows: Map<unknown, unknown[]>;
+  let updateQuery: Record<'update' | 'set' | 'where' | 'execute', jest.Mock>;
 
   const userId = 1;
   const spaceId = 10;
@@ -44,7 +45,7 @@ describe('TransactionsService', () => {
   beforeEach(async () => {
     transactionRepository = {
       create: jest.fn().mockImplementation((entityLike) => Object.assign(new Transaction(), entityLike)),
-      save: jest.fn(),
+      save: jest.fn(async (entity) => Object.assign(new Transaction(), entity, { id: 'tx-new' })) as never,
       delete: jest.fn(),
     };
     transactionQueriesService = {
@@ -69,13 +70,23 @@ describe('TransactionsService', () => {
       [Wallet, [buildWallet({ id: 1, space_id: spaceId })]],
       [Category, [buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.INCOME })]],
     ]);
+    updateQuery = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn(),
+    };
     manager = {
-      createQueryBuilder: jest.fn((entity: unknown) => ({
-        setLock: jest.fn().mockReturnThis(),
-        whereInIds: jest.fn().mockReturnThis(),
-        orderBy: jest.fn().mockReturnThis(),
-        getMany: jest.fn(async () => lockedRows.get(entity) ?? []),
-      })),
+      createQueryBuilder: jest.fn((entity?: unknown) =>
+        entity === undefined
+          ? updateQuery
+          : {
+              setLock: jest.fn().mockReturnThis(),
+              whereInIds: jest.fn().mockReturnThis(),
+              orderBy: jest.fn().mockReturnThis(),
+              getMany: jest.fn(async () => lockedRows.get(entity) ?? []),
+            },
+      ),
       getRepository: jest.fn(() => transactionRepository),
     } as unknown as EntityManager;
     idempotencyService = {
@@ -112,6 +123,11 @@ describe('TransactionsService', () => {
       timestamp: '2026-01-15T10:00:00.000Z',
       ...overrides,
     });
+    const created = loadedTransaction('tx-new', { id: 1 });
+
+    beforeEach(() => {
+      transactionQueriesService.getOneInSpace.mockResolvedValue(created);
+    });
 
     it('rejects a non-member before loading anything', async () => {
       spaceAccessService.lockMembership.mockRejectedValue(forbidden());
@@ -145,110 +161,104 @@ describe('TransactionsService', () => {
       expect(order).toEqual(['member', 'space', 'wallet', 'pessimistic_write', 'category', 'pessimistic_read']);
       expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(spaceId, userId, manager);
       expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager, 'shared');
-      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
     });
 
-    it.each<[string, Wallet[]]>([
-      ['does not exist', []],
-      ['belongs to a different space', [buildWallet({ id: 1, space_id: 20 })]],
-      ['was soft-deleted', [buildWallet({ id: 1, space_id: spaceId, is_deleted: 1, deleted_at: new Date() })]],
-    ])('rejects when the wallet %s, before loading the category', async (_, wallets) => {
+    it.each<[string, Wallet[], string, number]>([
+      ['does not exist', [], ErrorMessages.FORBIDDEN_WALLET, 403],
+      ['belongs to a different space', [buildWallet({ id: 1, space_id: 20 })], ErrorMessages.FORBIDDEN_WALLET, 403],
+      [
+        'was deleted',
+        [buildWallet({ id: 1, space_id: spaceId, is_deleted: 1, deleted_at: new Date() })],
+        ErrorMessages.WALLET_DELETED,
+        400,
+      ],
+    ])('rejects when the wallet %s, before loading the category', async (_, wallets, message, status) => {
       lockedRows.set(Wallet, wallets);
 
-      await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(
-        new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
-      );
+      await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(new HttpException(message, status));
       expect(manager.createQueryBuilder).not.toHaveBeenCalledWith(Category, 'row');
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it.each<[string, Category[]]>([
-      ['does not exist', []],
-      ['belongs to a different space', [buildCategory({ id: 5, space_id: 20 })]],
-      ['is a system category', [buildCategory({ id: 5, space_id: spaceId, is_system: 1 })]],
-    ])('rejects when the category %s', async (_, categories) => {
+    it.each<[string, Category[], string, number]>([
+      ['does not exist', [], ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      ['belongs to a different space', [buildCategory({ id: 5, space_id: 20 })], ErrorMessages.FORBIDDEN_CATEGORY, 403],
+      [
+        'is the system category',
+        [buildCategory({ id: 5, space_id: spaceId, is_system: 1 })],
+        ErrorMessages.FORBIDDEN_CATEGORY,
+        403,
+      ],
+      [
+        'is archived',
+        [buildCategory({ id: 5, space_id: spaceId, is_active: 0, transaction_type: TransactionType.INCOME })],
+        ErrorMessages.CATEGORY_ARCHIVED,
+        400,
+      ],
+      [
+        'has the other type',
+        [buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.EXPENSE })],
+        ErrorMessages.CATEGORY_TYPE_MISMATCH,
+        400,
+      ],
+    ])('rejects when the category %s', async (_, categories, message, status) => {
       lockedRows.set(Category, categories);
 
-      await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(
-        new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
-      );
+      await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(new HttpException(message, status));
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it('creates the transaction and derives the wallet balance from its previous history', async () => {
-      const wallet = buildWallet({ id: 1, space_id: spaceId });
-      lockedRows.set(Wallet, [wallet]);
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10000n]]));
-      const input = dto({ description: 'Lunch' });
-      const entity = {
+    it('saves the transaction and returns it as the read view', async () => {
+      await service.create(userId, spaceId, dto({ description: 'Lunch' }));
+
+      expect(transactionRepository.create).toHaveBeenCalledWith({
         wallet_id: 1,
         category_id: 5,
         transaction_type: TransactionType.INCOME,
         amount: '10',
         timestamp: new Date('2026-01-15T10:00:00.000Z'),
         description: 'Lunch',
-      };
-      const saved = buildTransaction({ ...entity, id: 'tx-1' });
-      transactionRepository.save.mockResolvedValue(saved);
+      });
+      expect(transactionQueriesService.getOneInSpace).toHaveBeenCalledWith(spaceId, 'tx-new', manager);
+    });
 
-      const result = await service.create(userId, spaceId, input);
+    it('returns the view of the stored record, not the request echo', async () => {
+      const result = await service.create(userId, spaceId, dto());
 
-      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
-      expect(transactionRepository.create).toHaveBeenCalledWith(entity);
-      expect(transactionRepository.save).toHaveBeenCalledWith(entity);
-      expect(result).toEqual({ transaction: saved, wallet: { ...wallet, balance: 110 }, previous_balance: 100 });
+      expect(result.transaction).toEqual(toTransactionView(created));
+    });
+
+    it('reads both balances from history, before and after the insert', async () => {
+      const wallet = buildWallet({ id: 1, space_id: spaceId });
+      lockedRows.set(Wallet, [wallet]);
+      transactionQueriesService.getBalances
+        .mockImplementationOnce(async () => {
+          expect(transactionRepository.save).not.toHaveBeenCalled();
+          return new Map([[1, 10000n]]);
+        })
+        .mockImplementationOnce(async () => {
+          expect(transactionRepository.save).toHaveBeenCalled();
+          // a concurrent write cannot happen under the wallet lock; this only
+          // shows that the after-balance is read, not computed
+          return new Map([[1, 10777n]]);
+        });
+
+      const result = await service.create(userId, spaceId, dto());
+
+      expect(result.previous_balance).toBe(100);
       expect(result.wallet).toBe(wallet);
+      expect(result.wallet.balance).toBe(107.77);
       expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1], manager);
     });
 
-    it('subtracts the amount for an expense transaction', async () => {
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10000n]]));
-      const input = dto({ amount: '30', transaction_type: TransactionType.EXPENSE });
-      transactionRepository.save.mockResolvedValue(
-        buildTransaction({ amount: '30', transaction_type: TransactionType.EXPENSE }),
-      );
+    it('fails, so the transaction rolls back, when a balance cannot be returned to the cent', async () => {
+      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 9007199254740993n]]));
 
-      const result = await service.create(userId, spaceId, input);
-
-      expect(result.previous_balance).toBe(100);
-      expect(result.wallet.balance).toBe(70);
+      await expect(service.create(userId, spaceId, dto())).rejects.toThrow(RangeError);
     });
 
-    it.each([
-      [TransactionType.INCOME, '0.2', 0.3],
-      [TransactionType.EXPENSE, '0.3', -0.2],
-    ])('adds a %s of %p to a 0.10 balance without float error', async (transaction_type, amount, balance) => {
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10n]]));
-      transactionRepository.save.mockResolvedValue(buildTransaction({ amount, transaction_type }));
-
-      const result = await service.create(userId, spaceId, dto({ amount, transaction_type }));
-
-      expect(result.previous_balance).toBe(0.1);
-      expect(result.wallet.balance).toBe(balance);
-    });
-
-    it.each([
-      ['previous', 9007199254740991n, '0.01'],
-      ['new', 9007199254740981n, '0.10'],
-    ])('saves nothing when the %s balance cannot be returned to the cent', async (_, balance, amount) => {
-      transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, balance]]));
-
-      await expect(service.create(userId, spaceId, dto({ amount }))).rejects.toThrow(RangeError);
-      expect(transactionRepository.save).not.toHaveBeenCalled();
-    });
-
-    it('starts from a balance of 0 when the wallet has no transactions yet', async () => {
-      const input = dto({ amount: '50' });
-      transactionRepository.save.mockResolvedValue(buildTransaction({ amount: '50' }));
-
-      const result = await service.create(userId, spaceId, input);
-
-      expect(result.previous_balance).toBe(0);
-      expect(result.wallet.balance).toBe(50);
-    });
-
-    it('stores an absent description as null and converts a date-only timestamp to local midnight', async () => {
-      await service.create(userId, spaceId, dto({ timestamp: '2026-01-15' }));
+    it('stores a blank description as null and converts a date-only timestamp to local midnight', async () => {
+      await service.create(userId, spaceId, dto({ timestamp: '2026-01-15', description: '   ' }));
 
       expect(transactionRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ description: null, timestamp: new Date(2026, 0, 15) }),
@@ -264,6 +274,10 @@ describe('TransactionsService', () => {
       transaction_type: TransactionType.INCOME,
       timestamp: '2026-01-15T10:00:00.000Z',
     };
+
+    beforeEach(() => {
+      transactionQueriesService.getOneInSpace.mockResolvedValue(loadedTransaction('tx-new', { id: 1 }));
+    });
 
     it('writes without a key, outside the idempotency store', async () => {
       await service.create(userId, spaceId, dto);

@@ -5,7 +5,9 @@ export const ErrorMessages = {
   FORBIDDEN_WALLET: 'Wallet does not exist or you do not have access to this wallet',
   FORBIDDEN_CATEGORY: 'Category does not exist or you do not have access to this category',
   CATEGORY_IS_SYSTEM: 'This category is managed by the system and cannot be modified',
-  CATEGORY_ARCHIVED: 'An archived category cannot be added to a limit',
+  CATEGORY_ARCHIVED: 'The category is archived',
+  CATEGORY_TYPE_MISMATCH: 'The category type does not match the transaction type',
+  WALLET_DELETED: 'The wallet is deleted',
   FORBIDDEN_LIMIT: 'Limit does not exist or you do not have access to this limit',
   LIMIT_EXISTS: 'Limit already exists',
   LIMIT_NAME_REQUIRED: 'A group limit needs a name',
@@ -22,6 +24,7 @@ export const ErrorMessages = {
   TRANSACTION_NOT_FOUND: 'Transaction not found',
   TRANSACTION_IS_SYSTEM: 'The initial balance cannot be edited or deleted',
   TRANSACTION_VERSION_CONFLICT: 'The transaction was changed since it was read',
+  TRANSACTION_VERSION_REQUIRED: 'If-Match with the version that was read is required',
   IDEMPOTENCY_KEY_REUSED: 'This Idempotency-Key was already used for a different request',
 } as const;
 
