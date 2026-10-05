@@ -248,6 +248,29 @@ describe('Transaction writes (e2e)', () => {
       expect([second.body.previous_balance, second.body.wallet.balance]).toEqual([-10, -15]);
     });
 
+    it('makes a delete wait for a create on the same wallet', async () => {
+      const s = await setup();
+      const existing = await api(s.member)
+        .post(`${base(s.member)}/transactions`)
+        .send(expense(s, '4.00'))
+        .expect(201);
+      const checkpoint = pauseAfterFirstCall(queries(), 'getBalances', insideWrite);
+
+      const [created, deleted] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        LOCK_WALLET,
+        () =>
+          api(s.member)
+            .post(`${base(s.member)}/transactions`)
+            .send(expense(s, '10.00')),
+        () => api(s.member).delete(`${base(s.member)}/transactions/${existing.body.transaction.id}`),
+      );
+
+      expect([created.body.previous_balance, created.body.wallet.balance]).toEqual([-4, -14]);
+      expect(deleted.status).toBe(200);
+    });
+
     it('makes deleting a category wait for a create on it, so the category is archived, not removed', async () => {
       const s = await setup();
       const category = await api(s.member)

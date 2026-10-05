@@ -472,12 +472,15 @@ describe('TransactionsService', () => {
       expect(transactionRepository.delete).not.toHaveBeenCalled();
     });
 
-    it('locks the transaction row before reading it in the space', async () => {
+    it('locks the transaction row, then reads it in the space, then locks its wallet', async () => {
       lockedTransaction();
 
       await service.remove(userId, spaceId, 'tx-1');
 
-      expect(manager.createQueryBuilder).toHaveBeenCalledWith(Transaction, 'row');
+      expect(jest.mocked(manager.createQueryBuilder).mock.calls.map(([entity]) => entity)).toEqual([
+        Transaction,
+        Wallet,
+      ]);
       expect(transactionQueriesService.getOneInSpace).toHaveBeenCalledWith(spaceId, 'tx-1', manager);
       expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager, 'shared');
     });

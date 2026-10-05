@@ -153,6 +153,8 @@ export class TransactionsService {
       }
 
       assertVersion(transaction, expectedVersion);
+      // its balance changes: writes to one wallet queue on its row
+      await lockRows(manager, Wallet, [transaction.wallet_id], 'exclusive');
 
       await manager.getRepository(Transaction).delete(transaction.id);
 
