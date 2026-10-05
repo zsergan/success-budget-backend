@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
 
@@ -18,20 +18,10 @@ import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/s
 import { ApiException } from '@shared/api.exception';
 import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
-import { assertFound, constantTimeEquals } from '@shared/utils';
+import { assertFound, constantTimeEquals, isDuplicateKey } from '@shared/utils';
 import type { EnvironmentVariables } from '@config/env.validation';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
-
-function isDuplicateEmail(error: unknown): boolean {
-  if (!(error instanceof QueryFailedError)) {
-    return false;
-  }
-
-  const driverError = error.driverError as { code?: string; sqlMessage?: string };
-
-  return driverError.code === 'ER_DUP_ENTRY' && (driverError.sqlMessage ?? '').includes('UQ_users_email');
-}
 
 @Injectable()
 export class UsersService {
@@ -101,7 +91,7 @@ export class UsersService {
     try {
       return await this.register(createUserDto);
     } catch (error) {
-      if (!isDuplicateEmail(error)) {
+      if (!isDuplicateKey(error, 'UQ_users_email')) {
         throw error;
       }
     }
