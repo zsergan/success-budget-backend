@@ -66,18 +66,16 @@ export class TransactionQueriesService {
     private readonly transactionRepository: Repository<Transaction>,
   ) {}
 
-  // shared by GET /spaces/:spaceId/wallets and TransactionsService.create()'s
-  // previous_balance - no lock, informational only: the balance is always
-  // recomputed from history and never depends on the order concurrent
-  // requests resolve in. Balances are in cents.
-  async getBalances(walletIds: number[]): Promise<Map<number, bigint>> {
+  // Balances are in cents. Transaction writes pass their manager, holding
+  // the wallet rows locked, so the balance cannot change before they commit.
+  async getBalances(walletIds: number[], manager?: EntityManager): Promise<Map<number, bigint>> {
     const balances = new Map(walletIds.map((id) => [id, 0n]));
 
     if (walletIds.length === 0) {
       return balances;
     }
 
-    const rows = await this.transactionRepository
+    const rows = await this.repository(manager)
       .createQueryBuilder('transaction')
       .select('transaction.wallet_id', 'wallet_id')
       .addSelect(
@@ -106,8 +104,12 @@ export class TransactionQueriesService {
 
   // Scoped through the transaction's own wallet, soft-deleted included, so a
   // transaction of another space is not found rather than forbidden.
-  async getOneInSpace(spaceId: number, transactionId: string): Promise<LoadedTransaction | null> {
-    const transaction = await this.transactionRepository
+  async getOneInSpace(
+    spaceId: number,
+    transactionId: string,
+    manager?: EntityManager,
+  ): Promise<LoadedTransaction | null> {
+    const transaction = await this.repository(manager)
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
@@ -339,6 +341,10 @@ export class TransactionQueriesService {
       .getOne();
 
     return transaction?.timestamp ?? null;
+  }
+
+  private repository(manager?: EntityManager): Repository<Transaction> {
+    return manager?.getRepository(Transaction) ?? this.transactionRepository;
   }
 
   private statisticsExpenseScope(

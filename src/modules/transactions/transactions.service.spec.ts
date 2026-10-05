@@ -1,14 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
-import type { Repository } from 'typeorm';
+import { DataSource, type EntityManager, type Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import { toTransactionView } from './transaction-view';
 import { Transaction } from '@entities/transaction.entity';
-import type { Category } from '@entities/category.entity';
-import type { Wallet } from '@entities/wallet.entity';
+import { Category } from '@entities/category.entity';
+import { Wallet } from '@entities/wallet.entity';
 import { TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { withRelations } from '@shared/utils';
@@ -29,7 +29,9 @@ describe('TransactionsService', () => {
   >;
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
-  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembership' | 'lockSpace'>>;
+  let manager: EntityManager;
+  let lockedRows: Map<unknown, unknown[]>;
 
   const userId = 1;
   const spaceId = 10;
@@ -62,8 +64,27 @@ describe('TransactionsService', () => {
         .fn()
         .mockResolvedValue(buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.INCOME })),
     };
+    const member = buildSpaceMember({ space_id: spaceId, user_id: userId });
     spaceAccessService = {
-      assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ space_id: spaceId, user_id: userId })),
+      assertMembership: jest.fn().mockResolvedValue(member),
+      lockMembership: jest.fn().mockResolvedValue(member),
+      lockSpace: jest.fn(),
+    };
+    lockedRows = new Map<unknown, unknown[]>([
+      [Wallet, [buildWallet({ id: 1, space_id: spaceId })]],
+      [Category, [buildCategory({ id: 5, space_id: spaceId, transaction_type: TransactionType.INCOME })]],
+    ]);
+    manager = {
+      createQueryBuilder: jest.fn((entity: unknown) => ({
+        setLock: jest.fn().mockReturnThis(),
+        whereInIds: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn(async () => lockedRows.get(entity) ?? []),
+      })),
+      getRepository: jest.fn(() => transactionRepository),
+    } as unknown as EntityManager;
+    const dataSource = {
+      transaction: jest.fn((_level: string, work: (m: EntityManager) => Promise<unknown>) => work(manager)),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -74,6 +95,7 @@ describe('TransactionsService', () => {
         { provide: WalletsService, useValue: walletsService },
         { provide: CategoriesService, useValue: categoriesService },
         { provide: SpaceAccessService, useValue: spaceAccessService },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
 
@@ -93,34 +115,60 @@ describe('TransactionsService', () => {
     });
 
     it('rejects a non-member before loading anything', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
+      spaceAccessService.lockMembership.mockRejectedValue(forbidden());
 
       await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(forbidden());
-      expect(walletsService.getOne).not.toHaveBeenCalled();
-      expect(categoriesService.getOne).not.toHaveBeenCalled();
+      expect(manager.createQueryBuilder).not.toHaveBeenCalled();
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it.each<[string, Wallet | null]>([
-      ['does not exist', null],
-      ['belongs to a different space', buildWallet({ id: 1, space_id: 20 })],
-      ['was soft-deleted', buildWallet({ id: 1, space_id: spaceId, is_deleted: 1, deleted_at: new Date() })],
-    ])('rejects when the wallet %s, before loading the category', async (_, wallet) => {
-      walletsService.getOne.mockResolvedValue(wallet);
+    it('locks the membership, the space shared, the wallet and the category, in that order', async () => {
+      const order: string[] = [];
+      spaceAccessService.lockMembership.mockImplementation(async () => {
+        order.push('member');
+        return buildSpaceMember();
+      });
+      spaceAccessService.lockSpace.mockImplementation(async () => {
+        order.push('space');
+      });
+      jest.mocked(manager.createQueryBuilder).mockImplementation(((entity: unknown) => {
+        order.push(entity === Wallet ? 'wallet' : 'category');
+        return {
+          setLock: (mode: string) => {
+            order.push(mode);
+            return { whereInIds: () => ({ orderBy: () => ({ getMany: async () => lockedRows.get(entity) }) }) };
+          },
+        };
+      }) as unknown as EntityManager['createQueryBuilder']);
+
+      await service.create(userId, spaceId, dto());
+
+      expect(order).toEqual(['member', 'space', 'wallet', 'pessimistic_write', 'category', 'pessimistic_read']);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(spaceId, userId, manager);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager, 'shared');
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, Wallet[]]>([
+      ['does not exist', []],
+      ['belongs to a different space', [buildWallet({ id: 1, space_id: 20 })]],
+      ['was soft-deleted', [buildWallet({ id: 1, space_id: spaceId, is_deleted: 1, deleted_at: new Date() })]],
+    ])('rejects when the wallet %s, before loading the category', async (_, wallets) => {
+      lockedRows.set(Wallet, wallets);
 
       await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
       );
-      expect(categoriesService.getOne).not.toHaveBeenCalled();
+      expect(manager.createQueryBuilder).not.toHaveBeenCalledWith(Category, 'row');
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it.each<[string, Category | null]>([
-      ['does not exist', null],
-      ['belongs to a different space', buildCategory({ id: 5, space_id: 20 })],
-      ['is a system category', buildCategory({ id: 5, space_id: spaceId, is_system: 1 })],
-    ])('rejects when the category %s', async (_, category) => {
-      categoriesService.getOne.mockResolvedValue(category);
+    it.each<[string, Category[]]>([
+      ['does not exist', []],
+      ['belongs to a different space', [buildCategory({ id: 5, space_id: 20 })]],
+      ['is a system category', [buildCategory({ id: 5, space_id: spaceId, is_system: 1 })]],
+    ])('rejects when the category %s', async (_, categories) => {
+      lockedRows.set(Category, categories);
 
       await expect(service.create(userId, spaceId, dto())).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
@@ -130,7 +178,7 @@ describe('TransactionsService', () => {
 
     it('creates the transaction and derives the wallet balance from its previous history', async () => {
       const wallet = buildWallet({ id: 1, space_id: spaceId });
-      walletsService.getOne.mockResolvedValue(wallet);
+      lockedRows.set(Wallet, [wallet]);
       transactionQueriesService.getBalances.mockResolvedValue(new Map([[1, 10000n]]));
       const input = dto({ description: 'Lunch' });
       const entity = {
@@ -146,15 +194,12 @@ describe('TransactionsService', () => {
 
       const result = await service.create(userId, spaceId, input);
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-      expect(walletsService.getOne).toHaveBeenCalledWith(1);
-      expect(categoriesService.getOne).toHaveBeenCalledWith(5);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
       expect(transactionRepository.create).toHaveBeenCalledWith(entity);
       expect(transactionRepository.save).toHaveBeenCalledWith(entity);
       expect(result).toEqual({ transaction: saved, wallet: { ...wallet, balance: 110 }, previous_balance: 100 });
       expect(result.wallet).toBe(wallet);
-      expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1]);
+      expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1], manager);
     });
 
     it('subtracts the amount for an expense transaction', async () => {
