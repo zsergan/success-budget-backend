@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index, VersionColumn } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
 import { Wallet } from './wallet.entity';
@@ -33,6 +33,9 @@ export class Transaction {
 
   @Column({ type: 'text', nullable: true })
   description!: string | null;
+
+  @VersionColumn({ type: 'int', unsigned: true, default: 1 })
+  version!: number;
 
   @ManyToOne(() => Wallet, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'wallet_id' })

@@ -721,7 +721,7 @@ describe('Boundary type contract (e2e)', () => {
     const keys = (value: object): string[] => Object.keys(value).sort();
     const WALLET = ['created_at', 'design', 'id', 'updated_at', 'wallet_name'];
     const WALLET_WITH_BALANCE = [...WALLET, 'balance'].sort();
-    const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type'];
+    const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type', 'version'];
     const CATEGORY = ['color', 'created_at', 'icon', 'id', 'is_active', 'name', 'transaction_type', 'updated_at'];
 
     it('wallet creation and overview', async () => {
