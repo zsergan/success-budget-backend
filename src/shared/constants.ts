@@ -18,6 +18,8 @@ export const SPACE_LIMITS = {
 
 export const SPACE_INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
+export const IDEMPOTENCY_KEY_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
+
 export const DEFAULT_CATEGORIES: CreateCategoryDto[] = [
   { name: 'Salary', transaction_type: TransactionType.INCOME, icon: CategoryIcon.SALARY, color: AppColor.EVERGREEN },
   { name: 'Gifts', transaction_type: TransactionType.INCOME, icon: CategoryIcon.GIFTS, color: AppColor.CLAY },

@@ -22,6 +22,7 @@ export const ErrorMessages = {
   TRANSACTION_NOT_FOUND: 'Transaction not found',
   TRANSACTION_IS_SYSTEM: 'The initial balance cannot be edited or deleted',
   TRANSACTION_VERSION_CONFLICT: 'The transaction was changed since it was read',
+  IDEMPOTENCY_KEY_REUSED: 'This Idempotency-Key was already used for a different request',
 } as const;
 
 export type ErrorCode = keyof typeof ErrorMessages;
