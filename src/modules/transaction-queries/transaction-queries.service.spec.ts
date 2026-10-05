@@ -206,17 +206,6 @@ describe('TransactionQueriesService', () => {
     });
   });
 
-  describe('getOneWithWallet', () => {
-    it('loads a transaction with its wallet relation', async () => {
-      queryBuilder.getOne.mockResolvedValue(null);
-
-      await service.getOneWithWallet('tx-1');
-
-      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
-      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
-    });
-  });
-
   describe('getOneInSpace', () => {
     it('loads the transaction with both relations, scoped by its wallet space', async () => {
       queryBuilder.getOne.mockResolvedValue(null);
@@ -227,6 +216,15 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+    });
+
+    it('reads through the given manager', async () => {
+      const getRepository = jest.fn().mockReturnValue(transactionRepository);
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      await service.getOneInSpace(9, 'tx-1', { getRepository } as unknown as EntityManager);
+
+      expect(getRepository).toHaveBeenCalledWith(Transaction);
     });
   });
 

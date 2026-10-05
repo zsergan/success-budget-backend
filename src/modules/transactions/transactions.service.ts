@@ -1,6 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { Category } from '@entities/category.entity';
@@ -21,6 +20,7 @@ import {
 } from '@shared/utils';
 import {
   TransactionQueriesService,
+  type LoadedTransaction,
   type TransactionFilters,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
@@ -36,8 +36,6 @@ export interface CreateTransactionResult {
 @Injectable()
 export class TransactionsService {
   constructor(
-    @InjectRepository(Transaction)
-    private readonly transactionRepository: Repository<Transaction>,
     private readonly transactionQueriesService: TransactionQueriesService,
     private readonly walletsService: WalletsService,
     private readonly categoriesService: CategoriesService,
@@ -124,13 +122,33 @@ export class TransactionsService {
     return toTransactionView(transaction);
   }
 
-  async remove(userId: number, spaceId: number, transactionId: string): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
+  // Without expectedVersion the delete is unconditional, as before If-Match.
+  async remove(userId: number, spaceId: number, transactionId: string, expectedVersion?: number): Promise<void> {
+    await this.write(userId, spaceId, async (manager) => {
+      const transaction = await this.lockTransaction(manager, spaceId, transactionId);
 
-    const transaction = await this.transactionQueriesService.getOneWithWallet(transactionId);
-    assertBelongsToSpace(transaction?.wallet, spaceId, 'FORBIDDEN_WALLET');
+      if (transaction.category.is_system) {
+        throw new ApiException('TRANSACTION_IS_SYSTEM', HttpStatus.BAD_REQUEST);
+      }
 
-    await this.transactionRepository.delete(transaction.id);
+      assertVersion(transaction, expectedVersion);
+
+      await manager.getRepository(Transaction).delete(transaction.id);
+    });
+  }
+
+  private async lockTransaction(
+    manager: EntityManager,
+    spaceId: number,
+    transactionId: string,
+  ): Promise<LoadedTransaction> {
+    const [locked] = await lockRows(manager, Transaction, [transactionId], 'exclusive');
+    const transaction = locked
+      ? await this.transactionQueriesService.getOneInSpace(spaceId, transactionId, manager)
+      : null;
+    assertFound(transaction, 'TRANSACTION_NOT_FOUND');
+
+    return transaction;
   }
 
   // One DB transaction per write, locks taken in one order across the app:
@@ -166,6 +184,12 @@ function assertActiveWallet(wallet: Wallet | null | undefined, spaceId: number):
 
   if (wallet.is_deleted) {
     throw new ApiException('FORBIDDEN_WALLET', HttpStatus.FORBIDDEN);
+  }
+}
+
+function assertVersion(transaction: Transaction, expectedVersion: number | undefined): void {
+  if (expectedVersion !== undefined && transaction.version !== expectedVersion) {
+    throw new ApiException('TRANSACTION_VERSION_CONFLICT', HttpStatus.CONFLICT);
   }
 }
 

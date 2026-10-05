@@ -92,16 +92,6 @@ export class TransactionQueriesService {
     return balances;
   }
 
-  async getOneWithWallet(transactionId: string): Promise<WithRelations<Transaction, 'wallet'> | null> {
-    const transaction = await this.transactionRepository
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .where('transaction.id = :transactionId', { transactionId })
-      .getOne();
-
-    return transaction && withRelations(transaction, 'wallet');
-  }
-
   // Scoped through the transaction's own wallet, soft-deleted included, so a
   // transaction of another space is not found rather than forbidden.
   async getOneInSpace(

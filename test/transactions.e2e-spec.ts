@@ -180,4 +180,122 @@ describe('Transactions (e2e)', () => {
       expect(res.body.code).toBe('UNAUTHORIZED');
     });
   });
+
+  describe('DELETE /transactions/:id', () => {
+    async function exists(id: string): Promise<boolean> {
+      const rows: unknown[] = await testApp.dataSource.query('SELECT id FROM transactions WHERE id = ?', [id]);
+      return rows.length > 0;
+    }
+
+    it('deletes with the version the client read, and a repeat is not found', async () => {
+      const { wallet } = await createWallet(owner);
+      const id = await createTransaction(owner, wallet.id);
+
+      const res = await api(owner)
+        .delete(`${base(owner)}/transactions/${id}`)
+        .set('If-Match', '"1"')
+        .expect(200);
+      expect(res.text).toBe('true');
+      expect(await exists(id)).toBe(false);
+
+      const repeat = await api(owner)
+        .delete(`${base(owner)}/transactions/${id}`)
+        .set('If-Match', '"1"')
+        .expect(404);
+      expect(repeat.body.code).toBe('TRANSACTION_NOT_FOUND');
+    });
+
+    it('still deletes without If-Match', async () => {
+      const { wallet } = await createWallet(owner);
+      const id = await createTransaction(owner, wallet.id);
+
+      await api(owner)
+        .delete(`${base(owner)}/transactions/${id}`)
+        .expect(200);
+
+      expect(await exists(id)).toBe(false);
+    });
+
+    it('refuses a stale version and keeps the record', async () => {
+      const { wallet } = await createWallet(owner);
+      const id = await createTransaction(owner, wallet.id);
+      await testApp.dataSource.query('UPDATE transactions SET version = 2 WHERE id = ?', [id]);
+
+      const res = await api(owner)
+        .delete(`${base(owner)}/transactions/${id}`)
+        .set('If-Match', '"1"')
+        .expect(409);
+
+      expect(res.body).toEqual(expect.objectContaining({ statusCode: 409, code: 'TRANSACTION_VERSION_CONFLICT' }));
+      expect(await exists(id)).toBe(true);
+    });
+
+    it('rejects a malformed If-Match before looking the record up', async () => {
+      const res = await api(outsider)
+        .delete(`${base(owner)}/transactions/not-a-uuid`)
+        .set('If-Match', 'W/"1"')
+        .expect(400);
+
+      expect(res.body).toEqual(
+        expect.objectContaining({
+          code: 'VALIDATION_FAILED',
+          message: [{ field: 'If-Match', error: 'If-Match must be a record version, e.g. "3"' }],
+        }),
+      );
+    });
+
+    it('refuses the initial balance', async () => {
+      const funded = await createWallet(owner, '25');
+
+      const res = await api(owner)
+        .delete(`${base(owner)}/transactions/${funded.transaction.id}`)
+        .expect(400);
+
+      expect(res.body).toEqual(expect.objectContaining({ statusCode: 400, code: 'TRANSACTION_IS_SYSTEM' }));
+      expect(await exists(funded.transaction.id)).toBe(true);
+    });
+
+    it('deletes a transaction of a deleted wallet', async () => {
+      const { wallet } = await createWallet(owner);
+      const id = await createTransaction(owner, wallet.id);
+      await api(owner)
+        .delete(`${base(owner)}/wallets/${wallet.id}`)
+        .expect(200);
+
+      await api(owner)
+        .delete(`${base(owner)}/transactions/${id}`)
+        .expect(200);
+
+      expect(await exists(id)).toBe(false);
+    });
+
+    it('does not reveal or delete a transaction of another space', async () => {
+      const { wallet } = await createWallet(outsider);
+      const categories = await api(outsider)
+        .get(`${base(outsider)}/categories`)
+        .expect(200);
+      const foreignId = await createTransaction(outsider, wallet.id, categories.body.expenses[0].id);
+
+      for (const id of [foreignId, '00000000-0000-0000-0000-000000000000', 'not-a-uuid']) {
+        const res = await api(owner)
+          .delete(`${base(owner)}/transactions/${id}`)
+          .expect(404);
+
+        expect(res.body.code).toBe('TRANSACTION_NOT_FOUND');
+      }
+      expect(await exists(foreignId)).toBe(true);
+    });
+
+    it('refuses a non-member with the space access error', async () => {
+      const { wallet } = await createWallet(owner);
+      const id = await createTransaction(owner, wallet.id);
+
+      const res = await api(outsider)
+        .delete(`${base(owner)}/transactions/${id}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('FORBIDDEN_SPACE');
+      expect(await exists(id)).toBe(true);
+    });
+  });
 });

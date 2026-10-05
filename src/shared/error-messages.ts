@@ -20,6 +20,8 @@ export const ErrorMessages = {
   SPACE_MEMBER_LIMIT_REACHED: 'This space has reached its member limit',
   SPACE_LAST_REMAINING: 'You cannot leave or delete your only remaining space',
   TRANSACTION_NOT_FOUND: 'Transaction not found',
+  TRANSACTION_IS_SYSTEM: 'The initial balance cannot be edited or deleted',
+  TRANSACTION_VERSION_CONFLICT: 'The transaction was changed since it was read',
 } as const;
 
 export type ErrorCode = keyof typeof ErrorMessages;

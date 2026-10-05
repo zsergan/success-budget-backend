@@ -107,10 +107,10 @@ from the JSON, never `null`. Queries that join a relation return
 `LimitWithCategories`, `SpaceWithCurrency`, members with `user`.
 
 A missing resource keeps its existing response: `assertBelongsToSpace()`
-turns a missing wallet, category, limit or transaction into the same 403 as
-a foreign one, and invites, members and confirmation codes stay 404. The
-exception is `GET /transactions/:id`: a missing, malformed or foreign id is
-`404 TRANSACTION_NOT_FOUND` (see the
+turns a missing wallet, category or limit into the same 403 as a foreign
+one, and invites, members and confirmation codes stay 404. A transaction
+addressed by id (`GET`/`DELETE /transactions/:id`) is the exception: a
+missing, malformed or foreign id is `404 TRANSACTION_NOT_FOUND` (see the
 [transactions contract](transactions-contract.md)). A row
 that disappears between the access check and the read (a concurrent delete)
 is a 404 via `assertFound()` instead of an empty 200 or a 500.

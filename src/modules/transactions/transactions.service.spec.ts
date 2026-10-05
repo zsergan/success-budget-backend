@@ -1,5 +1,4 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
 import { DataSource, type EntityManager, type Repository } from 'typeorm';
 
@@ -22,10 +21,7 @@ describe('TransactionsService', () => {
   let service: TransactionsService;
   let transactionRepository: jest.Mocked<Pick<Repository<Transaction>, 'create' | 'save' | 'delete'>>;
   let transactionQueriesService: jest.Mocked<
-    Pick<
-      TransactionQueriesService,
-      'getBalances' | 'getForAllWallets' | 'getLatest' | 'getOneWithWallet' | 'getOneInSpace'
-    >
+    Pick<TransactionQueriesService, 'getBalances' | 'getForAllWallets' | 'getLatest' | 'getOneInSpace'>
   >;
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
@@ -42,8 +38,6 @@ describe('TransactionsService', () => {
       'wallet',
       'category',
     );
-  const withWallet = (id: string, wallet: Partial<Wallet>) =>
-    withRelations(buildTransaction({ id, wallet: buildWallet(wallet) }), 'wallet');
 
   beforeEach(async () => {
     transactionRepository = {
@@ -55,7 +49,6 @@ describe('TransactionsService', () => {
       getBalances: jest.fn(async (ids: number[]) => new Map(ids.map((id) => [id, 0n]))),
       getForAllWallets: jest.fn(),
       getLatest: jest.fn(),
-      getOneWithWallet: jest.fn(),
       getOneInSpace: jest.fn(),
     };
     walletsService = { getOne: jest.fn().mockResolvedValue(buildWallet({ id: 1, space_id: spaceId })) };
@@ -90,7 +83,6 @@ describe('TransactionsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TransactionsService,
-        { provide: getRepositoryToken(Transaction), useValue: transactionRepository },
         { provide: TransactionQueriesService, useValue: transactionQueriesService },
         { provide: WalletsService, useValue: walletsService },
         { provide: CategoriesService, useValue: categoriesService },
@@ -398,33 +390,74 @@ describe('TransactionsService', () => {
   });
 
   describe('remove', () => {
+    const lockedTransaction = (overrides: Partial<Transaction> = {}) => {
+      const transaction = Object.assign(loadedTransaction('tx-1', { id: 1 }), overrides);
+      lockedRows.set(Transaction, [transaction]);
+      transactionQueriesService.getOneInSpace.mockResolvedValue(transaction);
+      return transaction;
+    };
+
     it('rejects a non-member before loading the transaction', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
+      spaceAccessService.lockMembership.mockRejectedValue(forbidden());
 
       await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(forbidden());
-      expect(transactionQueriesService.getOneWithWallet).not.toHaveBeenCalled();
+      expect(manager.createQueryBuilder).not.toHaveBeenCalled();
       expect(transactionRepository.delete).not.toHaveBeenCalled();
     });
 
-    it.each([
-      ['does not exist', null],
-      ['belongs to a different space', withWallet('tx-1', { space_id: 20 })],
-    ])('rejects when the transaction %s', async (_, transaction) => {
-      transactionQueriesService.getOneWithWallet.mockResolvedValue(transaction);
+    it('locks the transaction row before reading it in the space', async () => {
+      lockedTransaction();
+
+      await service.remove(userId, spaceId, 'tx-1');
+
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(Transaction, 'row');
+      expect(transactionQueriesService.getOneInSpace).toHaveBeenCalledWith(spaceId, 'tx-1', manager);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager, 'shared');
+    });
+
+    it('is not found when no row could be locked', async () => {
+      await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_NOT_FOUND, 404),
+      );
+      expect(transactionQueriesService.getOneInSpace).not.toHaveBeenCalled();
+    });
+
+    it('is not found when the transaction belongs to another space', async () => {
+      lockedTransaction();
+      transactionQueriesService.getOneInSpace.mockResolvedValue(null);
 
       await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(
-        new HttpException(ErrorMessages.FORBIDDEN_WALLET, 403),
+        new HttpException(ErrorMessages.TRANSACTION_NOT_FOUND, 404),
       );
       expect(transactionRepository.delete).not.toHaveBeenCalled();
     });
 
-    it('deletes the transaction when its wallet belongs to the space', async () => {
-      transactionQueriesService.getOneWithWallet.mockResolvedValue(withWallet('tx-1', { space_id: spaceId }));
+    it('refuses the initial balance, even with the right version', async () => {
+      lockedTransaction({ category: buildCategory({ is_system: 1 }) });
 
-      await service.remove(userId, spaceId, 'tx-1');
+      await expect(service.remove(userId, spaceId, 'tx-1', 1)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_IS_SYSTEM, 400),
+      );
+      expect(transactionRepository.delete).not.toHaveBeenCalled();
+    });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(transactionQueriesService.getOneWithWallet).toHaveBeenCalledWith('tx-1');
+    it('refuses a stale version', async () => {
+      lockedTransaction({ version: 3 });
+
+      await expect(service.remove(userId, spaceId, 'tx-1', 2)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_VERSION_CONFLICT, 409),
+      );
+      expect(transactionRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the matching version', 3],
+      ['no version', undefined],
+    ])('deletes with %s', async (_, version) => {
+      lockedTransaction({ version: 3 });
+
+      await service.remove(userId, spaceId, 'tx-1', version);
+
       expect(transactionRepository.delete).toHaveBeenCalledWith('tx-1');
     });
   });

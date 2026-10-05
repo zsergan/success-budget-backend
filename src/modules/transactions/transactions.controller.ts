@@ -11,7 +11,16 @@ import {
   Request,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiNotFoundResponse, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiConflictResponse,
+  ApiHeader,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -22,6 +31,8 @@ import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
 import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
 import { ParseOptionalEnumPipe } from '@shared/pipes/parse-optional-enum.pipe';
 import { ParseOptionalIdPipe } from '@shared/pipes/parse-optional-id.pipe';
+import { ParseIfMatchVersionPipe } from '@shared/pipes/parse-if-match-version.pipe';
+import { RequestHeader } from '@shared/decorators/request-header.decorator';
 
 @ApiTags('transactions')
 @ApiBearerAuth()
@@ -84,13 +95,23 @@ export class TransactionsController {
     return this.transactionsService.getById(req.user.id, spaceId, transactionId);
   }
 
+  @ApiHeader({
+    name: 'If-Match',
+    required: false,
+    description: 'The version the client read, e.g. "3". Without it the delete is unconditional.',
+  })
+  @ApiOkResponse({ type: Boolean })
+  @ApiBadRequestResponse({ description: 'TRANSACTION_IS_SYSTEM: the initial balance cannot be deleted.' })
+  @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND: missing, malformed id, or of another space.' })
+  @ApiConflictResponse({ description: 'TRANSACTION_VERSION_CONFLICT: If-Match differs from the stored version.' })
   @Delete(':transactionId')
   async remove(
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('transactionId') transactionId: string,
+    @RequestHeader('If-Match', ParseIfMatchVersionPipe) expectedVersion?: number,
   ): Promise<boolean> {
-    await this.transactionsService.remove(req.user.id, spaceId, transactionId);
+    await this.transactionsService.remove(req.user.id, spaceId, transactionId, expectedVersion);
 
     return true;
   }

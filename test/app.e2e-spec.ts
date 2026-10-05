@@ -955,13 +955,6 @@ describe('App (e2e)', () => {
       [
         () =>
           request(server)
-            .delete(`/api/v1/spaces/${groupSpaceId}/transactions/${personalTransaction.id}`)
-            .set('Authorization', auth),
-        ErrorMessages.FORBIDDEN_WALLET,
-      ],
-      [
-        () =>
-          request(server)
             .post(`/api/v1/spaces/${groupSpaceId}/limits`)
             .set('Authorization', auth)
             .send({ category_ids: [personalCategory.id], amount: '10.00' }),
@@ -1001,6 +994,12 @@ describe('App (e2e)', () => {
       expect(response.status).toBe(403);
       expect(response.body.message).toBe(message);
     }
+
+    const deleteResponse = await request(server)
+      .delete(`/api/v1/spaces/${groupSpaceId}/transactions/${personalTransaction.id}`)
+      .set('Authorization', auth);
+    expect(deleteResponse.status).toBe(404);
+    expect(deleteResponse.body.code).toBe('TRANSACTION_NOT_FOUND');
 
     await expect(
       dataSource.getRepository(Transaction).findOneBy({ id: personalTransaction.id }),

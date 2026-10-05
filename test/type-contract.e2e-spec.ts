@@ -654,7 +654,7 @@ describe('Boundary type contract (e2e)', () => {
       expect(res.body.message).toBe(message);
     }
 
-    it('reports a missing wallet, category, limit or transaction as the same 403 as a foreign one', async () => {
+    it('reports a missing wallet, category or limit as the same 403 as a foreign one', async () => {
       const wallet = 'Wallet does not exist or you do not have access to this wallet';
       const category = 'Category does not exist or you do not have access to this category';
       const limit = 'Limit does not exist or you do not have access to this limit';
@@ -663,7 +663,6 @@ describe('Boundary type contract (e2e)', () => {
       expectError(await api().delete(`${base()}/wallets/${MISSING_ID}`), 403, wallet);
       expectError(await createTransaction({ wallet_id: MISSING_ID }), 403, wallet);
       expectError(await createTransaction({ category_id: MISSING_ID }), 403, category);
-      expectError(await api().delete(`${base()}/transactions/${MISSING_ID}`), 403, wallet);
       expectError(await api().put(`${base()}/categories/${MISSING_ID}`).send({ name: 'x' }), 403, category);
       expectError(await api().delete(`${base()}/categories/${MISSING_ID}`), 403, category);
       expectError(
@@ -682,6 +681,10 @@ describe('Boundary type contract (e2e)', () => {
         403,
         category,
       );
+    });
+
+    it('reports a missing transaction as 404, like a foreign one', async () => {
+      expectError(await api().delete(`${base()}/transactions/${MISSING_ID}`), 404, 'Transaction not found');
     });
 
     it('reports a missing space as 403 and a missing invite, member or code as 404', async () => {

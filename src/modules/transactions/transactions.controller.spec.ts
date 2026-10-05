@@ -133,9 +133,9 @@ describe('TransactionsController', () => {
   });
 
   it('remove delegates to TransactionsService.remove and returns true', async () => {
-    const result = await controller.remove(req, spaceId, 'tx-1');
+    const result = await controller.remove(req, spaceId, 'tx-1', 3);
 
-    expect(transactionsService.remove).toHaveBeenCalledWith(1, spaceId, 'tx-1');
+    expect(transactionsService.remove).toHaveBeenCalledWith(1, spaceId, 'tx-1', 3);
     expect(result).toBe(true);
   });
 });
