@@ -20,7 +20,9 @@ Differences from the behavior before this contract are collected under
 | Reworked `DELETE` with `If-Match`                                   | implemented |
 | Stricter `POST`, description normalization on write                 | implemented |
 | `PATCH /transactions/:id` with `If-Match`                           | implemented |
-| Initial balance out of `GET /wallets` income                        | planned     |
+| Initial balance out of `GET /wallets` income                        | implemented |
+| `GET /transactions/count`, stable history order                     | implemented |
+| Limits month in the client's `time_zone`                            | implemented |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
@@ -86,6 +88,7 @@ in the space. Checks run in this order: request shape
 | `POST`   | `/spaces/:spaceId/transactions`                | kept     |
 | `GET`    | `/spaces/:spaceId/transactions`                | kept     |
 | `GET`    | `/spaces/:spaceId/transactions/latest`         | kept     |
+| `GET`    | `/spaces/:spaceId/transactions/count`          | new      |
 | `GET`    | `/spaces/:spaceId/transactions/:transactionId` | new      |
 | `PATCH`  | `/spaces/:spaceId/transactions/:transactionId` | new      |
 | `DELETE` | `/spaces/:spaceId/transactions/:transactionId` | reworked |
@@ -97,7 +100,7 @@ design's "PUT" label is not part of the contract; there is no `PUT`.
 transaction of another space all give `404 TRANSACTION_NOT_FOUND`, so a
 member cannot tell a foreign transaction from a missing one. A transaction
 belongs to the space of its own wallet, soft-deleted wallets included.
-`latest` is a reserved path segment, never an id. A non-numeric `:spaceId`
+`latest` and `count` are reserved path segments, never ids. A non-numeric `:spaceId`
 is `400 BAD_REQUEST`.
 
 ## Field rules
@@ -130,13 +133,17 @@ zero.
 
 ### Timestamp
 
-- Same accepted formats and range as today (`parseIsoDate`, MySQL
-  `TIMESTAMP` range; see [`type-contract.md`](type-contract.md#dates)).
+- An exact instant: an ISO 8601 date-time **with `Z` or a UTC offset**
+  (`2026-09-15T10:00:00.000Z`, `2026-09-15T13:00:00+03:00`). A date-only
+  or offset-less value is `400 VALIDATION_FAILED`: it used to be read in
+  the server's time zone, which can put a transaction on another day than
+  the device meant. The same rule applies to a `PATCH`; reads always return
+  `Z` values, so echoing one back is fine.
+- Within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to
+  2038-01-19T03:14:07Z; see [`type-contract.md`](type-contract.md#dates)).
 - Not in the future: an instant more than **60 seconds** after the server
   clock is `400 VALIDATION_FAILED`, field `timestamp`. The margin absorbs
-  device clock drift, as `as_of` does in the statistics API. Prefer sending
-  an instant with `Z` or an offset; an offset-less value is server local
-  time.
+  device clock drift, as `as_of` does in the statistics API.
 
 ## Compatibility with existing records
 
@@ -269,13 +276,33 @@ Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
 
 ### `GET /spaces/:spaceId/transactions`, `GET .../latest`
 
-`TransactionView[]` (newest first) and `TransactionView`, or an empty body
-when the space has no transactions. Every pre-existing field keeps its name
-and type; `kind`, `version` and `category.is_archived` are new, and a blank
-description reads as `null`. Initial balance records are listed, marked
-`kind: 'initial_balance'`. Query parameters and their errors stay as in
-[`type-contract.md`](type-contract.md#absent-vs-null-vs-empty) and the
-[statistics contract](statistics-contract.md).
+`TransactionView[]` and `TransactionView`, or an empty body when the space
+has no transactions. Every pre-existing field keeps its name and type;
+`kind`, `version` and `category.is_archived` are new, and a blank
+description reads as `null`.
+
+- **Order:** newest `timestamp` first; rows with the same timestamp by `id`,
+  descending. The order is stable between requests, and `latest` is the
+  first row of the unfiltered list.
+- **Initial balance** records are listed, marked `kind: 'initial_balance'`.
+  A wallet created with a starting balance therefore has a non-empty
+  history even though its Income is zero; the client decides "no history"
+  from the rows (or the count), never from an amount.
+- **Query:** `from` and `to` are inclusive instants (send them with `Z` or
+  an offset: the device's day and month bounds; an offset-less value is
+  read in server local time). Defaults are the server's current month.
+  `from` after `to` is `400 VALIDATION_FAILED`, field `from`. The other
+  parameters and their errors stay as in
+  [`type-contract.md`](type-contract.md#absent-vs-null-vs-empty) and the
+  [statistics contract](statistics-contract.md).
+
+### `GET /spaces/:spaceId/transactions/count`
+
+`200 { count: number }`: the number of rows `GET /transactions` returns for
+the same query (`from`, `to`, `transaction_type`, `category_id`,
+`wallet_id`, same defaults and errors), initial balances included when they
+fall into it. It reads no rows, so the calendar counter does not load the
+list. Errors as for the list.
 
 ### `GET /spaces/:spaceId/transactions/:transactionId`
 
@@ -520,19 +547,63 @@ hours and re-reads instead.
 Every derived figure is computed from history at read time, so a create,
 edit or delete is reflected by the next read; nothing stored is patched.
 
-| Figure                                          | Initial balance | Regular transactions                 |
-| ----------------------------------------------- | --------------- | ------------------------------------ |
-| Wallet `balance`, `total_balance`               | included        | all, whatever their timestamp        |
-| Statistics Income / Expense / Net               | excluded        | up to `as_of`, by `transaction_type` |
-| `GET /wallets` `total_income` / `total_spend`   | excluded        | in the period                        |
-| Limits `spent`                                  | excluded        | expenses in the period, by category  |
-| A day's financial total in the history (client) | excluded        | that day's income minus expense      |
+| Figure                                          | Initial balance | Regular transactions                              |
+| ----------------------------------------------- | --------------- | ------------------------------------------------- |
+| History rows, `GET /transactions/count`         | included        | in `from`..`to`, by the filters                   |
+| Wallet `balance`, `total_balance`               | included        | all, whatever their timestamp                     |
+| Statistics Income / Expense / Net               | excluded        | up to `as_of`, by `transaction_type`              |
+| `GET /wallets` `total_income` / `total_spend`   | excluded        | in the period                                     |
+| Limits `spent`                                  | excluded        | expenses of the month in `time_zone`, by category |
+| Category `transaction_count`                    | not shown       | all, whatever their timestamp                     |
+| A day's financial total in the history (client) | excluded        | that day's income minus expense                   |
 
 Moving a transaction to another wallet moves its amount from one balance to
 the other. Changing its type, category, amount or timestamp moves it
 between Income and Expense, categories, limits and periods accordingly. The
 client computes a day's total from the listed rows and skips
 `kind: 'initial_balance'`.
+
+### Limits period
+
+`GET /limits?time_zone=<IANA>` counts `spent` over the current calendar
+month in that zone and returns the month it counted:
+
+```ts
+interface LimitsSummary {
+  period: {
+    time_zone: string; // canonical IANA name
+    start_date: string; // first local day, YYYY-MM-DD
+    end_date: string; // last local day
+    from: string; // first instant, ISO UTC
+    to: string; // last instant, inclusive, to the millisecond
+  };
+  // LimitView as before: id, name, amount, spent, in_percent, categories
+  total: LimitView | null;
+  categories: LimitView[];
+  over_allocation: { category_total: number; difference: number } | null;
+}
+```
+
+The mobile client sends the device's zone, as for statistics, and every
+screen showing limit spending takes the month from `period`; a history or
+statistics request for "this month's" figures uses `period.from` and
+`period.to`. A fixed offset (`+03:00`) or an unknown zone is
+`400 VALIDATION_FAILED`, field `time_zone`. Without `time_zone` the month is
+the server's, as before (kept for older clients).
+
+The monthly total limit (`limit_type: 'others'`, no categories) counts
+**every** expense of the month, those of categories with their own limit
+included; it is not a budget for the categories left without one. A
+category limit counts the expenses of its categories.
+
+### Comparing figures
+
+Figures agree when they are asked for the same thing: the same filters and
+the same instants. Compare a statistics block with the history using its
+`period.from` and `actual_to` (not `to`: a current period stops at
+`as_of`), and the limits with the history using the limits `period`. A
+history day or month is bounded by the device's zone, sent as instants with
+an offset.
 
 ## Errors
 
@@ -603,5 +674,11 @@ contract ship:
 - **`DELETE` (shipped):** a missing or foreign transaction is
   `404 TRANSACTION_NOT_FOUND` instead of `403 FORBIDDEN_WALLET`; the initial
   balance can no longer be deleted (`400 TRANSACTION_IS_SYSTEM`).
-- **`GET /wallets`:** `total_income` and `delta_percent` stop counting the
-  initial balance, matching the statistics API.
+- **`GET /wallets` (shipped):** `total_income` and `delta_percent` stop
+  counting the initial balance, matching the statistics API.
+- **`timestamp` (shipped):** a new or changed timestamp needs `Z` or a UTC
+  offset; a date-only or offset-less value is `400`.
+- **History (shipped):** rows with an equal timestamp are ordered by `id`;
+  `from` after `to` is `400`; new `GET /transactions/count`.
+- **Limits (shipped):** optional `time_zone`; the response has a new
+  `period` key.
