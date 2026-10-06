@@ -532,9 +532,11 @@ action, including after an app restart. Anything else is
 
 **Retention.** A key is kept for 24 hours from the original request. After
 that it is forgotten: a repeat with an expired key runs as a new request (a
-create creates a second transaction). Expired keys are deleted as later
-keyed writes come in. A client therefore stops retrying an action after 24
-hours and re-reads instead.
+create creates a second transaction). Expired keys are deleted by a
+background job of the application every 10 minutes, never on a request's
+path; the job skips keys a request is holding instead of waiting for them.
+A client therefore stops retrying an action after 24 hours and re-reads
+instead.
 
 ### What the client does on a failure
 
@@ -780,8 +782,8 @@ schema rollback. `migration:revert` drops the table, then the column.
 No data is rewritten: legacy zero amounts, future timestamps, `""`
 descriptions and type/category mismatches stay as they are (see
 [Compatibility with existing records](#compatibility-with-existing-records)).
-Expired idempotency keys are removed by the application itself; no
-scheduled job is needed.
+Expired idempotency keys are removed by the application's own background
+job; no external scheduler is needed.
 
 ### An older client against the new API
 

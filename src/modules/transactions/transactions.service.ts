@@ -303,14 +303,15 @@ export class TransactionsService {
   // transaction row, wallet rows by ascending id, category rows. Access is
   // checked under these locks, so a membership removed or a category archived
   // meanwhile is seen, and a repeat with the same key gets the stored result.
-  private async write<T>(
+  private write<T>(
     userId: number,
     spaceId: number,
     idempotency: { operation: string; key: string | undefined; payload: unknown },
     work: (manager: EntityManager) => Promise<T>,
   ): Promise<T> {
     const { key } = idempotency;
-    const result = await runWriteTransaction(this.dataSource, async (manager) => {
+
+    return runWriteTransaction(this.dataSource, async (manager) => {
       await this.spaceAccessService.lockMembership(spaceId, userId, manager);
       await this.spaceAccessService.lockSpace(spaceId, manager, 'shared');
 
@@ -318,12 +319,6 @@ export class TransactionsService {
         ? work(manager)
         : this.idempotencyService.run(manager, { ...idempotency, key, userId, spaceId }, () => work(manager));
     });
-
-    if (key !== undefined) {
-      await this.idempotencyService.purgeExpired();
-    }
-
-    return result;
   }
 
   // a list filter: any category of the space but the system one, archived included

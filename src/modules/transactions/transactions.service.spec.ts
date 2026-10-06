@@ -34,7 +34,7 @@ describe('TransactionsService', () => {
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
   let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembership' | 'lockSpace'>>;
-  let idempotencyService: { run: jest.Mock; purgeExpired: jest.Mock };
+  let idempotencyService: { run: jest.Mock };
   let manager: EntityManager;
   let lockedRows: Map<unknown, unknown[]>;
   let updateQuery: Record<'update' | 'set' | 'where' | 'execute', jest.Mock>;
@@ -99,7 +99,6 @@ describe('TransactionsService', () => {
     } as unknown as EntityManager;
     idempotencyService = {
       run: jest.fn((_manager, _request, work) => work()),
-      purgeExpired: jest.fn(),
     };
     const dataSource = {
       transaction: jest.fn((_level: string, work: (m: EntityManager) => Promise<unknown>) => work(manager)),
@@ -291,7 +290,6 @@ describe('TransactionsService', () => {
       await service.create(userId, spaceId, dto);
 
       expect(idempotencyService.run).not.toHaveBeenCalled();
-      expect(idempotencyService.purgeExpired).not.toHaveBeenCalled();
     });
 
     it('runs a keyed create through the store, after the access locks', async () => {
@@ -306,7 +304,6 @@ describe('TransactionsService', () => {
         { operation: 'transactions.create', key: 'key-1', payload: dto, userId, spaceId },
         expect.any(Function),
       );
-      expect(idempotencyService.purgeExpired).toHaveBeenCalled();
     });
 
     it('returns a stored result without writing again', async () => {

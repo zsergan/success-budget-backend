@@ -28,7 +28,6 @@ describe('IdempotencyService', () => {
   let service: IdempotencyService;
   let repository: { insert: jest.Mock; findOne: jest.Mock; update: jest.Mock };
   let manager: EntityManager;
-  let globalRepository: { query: jest.Mock };
 
   const storedRow = (overrides: Partial<IdempotencyKey> = {}): IdempotencyKey => ({
     id: '7',
@@ -43,8 +42,7 @@ describe('IdempotencyService', () => {
   beforeEach(() => {
     repository = { insert: jest.fn(), findOne: jest.fn(), update: jest.fn().mockResolvedValue({ affected: 1 }) };
     manager = { getRepository: jest.fn().mockReturnValue(repository) } as unknown as EntityManager;
-    globalRepository = { query: jest.fn() };
-    service = new IdempotencyService(globalRepository as never);
+    service = new IdempotencyService();
   });
 
   it('claims a new key, runs the work and stores its JSON result', async () => {
@@ -132,23 +130,6 @@ describe('IdempotencyService', () => {
 
     await expect(service.run(manager, request, work)).rejects.toThrow('refused');
     expect(repository.update).not.toHaveBeenCalled();
-  });
-
-  describe('purgeExpired', () => {
-    it('deletes a batch of expired keys', async () => {
-      await service.purgeExpired();
-
-      expect(globalRepository.query).toHaveBeenCalledWith(
-        'DELETE FROM idempotency_keys WHERE expires_at <= ? ORDER BY expires_at LIMIT ?',
-        [expect.any(Date), 100],
-      );
-    });
-
-    it('does not fail the request when purging fails', async () => {
-      globalRepository.query.mockRejectedValue(new Error('down'));
-
-      await expect(service.purgeExpired()).resolves.toBeUndefined();
-    });
   });
 });
 

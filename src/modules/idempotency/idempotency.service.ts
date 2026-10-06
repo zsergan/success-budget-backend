@@ -1,8 +1,7 @@
 import { createHash } from 'crypto';
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { instanceToPlain } from 'class-transformer';
-import { EntityManager, LessThanOrEqual, Repository } from 'typeorm';
+import { EntityManager, LessThanOrEqual } from 'typeorm';
 
 import { IDEMPOTENCY_KEY_SCOPE, IdempotencyKey } from '@entities/idempotency-key.entity';
 import { ApiException } from '@shared/api.exception';
@@ -19,17 +18,9 @@ export interface IdempotentRequest {
 }
 
 const MAX_CLAIM_ATTEMPTS = 3;
-const PURGE_BATCH = 100;
 
 @Injectable()
 export class IdempotencyService {
-  private readonly logger = new Logger(IdempotencyService.name);
-
-  constructor(
-    @InjectRepository(IdempotencyKey)
-    private readonly idempotencyKeyRepository: Repository<IdempotencyKey>,
-  ) {}
-
   // Runs inside the write's own DB transaction, after its access checks: the
   // key, the write and the stored result commit or roll back together, and a
   // repeat is answered only to a caller that still has access. A failed write
@@ -54,18 +45,6 @@ export class IdempotencyService {
       .update(scope, { response_body: JSON.parse(JSON.stringify(instanceToPlain(result))) as object });
 
     return result;
-  }
-
-  async purgeExpired(): Promise<void> {
-    try {
-      await this.idempotencyKeyRepository.query(
-        'DELETE FROM idempotency_keys WHERE expires_at <= ? ORDER BY expires_at LIMIT ?',
-        [new Date(), PURGE_BATCH],
-      );
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Could not purge expired idempotency keys: ${reason}`);
-    }
   }
 
   // null when the key is now held by this transaction; the stored result when

@@ -1,6 +1,7 @@
 import request from 'supertest';
 
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+import { IdempotencyKeyPurger } from '@modules/idempotency/idempotency-key-purger';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
 
@@ -211,6 +212,39 @@ describe('Transaction writes (e2e)', () => {
         }),
       );
       expect(await transactionCount(s.walletId)).toBe(0);
+    });
+
+    it('purges expired keys in the background without waiting on a key a request holds', async () => {
+      const s = await setup();
+      await createWithKey(s.member, 'purge-free', expense(s)).expect(201);
+      await createWithKey(s.member, 'purge-held', expense(s)).expect(201);
+      await testApp.dataSource.query('UPDATE idempotency_keys SET expires_at = ? WHERE user_id = ?', [
+        new Date(Date.now() - 1000),
+        s.member.userId,
+      ]);
+      const holder = testApp.dataSource.createQueryRunner();
+      await holder.connect();
+      await holder.startTransaction('READ COMMITTED');
+
+      try {
+        await holder.query(
+          "SELECT id FROM idempotency_keys WHERE user_id = ? AND idempotency_key = 'purge-held' FOR UPDATE",
+          [s.member.userId],
+        );
+        const started = Date.now();
+
+        await testApp.app.get(IdempotencyKeyPurger).purge();
+
+        expect(Date.now() - started).toBeLessThan(1000);
+      } finally {
+        await holder.rollbackTransaction();
+        await holder.release();
+      }
+      const keys: { idempotency_key: string }[] = await testApp.dataSource.query(
+        'SELECT idempotency_key FROM idempotency_keys WHERE user_id = ?',
+        [s.member.userId],
+      );
+      expect(keys.map((key) => key.idempotency_key)).toEqual(['purge-held']);
     });
 
     it('applies concurrent repeats once: the second waits for the first and gets its result', async () => {
