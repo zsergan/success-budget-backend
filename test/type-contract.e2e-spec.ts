@@ -212,7 +212,10 @@ describe('Boundary type contract (e2e)', () => {
     it('accepts the upper bound on every money field, and zero everywhere but on a transaction', async () => {
       const transaction = await createTransaction({ amount: '99999999.99' }).expect(201);
       expect((await readTransaction(transaction.body.transaction.id)).amount).toBe('99999999.99');
-      await api().delete(`${base()}/transactions/${transaction.body.transaction.id}`).expect(200);
+      await api()
+        .delete(`${base()}/transactions/${transaction.body.transaction.id}`)
+        .set('If-Match', '"1"')
+        .expect(200);
 
       for (const amount of ['0', '0.00']) {
         const zero = await createTransaction({ amount }).expect(400);
@@ -684,7 +687,11 @@ describe('Boundary type contract (e2e)', () => {
     });
 
     it('reports a missing transaction as 404, like a foreign one', async () => {
-      expectError(await api().delete(`${base()}/transactions/${MISSING_ID}`), 404, 'Transaction not found');
+      expectError(
+        await api().delete(`${base()}/transactions/${MISSING_ID}`).set('If-Match', '"1"'),
+        404,
+        'Transaction not found',
+      );
     });
 
     it('reports a missing space as 403 and a missing invite, member or code as 404', async () => {
@@ -823,7 +830,7 @@ describe('Boundary type contract (e2e)', () => {
       );
 
       await createTransaction({ wallet_id: doomedId }).expect(400);
-      await api().delete(`${base()}/transactions/${created.body.transaction.id}`).expect(200);
+      await api().delete(`${base()}/transactions/${created.body.transaction.id}`).set('If-Match', '"1"').expect(200);
     });
 
     it('limits and categories', async () => {

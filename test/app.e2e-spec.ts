@@ -383,6 +383,7 @@ describe('App (e2e)', () => {
     await request(app.getHttpServer())
       .delete(`/api/v1/spaces/${personalSpaceId}/transactions/${expenseTransactionId}`)
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"1"')
       .expect(200);
 
     const walletsResponse = await request(app.getHttpServer())
@@ -997,7 +998,8 @@ describe('App (e2e)', () => {
 
     const deleteResponse = await request(server)
       .delete(`/api/v1/spaces/${groupSpaceId}/transactions/${personalTransaction.id}`)
-      .set('Authorization', auth);
+      .set('Authorization', auth)
+      .set('If-Match', '"1"');
     expect(deleteResponse.status).toBe(404);
     expect(deleteResponse.body.code).toBe('TRANSACTION_NOT_FOUND');
 

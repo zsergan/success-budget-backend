@@ -137,12 +137,13 @@ export class TransactionsController {
 
   @ApiHeader({
     name: 'If-Match',
-    required: false,
-    description: 'The version the client read, e.g. "3". Without it the delete is unconditional.',
+    required: true,
+    description: 'The version the client read, e.g. "3"; for an undo, the version from the POST result.',
   })
   @ApiHeader(IDEMPOTENCY_KEY_HEADER)
   @ApiOkResponse({ type: Boolean })
   @ApiBadRequestResponse({ description: 'TRANSACTION_IS_SYSTEM: the initial balance cannot be deleted.' })
+  @ApiResponse({ status: 428, description: 'TRANSACTION_VERSION_REQUIRED: If-Match is missing.' })
   @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND: missing, malformed id, or of another space.' })
   @ApiConflictResponse({
     description:

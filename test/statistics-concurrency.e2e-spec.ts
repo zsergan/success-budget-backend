@@ -144,7 +144,7 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
     const pause = pauseBefore('getLastStatisticsTimestamp');
 
     const { response } = await startHeld(space.member, 'summary', pause);
-    await api(space.member).delete(`/transactions/${transactionId}`).expect(200);
+    await api(space.member).delete(`/transactions/${transactionId}`).set('If-Match', '"1"').expect(200);
     pause.release();
     const res = await response;
 

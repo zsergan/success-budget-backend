@@ -124,6 +124,7 @@ describe('Transaction writes (e2e)', () => {
       const created = await createWithKey(a.member, 'other-key', expense(a)).expect(201);
       await api(a.member)
         .delete(`${base(a.member)}/transactions/${created.body.transaction.id}`)
+        .set('If-Match', '"1"')
         .set('Idempotency-Key', 'shared-key')
         .expect(200);
 
@@ -192,7 +193,7 @@ describe('Transaction writes (e2e)', () => {
         .set('Idempotency-Key', 'delete-1')
         .set('If-Match', '"1"')
         .expect(200);
-      const withoutKey = await api(s.member).delete(url).expect(404);
+      const withoutKey = await api(s.member).delete(url).set('If-Match', '"1"').expect(404);
 
       expect(repeat.text).toBe('true');
       expect(withoutKey.body.code).toBe('TRANSACTION_NOT_FOUND');
@@ -270,7 +271,10 @@ describe('Transaction writes (e2e)', () => {
           api(s.member)
             .post(`${base(s.member)}/transactions`)
             .send(expense(s, '10.00')),
-        () => api(s.member).delete(`${base(s.member)}/transactions/${existing.body.transaction.id}`),
+        () =>
+          api(s.member)
+            .delete(`${base(s.member)}/transactions/${existing.body.transaction.id}`)
+            .set('If-Match', '"1"'),
       );
 
       expect([created.body.previous_balance, created.body.wallet.balance]).toEqual([-4, -14]);

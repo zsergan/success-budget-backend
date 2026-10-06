@@ -209,15 +209,16 @@ describe('Transactions (e2e)', () => {
       expect(repeat.body.code).toBe('TRANSACTION_NOT_FOUND');
     });
 
-    it('still deletes without If-Match', async () => {
+    it('requires If-Match and keeps the record without it', async () => {
       const { wallet } = await createWallet(owner);
       const id = await createTransaction(owner, wallet.id);
 
-      await api(owner)
+      const res = await api(owner)
         .delete(`${base(owner)}/transactions/${id}`)
-        .expect(200);
+        .expect(428);
 
-      expect(await exists(id)).toBe(false);
+      expect(res.body.code).toBe('TRANSACTION_VERSION_REQUIRED');
+      expect(await exists(id)).toBe(true);
     });
 
     it('refuses a stale version and keeps the record', async () => {
@@ -253,6 +254,7 @@ describe('Transactions (e2e)', () => {
 
       const res = await api(owner)
         .delete(`${base(owner)}/transactions/${funded.transaction.id}`)
+        .set('If-Match', '"1"')
         .expect(400);
 
       expect(res.body).toEqual(expect.objectContaining({ statusCode: 400, code: 'TRANSACTION_IS_SYSTEM' }));
@@ -268,6 +270,7 @@ describe('Transactions (e2e)', () => {
 
       await api(owner)
         .delete(`${base(owner)}/transactions/${id}`)
+        .set('If-Match', '"1"')
         .expect(200);
 
       expect(await exists(id)).toBe(false);
@@ -283,6 +286,7 @@ describe('Transactions (e2e)', () => {
       for (const id of [foreignId, '00000000-0000-0000-0000-000000000000', 'not-a-uuid']) {
         const res = await api(owner)
           .delete(`${base(owner)}/transactions/${id}`)
+          .set('If-Match', '"1"')
           .expect(404);
 
         expect(res.body.code).toBe('TRANSACTION_NOT_FOUND');
@@ -296,6 +300,7 @@ describe('Transactions (e2e)', () => {
 
       const res = await api(outsider)
         .delete(`${base(owner)}/transactions/${id}`)
+        .set('If-Match', '"1"')
         .expect(403);
 
       expect(res.body.code).toBe('FORBIDDEN_SPACE');
@@ -624,6 +629,171 @@ describe('Transactions (e2e)', () => {
       const res = await patch(foreignId, 1, { amount: '1' }).expect(404);
 
       expect(res.body.code).toBe('TRANSACTION_NOT_FOUND');
+    });
+  });
+
+  describe('Undo of a create', () => {
+    async function addGuest(): Promise<Member> {
+      const guest = await createVerifiedMember(testApp, 'transactions-guest');
+      guests.push(guest.userId);
+      await testApp.dataSource.query("INSERT INTO space_members (space_id, user_id, role) VALUES (?, ?, 'member')", [
+        owner.spaceId,
+        guest.userId,
+      ]);
+      return guest;
+    }
+
+    const guests: number[] = [];
+
+    afterAll(async () => {
+      await deleteUsers(testApp.dataSource, guests);
+    });
+
+    async function createAsOwner(walletId: number) {
+      const res = await api(owner)
+        .post(`${base(owner)}/transactions`)
+        .send({
+          wallet_id: walletId,
+          category_id: expenseCategoryId,
+          transaction_type: 'expense',
+          amount: '12.3',
+          timestamp: '2026-09-15T10:00:00.000Z',
+        })
+        .expect(201);
+      return res.body.transaction as { id: string; version: number };
+    }
+
+    const undo = (member: Member, transaction: { id: string; version: number }) =>
+      api(member)
+        .delete(`${base(owner)}/transactions/${transaction.id}`)
+        .set('If-Match', `"${transaction.version}"`);
+
+    it('deletes the created record with the version from the POST result', async () => {
+      const { wallet } = await createWallet(owner, '100');
+      const created = await createAsOwner(wallet.id);
+
+      await undo(owner, created).expect(200);
+
+      const read = await api(owner)
+        .get(`${base(owner)}/transactions/${created.id}`)
+        .expect(404);
+      expect(read.body.code).toBe('TRANSACTION_NOT_FOUND');
+    });
+
+    it('refuses to undo a record another member edited meanwhile, and keeps the new version', async () => {
+      const { wallet } = await createWallet(owner);
+      const created = await createAsOwner(wallet.id);
+      const guest = await addGuest();
+      await api(guest)
+        .patch(`${base(owner)}/transactions/${created.id}`)
+        .set('If-Match', '"1"')
+        .send({ amount: '99' })
+        .expect(200);
+
+      const res = await undo(owner, created).expect(409);
+
+      expect(res.body.code).toBe('TRANSACTION_VERSION_CONFLICT');
+      const read = await api(owner)
+        .get(`${base(owner)}/transactions/${created.id}`)
+        .expect(200);
+      expect(read.body).toEqual(expect.objectContaining({ amount: '99.00', version: 2 }));
+    });
+
+    it('tells a member who lost access from a record that is gone', async () => {
+      const { wallet } = await createWallet(owner);
+      const guest = await addGuest();
+      const created = await createAsOwner(wallet.id);
+      await testApp.dataSource.query('DELETE FROM space_members WHERE space_id = ? AND user_id = ?', [
+        owner.spaceId,
+        guest.userId,
+      ]);
+
+      const lost = await undo(guest, created).expect(403);
+      await undo(owner, created).expect(200);
+      const gone = await undo(owner, created).expect(404);
+
+      expect(lost.body.code).toBe('FORBIDDEN_SPACE');
+      expect(gone.body.code).toBe('TRANSACTION_NOT_FOUND');
+    });
+  });
+
+  describe('deleting a record of a deleted wallet', () => {
+    it('changes history, statistics and limits, but no active wallet balance', async () => {
+      const member = await createVerifiedMember(testApp, 'transactions-deleted-wallet');
+
+      try {
+        const categories = await api(member)
+          .get(`${base(member)}/categories`)
+          .expect(200);
+        const categoryId = categories.body.expenses[0].id;
+        const active = await createWallet(member, '100');
+        const doomed = await createWallet(member, '0');
+        const now = new Date().toISOString();
+        const add = (walletId: number, amount: string) =>
+          api(member)
+            .post(`${base(member)}/transactions`)
+            .send({ wallet_id: walletId, category_id: categoryId, transaction_type: 'expense', amount, timestamp: now })
+            .expect(201)
+            .then((res) => res.body.transaction.id as string);
+        await add(active.wallet.id, '10');
+        const doomedId = await add(doomed.wallet.id, '25');
+        await api(member)
+          .post(`${base(member)}/limits`)
+          .send({ amount: '1000' })
+          .expect(201);
+        await api(member)
+          .delete(`${base(member)}/wallets/${doomed.wallet.id}`)
+          .expect(200);
+
+        const snapshot = async () => {
+          const [wallets, limits, summary, history] = await Promise.all([
+            api(member)
+              .get(`${base(member)}/wallets`)
+              .expect(200),
+            api(member)
+              .get(`${base(member)}/limits`)
+              .expect(200),
+            api(member)
+              .get(`${base(member)}/statistics/summary`)
+              .query({ period: 'month', time_zone: 'UTC' })
+              .expect(200),
+            api(member)
+              .get(`${base(member)}/transactions`)
+              .expect(200),
+          ]);
+          return {
+            balances: wallets.body.wallets.map((entry: { wallet: { id: number; balance: number } }) => [
+              entry.wallet.id,
+              entry.wallet.balance,
+            ]),
+            total_balance: wallets.body.total_balance,
+            spent: limits.body.total.spent,
+            expense: summary.body.expense,
+            history: history.body.map((row: { id: string }) => row.id),
+          };
+        };
+        const before = await snapshot();
+
+        await api(member)
+          .delete(`${base(member)}/transactions/${doomedId}`)
+          .set('If-Match', '"1"')
+          .expect(200);
+
+        const after = await snapshot();
+        expect(after.balances).toEqual(before.balances);
+        expect(after.balances).toContainEqual([active.wallet.id, 90]);
+        expect(after.balances.map(([id]: [number]) => id)).not.toContain(doomed.wallet.id);
+        expect(after.total_balance).toBe(before.total_balance);
+        expect([before.spent, after.spent]).toEqual([35, 10]);
+        expect([before.expense, after.expense]).toEqual([
+          { amount: '35.00', count: 2 },
+          { amount: '10.00', count: 1 },
+        ]);
+        expect(before.history).toContain(doomedId);
+        expect(after.history).not.toContain(doomedId);
+      } finally {
+        await deleteUsers(testApp.dataSource, [member.userId]);
+      }
     });
   });
 });

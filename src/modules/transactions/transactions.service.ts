@@ -38,7 +38,7 @@ import { IdempotencyService } from '@modules/idempotency/idempotency.service';
 
 export interface WriteOptions {
   idempotencyKey?: string;
-  // the version the client read; without it the write is unconditional
+  // the version the client read (If-Match); required by update and delete
   expectedVersion?: number;
 }
 
@@ -122,12 +122,8 @@ export class TransactionsService {
     updateTransactionDto: UpdateTransactionDto,
     options: WriteOptions = {},
   ): Promise<UpdateTransactionResult> {
-    const { expectedVersion, idempotencyKey } = options;
-
-    if (expectedVersion === undefined) {
-      throw new ApiException('TRANSACTION_VERSION_REQUIRED', HttpStatus.PRECONDITION_REQUIRED);
-    }
-
+    const { idempotencyKey } = options;
+    const expectedVersion = requireVersion(options);
     const idempotency = {
       operation: 'transactions.update',
       key: idempotencyKey,
@@ -229,12 +225,17 @@ export class TransactionsService {
     return toTransactionView(transaction);
   }
 
+  // Also the undo of a create: the client deletes the record it created, with
+  // the version from the POST result, so a record another member edited since
+  // is refused instead of deleted. Deleting a record of a deleted wallet
+  // changes history, statistics and limits, but no active wallet's balance.
   async remove(userId: number, spaceId: number, transactionId: string, options: WriteOptions = {}): Promise<void> {
-    const { expectedVersion, idempotencyKey } = options;
+    const { idempotencyKey } = options;
+    const expectedVersion = requireVersion(options);
     const idempotency = {
       operation: 'transactions.delete',
       key: idempotencyKey,
-      payload: { transactionId, expectedVersion: expectedVersion ?? null },
+      payload: { transactionId, expectedVersion },
     };
 
     await this.write(userId, spaceId, idempotency, async (manager) => {
@@ -317,6 +318,14 @@ export class TransactionsService {
 
     return wallet;
   }
+}
+
+function requireVersion({ expectedVersion }: WriteOptions): number {
+  if (expectedVersion === undefined) {
+    throw new ApiException('TRANSACTION_VERSION_REQUIRED', HttpStatus.PRECONDITION_REQUIRED);
+  }
+
+  return expectedVersion;
 }
 
 // Equality is by value: a field equal to the stored one is not a change.

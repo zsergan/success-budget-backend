@@ -318,14 +318,14 @@ describe('TransactionsService', () => {
       lockedRows.set(Transaction, [transaction]);
       transactionQueriesService.getOneInSpace.mockResolvedValue(transaction);
 
-      await service.remove(userId, spaceId, 'tx-1', { idempotencyKey: 'key-2' });
+      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1, idempotencyKey: 'key-2' });
 
       expect(idempotencyService.run).toHaveBeenCalledWith(
         manager,
         {
           operation: 'transactions.delete',
           key: 'key-2',
-          payload: { transactionId: 'tx-1', expectedVersion: null },
+          payload: { transactionId: 'tx-1', expectedVersion: 1 },
           userId,
           spaceId,
         },
@@ -713,10 +713,17 @@ describe('TransactionsService', () => {
       return transaction;
     };
 
+    it('requires the version the client read, before any access check', async () => {
+      await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(
+        new HttpException(ErrorMessages.TRANSACTION_VERSION_REQUIRED, 428),
+      );
+      expect(spaceAccessService.lockMembership).not.toHaveBeenCalled();
+    });
+
     it('rejects a non-member before loading the transaction', async () => {
       spaceAccessService.lockMembership.mockRejectedValue(forbidden());
 
-      await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(forbidden());
+      await expect(service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 })).rejects.toMatchObject(forbidden());
       expect(manager.createQueryBuilder).not.toHaveBeenCalled();
       expect(transactionRepository.delete).not.toHaveBeenCalled();
     });
@@ -724,7 +731,7 @@ describe('TransactionsService', () => {
     it('locks the transaction row, then reads it in the space, then locks its wallet', async () => {
       lockedTransaction();
 
-      await service.remove(userId, spaceId, 'tx-1');
+      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 });
 
       expect(jest.mocked(manager.createQueryBuilder).mock.calls.map(([entity]) => entity)).toEqual([
         Transaction,
@@ -735,7 +742,7 @@ describe('TransactionsService', () => {
     });
 
     it('is not found when no row could be locked', async () => {
-      await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(
+      await expect(service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 })).rejects.toMatchObject(
         new HttpException(ErrorMessages.TRANSACTION_NOT_FOUND, 404),
       );
       expect(transactionQueriesService.getOneInSpace).not.toHaveBeenCalled();
@@ -745,7 +752,7 @@ describe('TransactionsService', () => {
       lockedTransaction();
       transactionQueriesService.getOneInSpace.mockResolvedValue(null);
 
-      await expect(service.remove(userId, spaceId, 'tx-1')).rejects.toMatchObject(
+      await expect(service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 })).rejects.toMatchObject(
         new HttpException(ErrorMessages.TRANSACTION_NOT_FOUND, 404),
       );
       expect(transactionRepository.delete).not.toHaveBeenCalled();
@@ -769,13 +776,18 @@ describe('TransactionsService', () => {
       expect(transactionRepository.delete).not.toHaveBeenCalled();
     });
 
-    it.each([
-      ['the matching version', 3],
-      ['no version', undefined],
-    ])('deletes with %s', async (_, version) => {
+    it('deletes with the matching version', async () => {
       lockedTransaction({ version: 3 });
 
-      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: version });
+      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: 3 });
+
+      expect(transactionRepository.delete).toHaveBeenCalledWith('tx-1');
+    });
+
+    it('deletes a record of a deleted wallet', async () => {
+      lockedTransaction({ wallet: buildWallet({ id: 1, space_id: spaceId, is_deleted: 1 }) });
+
+      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 });
 
       expect(transactionRepository.delete).toHaveBeenCalledWith('tx-1');
     });
