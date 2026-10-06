@@ -43,7 +43,11 @@ describe('Statistics blocks (e2e)', () => {
     await add(card, housing.id, 'expense', '450.25', '2026-09-02T16:30:00.000Z');
     await add(cash, transport.id, 'expense', '120', '2026-09-05T10:00:00.000Z');
     await add(oldCard, grocery.id, 'expense', '80', '2026-09-12T17:00:00.000Z');
-    await add(card, transport.id, 'expense', '0', '2026-09-21T06:00:00.000Z');
+    // a legacy zero amount: refused by the API since the transactions contract
+    await testApp.dataSource.query(
+      "INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp) VALUES (UUID(), ?, ?, 'expense', 0, ?)",
+      [card, transport.id, new Date('2026-09-21T06:00:00.000Z')],
+    );
     // 00:30 on Sep 28 in Moscow, still Sep 27 in UTC
     await add(cash, housing.id, 'expense', '10', '2026-09-27T21:30:00.000Z');
     // after as_of
@@ -471,8 +475,11 @@ describe('Statistics blocks (e2e)', () => {
             .expect(201);
 
         await add(card, mixed.id, 'expense', '100');
-        // the API does not tie the transaction type to the category type
-        await add(card, mixed.id, 'income', '20');
+        // a legacy income on an expense category, refused by the API since the transactions contract
+        await testApp.dataSource.query(
+          "INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp) VALUES (UUID(), ?, ?, 'income', 20, ?)",
+          [card, mixed.id, new Date('2026-09-10T09:00:00.000Z')],
+        );
         // under 3%: a child of Other in both groupings
         await add(cash, small.id, 'expense', '1');
 

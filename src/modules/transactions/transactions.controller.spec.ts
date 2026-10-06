@@ -4,6 +4,8 @@ import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 import { TransactionType } from '@shared/enums';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
+import type { UpdateTransactionResult } from './dto/transaction-responses';
+import { toTransactionView } from './transaction-view';
 import type { AuthedRequest } from '@shared/types';
 import { withRelations } from '@shared/utils';
 import { buildCategory, buildTransaction, buildWallet } from '@testing';
@@ -18,7 +20,15 @@ describe('TransactionsController', () => {
       providers: [
         {
           provide: TransactionsService,
-          useValue: { create: jest.fn(), getAll: jest.fn(), getLatest: jest.fn(), remove: jest.fn() },
+          useValue: {
+            create: jest.fn(),
+            getAll: jest.fn(),
+            count: jest.fn(),
+            getLatest: jest.fn(),
+            getById: jest.fn(),
+            update: jest.fn(),
+            remove: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -39,20 +49,21 @@ describe('TransactionsController', () => {
       timestamp: '2026-01-15T10:00:00.000Z',
     };
     const created = {
-      transaction: buildTransaction({
-        id: '99',
-        category_id: 5,
-        transaction_type: TransactionType.INCOME,
-        amount: '50',
-      }),
+      transaction: toTransactionView(
+        withRelations(
+          buildTransaction({ id: '99', amount: '50.00', wallet: buildWallet(), category: buildCategory() }),
+          'wallet',
+          'category',
+        ),
+      ),
       wallet: Object.assign(buildWallet(), { balance: 150 }),
       previous_balance: 100,
     };
     transactionsService.create.mockResolvedValue(created);
 
-    const result = await controller.create(req, spaceId, dto);
+    const result = await controller.create(req, spaceId, dto, 'key-1');
 
-    expect(transactionsService.create).toHaveBeenCalledWith(1, spaceId, dto);
+    expect(transactionsService.create).toHaveBeenCalledWith(1, spaceId, dto, { idempotencyKey: 'key-1' });
     expect(result).toBe(created);
   });
 
@@ -72,7 +83,7 @@ describe('TransactionsController', () => {
     const from = new Date(2026, 0, 1);
     const to = new Date(2026, 0, 31);
     const transactions = [buildTransaction({ wallet: buildWallet(), category: buildCategory() })].map((transaction) =>
-      withRelations(transaction, 'wallet', 'category'),
+      toTransactionView(withRelations(transaction, 'wallet', 'category')),
     );
     transactionsService.getAll.mockResolvedValue(transactions);
 
@@ -109,10 +120,58 @@ describe('TransactionsController', () => {
     expect(result).toBeNull();
   });
 
-  it('remove delegates to TransactionsService.remove and returns true', async () => {
-    const result = await controller.remove(req, spaceId, 'tx-1');
+  it('getById delegates to TransactionsService.getById', async () => {
+    const view = toTransactionView(
+      withRelations(
+        buildTransaction({ id: 'tx-1', wallet: buildWallet(), category: buildCategory() }),
+        'wallet',
+        'category',
+      ),
+    );
+    transactionsService.getById.mockResolvedValue(view);
 
-    expect(transactionsService.remove).toHaveBeenCalledWith(1, spaceId, 'tx-1');
+    const result = await controller.getById(req, spaceId, 'tx-1');
+
+    expect(transactionsService.getById).toHaveBeenCalledWith(1, spaceId, 'tx-1');
+    expect(result).toBe(view);
+  });
+
+  it('update delegates the body and both headers to TransactionsService.update', async () => {
+    const dto = { amount: '5.00' };
+    const updated = { transaction: {}, wallets: [] } as unknown as UpdateTransactionResult;
+    transactionsService.update.mockResolvedValue(updated);
+
+    const result = await controller.update(req, spaceId, 'tx-1', dto, 2, 'key-1');
+
+    expect(transactionsService.update).toHaveBeenCalledWith(1, spaceId, 'tx-1', dto, {
+      expectedVersion: 2,
+      idempotencyKey: 'key-1',
+    });
+    expect(result).toBe(updated);
+  });
+
+  it('count delegates the history query to TransactionsService.count', async () => {
+    const from = new Date('2026-01-01T00:00:00.000Z');
+    const to = new Date('2026-01-31T23:59:59.999Z');
+    transactionsService.count.mockResolvedValue({ count: 3 });
+
+    const result = await controller.count(req, spaceId, from, to, TransactionType.EXPENSE, 5, 1);
+
+    expect(transactionsService.count).toHaveBeenCalledWith(1, spaceId, from, to, {
+      transactionType: TransactionType.EXPENSE,
+      categoryId: 5,
+      walletId: 1,
+    });
+    expect(result).toEqual({ count: 3 });
+  });
+
+  it('remove delegates to TransactionsService.remove and returns true', async () => {
+    const result = await controller.remove(req, spaceId, 'tx-1', 3, 'key-1');
+
+    expect(transactionsService.remove).toHaveBeenCalledWith(1, spaceId, 'tx-1', {
+      expectedVersion: 3,
+      idempotencyKey: 'key-1',
+    });
     expect(result).toBe(true);
   });
 });

@@ -25,8 +25,10 @@ e2e/CI-зрелость, раунд 2: IDOR/cascade/structured logging). **Фа�
 Stage 3, Limits Stage 4, Categories Stage 5, Home Stage 2, Spaces
 Stage 1-4 — все завершены и смёржены**, см. "Завершённые инициативы".
 
-Текущая ветка — `feat/deploy-readiness` (ещё не смёржена), см. "Deploy
-readiness" ниже.
+Текущая ветка — `feat/transactions-lifecycle` (ещё не смёржена), см.
+"Transactions lifecycle" ниже. `feat/deploy-readiness` смёржена (PR #40),
+после неё — PR #41–#49 (statistics, atomic writes, money и др., см.
+`git log`).
 
 ## Стек
 
@@ -139,7 +141,26 @@ whitelist, когда появится фронт/мобильное прило�
 `.env.example` содержит все переменные, которые реально читает
 приложение.
 
-## Deploy readiness (в работе, ветка `feat/deploy-readiness`, не смёржена)
+## Transactions lifecycle (в работе, ветка `feat/transactions-lifecycle`)
+
+Полный жизненный цикл транзакции. Контракт и передача мобильному агенту —
+`docs/transactions-contract.md` (примеры, порядок миграций, совместимость
+старого клиента). Ключевое:
+
+- Модель чтения `TransactionView` (`kind`, `version`, компактная категория);
+  `GET/PATCH/DELETE /transactions/:id`, `GET /transactions/count`.
+- `code` в теле каждой ошибки API (`ApiException`).
+- Каждая запись транзакции — одна MySQL-транзакция READ COMMITTED с
+  фиксированным порядком блокировок (member → space → key → transaction →
+  wallets по id → categories), повтор при deadlock. `PATCH`/`DELETE`
+  требуют `If-Match` (версия записи), `Idempotency-Key` на всех записях
+  (таблица `idempotency_keys`, 24 ч).
+- Начальный баланс — системная запись: виден в истории, не редактируется,
+  не входит в доходы/расходы/лимиты. Лимиты считают месяц в `time_zone`
+  клиента и возвращают `period`.
+- Миграции: `AddTransactionVersion`, `CreateIdempotencyKeys`.
+
+## Deploy readiness (смёржено, PR #40)
 
 Делает приложение реально деплоящимся. Полный runbook:
 `docs/deployment.md`. Ключевые изменения (детали — `git log`):

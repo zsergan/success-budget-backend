@@ -344,6 +344,47 @@ describe('LimitsService', () => {
       expect(result.total).toMatchObject({ id: 1, spent: 30, in_percent: 30 });
     });
 
+    it('getSummary counts the current month of the given zone and reports it', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+      transactionQueriesService.getExpensesByCategory.mockResolvedValue(new Map());
+      // 00:30 on October 1 in Moscow, still September in UTC
+      const now = new Date('2026-09-30T21:30:00.000Z');
+
+      const result = await service.getSummary(userId, spaceId, 'Europe/Moscow', now);
+
+      expect(result.period).toEqual({
+        time_zone: 'Europe/Moscow',
+        start_date: '2026-10-01',
+        end_date: '2026-10-31',
+        from: new Date('2026-09-30T21:00:00.000Z'),
+        to: new Date('2026-10-31T20:59:59.999Z'),
+      });
+      expect(transactionQueriesService.getExpensesByCategory).toHaveBeenCalledWith(
+        spaceId,
+        result.period.from,
+        result.period.to,
+      );
+    });
+
+    it('getSummary counts every expense in the monthly total, also of categories with their own limit', async () => {
+      const limits = [
+        limitWith({ id: 1, limit_type: LimitType.OTHERS, amount: '100.00' }),
+        limitWith({ id: 2, limit_type: LimitType.CATEGORY, amount: '10.00' }, [5]),
+      ];
+      queryBuilder.getMany.mockResolvedValue(limits);
+      transactionQueriesService.getExpensesByCategory.mockResolvedValue(
+        new Map([
+          [5, 700n],
+          [6, 300n],
+        ]),
+      );
+
+      const result = await service.getSummary(userId, spaceId, 'UTC');
+
+      expect(result.total).toMatchObject({ id: 1, spent: 10 });
+      expect(result.categories).toEqual([expect.objectContaining({ id: 2, spent: 7 })]);
+    });
+
     it('create checks every category in a single batched call, passing the ids through unchanged', async () => {
       repository.findOne.mockResolvedValue(limitWith({ id: 1 }));
 

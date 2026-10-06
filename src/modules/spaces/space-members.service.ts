@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Not, Repository } from 'typeorm';
 
@@ -6,7 +6,7 @@ import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { withRelations } from '@shared/utils';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
 import { SpaceInvitesService } from './space-invites.service';
@@ -80,7 +80,7 @@ export class SpaceMembersService {
 
     if (targetUserId !== actingUserId) {
       if (actingMember.role !== SpaceRole.OWNER) {
-        throw new HttpException(ErrorMessages.FORBIDDEN_SPACE, HttpStatus.FORBIDDEN);
+        throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
       }
 
       const targetMember = await this.spaceMemberRepository.findOne({
@@ -88,7 +88,7 @@ export class SpaceMembersService {
       });
 
       if (!targetMember) {
-        throw new HttpException(ErrorMessages.NOT_FOUND, HttpStatus.NOT_FOUND);
+        throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
       }
 
       await this.spaceMemberRepository.delete(targetMember.id);

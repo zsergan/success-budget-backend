@@ -5,3 +5,6 @@ export * from './assert-found';
 export * from './relations';
 export * from './money';
 export * from './local-dates';
+export * from './database-errors';
+export * from './write-transaction';
+export * from './row-locks';

@@ -66,18 +66,16 @@ export class TransactionQueriesService {
     private readonly transactionRepository: Repository<Transaction>,
   ) {}
 
-  // shared by GET /spaces/:spaceId/wallets and TransactionsService.create()'s
-  // previous_balance - no lock, informational only: the balance is always
-  // recomputed from history and never depends on the order concurrent
-  // requests resolve in. Balances are in cents.
-  async getBalances(walletIds: number[]): Promise<Map<number, bigint>> {
+  // Balances are in cents. Transaction writes pass their manager, holding
+  // the wallet rows locked, so the balance cannot change before they commit.
+  async getBalances(walletIds: number[], manager?: EntityManager): Promise<Map<number, bigint>> {
     const balances = new Map(walletIds.map((id) => [id, 0n]));
 
     if (walletIds.length === 0) {
       return balances;
     }
 
-    const rows = await this.transactionRepository
+    const rows = await this.repository(manager)
       .createQueryBuilder('transaction')
       .select('transaction.wallet_id', 'wallet_id')
       .addSelect(
@@ -94,20 +92,27 @@ export class TransactionQueriesService {
     return balances;
   }
 
-  async getOneWithWallet(transactionId: string): Promise<WithRelations<Transaction, 'wallet'> | null> {
-    const transaction = await this.transactionRepository
+  // Scoped through the transaction's own wallet, soft-deleted included, so a
+  // transaction of another space is not found rather than forbidden.
+  async getOneInSpace(
+    spaceId: number,
+    transactionId: string,
+    manager?: EntityManager,
+  ): Promise<LoadedTransaction | null> {
+    const transaction = await this.repository(manager)
       .createQueryBuilder('transaction')
       .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
       .where('transaction.id = :transactionId', { transactionId })
+      .andWhere('wallet.space_id = :spaceId', { spaceId })
       .getOne();
 
-    return transaction && withRelations(transaction, 'wallet');
+    return transaction && withRelations(transaction, 'wallet', 'category');
   }
 
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
-  // income/spend per wallet, grouped in SQL instead of filtering a raw
-  // transaction-row fetch in JS. All-time balance is a separate concern,
-  // still served by getBalances().
+  // income/spend per wallet, grouped in SQL. Initial balances are not income
+  // here, as in statistics; they only count in the balance (getBalances()).
   async getPeriodTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletPeriodTotals>> {
     const totals = new Map<number, WalletPeriodTotals>(walletIds.map((id) => [id, { income: 0n, spend: 0n }]));
 
@@ -117,10 +122,12 @@ export class TransactionQueriesService {
 
     const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
+      .innerJoin('transaction.category', 'category')
       .select('transaction.wallet_id', 'wallet_id')
       .addSelect('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
       .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)', 'spend')
       .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
+      .andWhere('category.is_system = 0')
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
       .setParameter('income', TransactionType.INCOME)
@@ -156,35 +163,26 @@ export class TransactionQueriesService {
     return new Map(rows.map((row) => [Number(row.category_id), parseMoney(row.spent)]));
   }
 
+  // newest first; the id breaks ties of equal timestamps so the order is stable
   async getForAllWallets(
     spaceId: number,
     from: Date,
     to: Date,
     filters: TransactionFilters = {},
   ): Promise<LoadedTransaction[]> {
-    const query = this.transactionRepository
-      .createQueryBuilder('transaction')
+    const transactions = await this.historyScope(spaceId, from, to, filters)
       .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
-      .where('wallet.space_id = :spaceId', { spaceId })
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to });
-
-    if (filters.transactionType) {
-      query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
-    }
-
-    if (filters.categoryId) {
-      query.andWhere('transaction.category_id = :categoryId', { categoryId: filters.categoryId });
-    }
-
-    if (filters.walletId) {
-      query.andWhere('transaction.wallet_id = :walletId', { walletId: filters.walletId });
-    }
-
-    const transactions = await query.orderBy('transaction.timestamp', 'DESC').getMany();
+      .orderBy('transaction.timestamp', 'DESC')
+      .addOrderBy('transaction.id', 'DESC')
+      .getMany();
 
     return transactions.map((transaction) => withRelations(transaction, 'wallet', 'category'));
+  }
+
+  // the number of rows getForAllWallets() returns for the same arguments
+  async countForAllWallets(spaceId: number, from: Date, to: Date, filters: TransactionFilters = {}): Promise<number> {
+    return this.historyScope(spaceId, from, to, filters).innerJoin('transaction.wallet', 'wallet').getCount();
   }
 
   async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
@@ -325,6 +323,38 @@ export class TransactionQueriesService {
       .getOne();
 
     return transaction?.timestamp ?? null;
+  }
+
+  // the wallet join, aliased "wallet", is added by the caller
+  private historyScope(
+    spaceId: number,
+    from: Date,
+    to: Date,
+    filters: TransactionFilters,
+  ): SelectQueryBuilder<Transaction> {
+    const query = this.transactionRepository
+      .createQueryBuilder('transaction')
+      .where('wallet.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.timestamp >= :from', { from })
+      .andWhere('transaction.timestamp <= :to', { to });
+
+    if (filters.transactionType) {
+      query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
+    }
+
+    if (filters.categoryId) {
+      query.andWhere('transaction.category_id = :categoryId', { categoryId: filters.categoryId });
+    }
+
+    if (filters.walletId) {
+      query.andWhere('transaction.wallet_id = :walletId', { walletId: filters.walletId });
+    }
+
+    return query;
+  }
+
+  private repository(manager?: EntityManager): Repository<Transaction> {
+    return manager?.getRepository(Transaction) ?? this.transactionRepository;
   }
 
   private statisticsExpenseScope(

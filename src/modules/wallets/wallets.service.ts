@@ -8,7 +8,6 @@ import { Category } from '@entities/category.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
 import { assertBelongsToSpace, assertFound, moneyToNumber, parseMoney, roundPercentToTenth } from '@shared/utils';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -134,7 +133,7 @@ export class WalletsService {
 
   private async getSpaceWallet(spaceId: number, walletId: number): Promise<Wallet> {
     const wallet = await this.getOne(walletId);
-    assertBelongsToSpace(wallet, spaceId, ErrorMessages.FORBIDDEN_WALLET);
+    assertBelongsToSpace(wallet, spaceId, 'FORBIDDEN_WALLET');
 
     return wallet;
   }

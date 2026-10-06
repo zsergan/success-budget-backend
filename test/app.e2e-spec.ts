@@ -383,6 +383,7 @@ describe('App (e2e)', () => {
     await request(app.getHttpServer())
       .delete(`/api/v1/spaces/${personalSpaceId}/transactions/${expenseTransactionId}`)
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"1"')
       .expect(200);
 
     const walletsResponse = await request(app.getHttpServer())
@@ -394,12 +395,11 @@ describe('App (e2e)', () => {
     expect(Number(wallet.wallet.balance)).toBe(500);
     // total_balance sums every wallet in the space now that currency is
     // unified at the space level: Cash (500) + Savings (200, from the
-    // prior test's starting-balance transaction) = 700. net across the
-    // period equals total_balance here too (the deleted expense no longer
-    // counts), so balance_at_period_start is 0 and delta_percent falls
-    // back to the divide-by-zero guard.
+    // prior test's starting-balance transaction) = 700. Starting balances
+    // are not income, so the period's net is Cash's 500 and the period
+    // started at 200: delta_percent = 500 / 200.
     expect(walletsResponse.body.total_balance).toBe(700);
-    expect(walletsResponse.body.delta_percent).toBe(0);
+    expect(walletsResponse.body.delta_percent).toBe(250);
   });
 
   it('supports a monthly total limit, a group limit, and a single-category limit together', async () => {
@@ -955,13 +955,6 @@ describe('App (e2e)', () => {
       [
         () =>
           request(server)
-            .delete(`/api/v1/spaces/${groupSpaceId}/transactions/${personalTransaction.id}`)
-            .set('Authorization', auth),
-        ErrorMessages.FORBIDDEN_WALLET,
-      ],
-      [
-        () =>
-          request(server)
             .post(`/api/v1/spaces/${groupSpaceId}/limits`)
             .set('Authorization', auth)
             .send({ category_ids: [personalCategory.id], amount: '10.00' }),
@@ -1001,6 +994,13 @@ describe('App (e2e)', () => {
       expect(response.status).toBe(403);
       expect(response.body.message).toBe(message);
     }
+
+    const deleteResponse = await request(server)
+      .delete(`/api/v1/spaces/${groupSpaceId}/transactions/${personalTransaction.id}`)
+      .set('Authorization', auth)
+      .set('If-Match', '"1"');
+    expect(deleteResponse.status).toBe(404);
+    expect(deleteResponse.body.code).toBe('TRANSACTION_NOT_FOUND');
 
     await expect(
       dataSource.getRepository(Transaction).findOneBy({ id: personalTransaction.id }),
@@ -1073,8 +1073,8 @@ describe('App (e2e)', () => {
         amount: '1.00',
         timestamp: new Date().toISOString(),
       })
-      .expect(403);
-    expect(rejected.body.message).toBe(ErrorMessages.FORBIDDEN_WALLET);
+      .expect(400);
+    expect(rejected.body.code).toBe('WALLET_DELETED');
   });
 
   it('a plain member sees the roster without remove rights and cannot run owner-only space operations', async () => {

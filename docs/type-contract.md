@@ -14,7 +14,7 @@ mixed amount types across responses are a **gap** kept for API compatibility.
 | Request `amount`, `initial_balance` (`@IsMoneyAmount`)                                                         | `string`                               | decimal `string` only; a JSON number is a 400                                                               |
 | `DECIMAL(10,2)` column (`Transaction.amount`, `Limit.amount`)                                                  | `string`                               | written as the validated request string, read back with 2 decimals (`"12.30"`)                              |
 | `POST /wallets` → `transaction.amount`                                                                         | `number` (`InitialBalanceTransaction`) | `number`, converted from cents                                                                              |
-| `POST /transactions` → `transaction.amount`                                                                    | `string`                               | the request string echoed as sent (`"12.3"`)                                                                |
+| `POST /transactions`, `PATCH /transactions/:id` → `transaction.amount`                                         | `string`                               | re-read from DB, 2 decimals (`"12.30"`)                                                                     |
 | `POST/PUT /limits` → `amount`                                                                                  | `string`                               | `string` (re-read from DB)                                                                                  |
 | `GET /limits` → `amount` / `spent`, `in_percent`, `over_allocation.*`                                          | —                                      | `string` / `number`                                                                                         |
 | Derived: `wallet.balance`, `previous_balance`, `total_balance`, `total_income`, `total_spend`, `delta_percent` | `number`                               | `number`                                                                                                    |
@@ -22,9 +22,9 @@ mixed amount types across responses are a **gap** kept for API compatibility.
 | `GET /statistics/*` → every amount (`amount`, `net`, `delta`, `total_amount`, bucket `income`/`expense`)       | `string`                               | decimal `string` with exactly two decimals, `-` only for negatives; may exceed `99999999.99`                |
 | `GET /statistics/*` → `percent`, `change.*.percent`                                                            | `number` / `number \| null`            | one decimal, `roundPercentToTenth`; `null` when the comparison base is zero                                 |
 
-The same transaction amount still leaves the API as a number, the echoed
-input string, or a normalized DECIMAL string depending on the endpoint
-(**gap**, kept for API compatibility). The statistics endpoints are new and
+The same transaction amount still leaves the API as a number from
+`POST /wallets` and as a normalized DECIMAL string everywhere else (**gap**,
+kept for API compatibility). The statistics endpoints are new and
 use strings for every amount; their full types and rules are in
 [`statistics-contract.md`](statistics-contract.md).
 
@@ -76,8 +76,9 @@ compact and epoch forms are rejected.
 
 | Where                                                                              | Declared | Actual                                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Request `timestamp` (`@IsIsoDate`, `@IsInTimestampRange`)                          | `string` | ISO string within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z); converted with `toDate` before it is saved                                                       |
-| Query `from`/`to` on `GET /transactions`, `GET /wallets`                           | `Date`   | `ParseOptionalDatePipe`: absent → handler default (current month, inclusive to 23:59:59.999 local); present → `Date`; invalid, empty or repeated → 400 `<field> must be a valid ISO 8601 date` |
+| Request `timestamp` (`@IsIsoInstant`, `@IsInTimestampRange`)                       | `string` | ISO instant **with** `Z` or an offset, within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z), at most 60 s ahead; converted with `toDate` before it is saved       |
+| Query `from`/`to` on `GET /transactions`, `/count`, `GET /wallets`                 | `Date`   | `ParseOptionalDatePipe`: absent → handler default (current month, inclusive to 23:59:59.999 local); present → `Date`; invalid, empty or repeated → 400 `<field> must be a valid ISO 8601 date` |
+| Query `time_zone` on `GET /limits` (`ParseOptionalTimeZonePipe`)                   | `string` | optional IANA name; absent → the server's zone; a fixed offset is a 400                                                                                                                        |
 | Query `anchor_date`/`from_date`/`to_date` on `GET /statistics/*` (`@IsLocalDate`)  | `string` | a real calendar date `YYYY-MM-DD`, no time; interpreted in `time_zone`                                                                                                                         |
 | Query `time_zone` on `GET /statistics/*` (`@IsTimeZone`)                           | `string` | IANA name, echoed canonical; a fixed offset (`+03:00`) is a 400                                                                                                                                |
 | Query `as_of` on `GET /statistics/*` (`@IsIsoInstant`)                             | `string` | ISO instant **with** `Z` or an offset (no local-time reading), in the `TIMESTAMP` range, at most 60 s ahead of the server                                                                      |
@@ -107,8 +108,11 @@ from the JSON, never `null`. Queries that join a relation return
 `LimitWithCategories`, `SpaceWithCurrency`, members with `user`.
 
 A missing resource keeps its existing response: `assertBelongsToSpace()`
-turns a missing wallet, category, limit or transaction into the same 403 as
-a foreign one, and invites, members and confirmation codes stay 404. A row
+turns a missing wallet, category or limit into the same 403 as a foreign
+one, and invites, members and confirmation codes stay 404. A transaction
+addressed by id (`GET`/`DELETE /transactions/:id`) is the exception: a
+missing, malformed or foreign id is `404 TRANSACTION_NOT_FOUND` (see the
+[transactions contract](transactions-contract.md)). A row
 that disappears between the access check and the read (a concurrent delete)
 is a 404 via `assertFound()` instead of an empty 200 or a 500.
 
@@ -124,8 +128,9 @@ and `email_verified`. Exact key sets are pinned in the e2e contract spec.
 
 | Response                                          | Type                                                          | Difference                                                                                                                                                                  |
 | ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /transactions`, `GET /transactions/latest`   | `TransactionView`                                             | `wallet` is `null` when the wallet was soft-deleted; `category` always present                                                                                              |
-| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction` without relations; `wallet: WalletWithBalance`; `previous_balance`                                                                                            |
+| `GET /transactions`, `/latest`, `/:id`            | `TransactionView`                                             | not an entity: built field by field (`toTransactionView`); adds `kind` and `category.is_archived`; `wallet` is `null` when soft-deleted; see the transactions contract      |
+| `POST /transactions`                              | `CreateTransactionResult`                                     | `transaction: TransactionView`; `wallet: WalletWithBalance`; `previous_balance`                                                                                             |
+| `PATCH /transactions/:id`                         | `UpdateTransactionResult`                                     | `transaction: TransactionView`; `wallets: { id, balance, is_deleted }[]`                                                                                                    |
 | `POST /wallets`                                   | `CreateWalletResult`                                          | `wallet: WalletWithBalance`; `transaction: InitialBalanceTransaction \| null` (amount as number)                                                                            |
 | `GET /wallets`                                    | `WalletsOverview`                                             | `wallets[].wallet: WalletWithBalance`                                                                                                                                       |
 | `POST /categories`                                | `Category`                                                    | no `is_active`: it comes from the column default and is not re-read after insert (existing behavior)                                                                        |
@@ -146,7 +151,7 @@ nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 | `category_ids` (limit create/update)                                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400                |
 | `invites` (space create)                                                                                                          | absent or `[]`: no invites; `null`: 400                                                       |
 | `""` for a field required non-empty on create (`wallet_name`, category `name`)                                                    | 400 on update as on create                                                                    |
-| `""` for `description`                                                                                                            | stored as `""`, not normalized to `null`                                                      |
+| `""` for `description`                                                                                                            | stored as `""`; transaction reads return a blank description as `null`                        |
 | Query param absent                                                                                                                | controller default applies                                                                    |
 | `GET /transactions` `transaction_type`, `category_id`, `wallet_id` absent                                                         | no filter; malformed, empty or repeated: 400 (`ParseOptionalEnumPipe`, `ParseOptionalIdPipe`) |
 | Statistics `null` fields (`actual_to`, `previous`, `change`, bucket amounts, `other`, `deleted_wallets`, `last_transaction_date`) | always present, `null` when not applicable; never omitted                                     |
@@ -155,3 +160,14 @@ nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 
 Validation errors keep the `message: [{ field, error }]` shape; nested errors
 are reported under a dotted `field` path.
+
+## Error codes
+
+Every error body carries `code` next to `message`: the `ErrorMessages` key
+for a domain error (`ApiException`, `assertBelongsToSpace`, `assertFound`,
+`RetryAfterException`), `VALIDATION_FAILED` for field errors, and the HTTP
+status name otherwise (`UNAUTHORIZED`, `TOO_MANY_REQUESTS`, `BAD_REQUEST`
+for a non-numeric path id). Any other exception is `500` with
+`INTERNAL_SERVER_ERROR` and a fixed message, its details logged only; an
+`http-errors` error from body parsing keeps its 4xx status. Clients branch
+on `code`, not on `message`.

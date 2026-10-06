@@ -1,7 +1,7 @@
-import type { Type } from '@nestjs/common';
-import { ApiExtraModels, ApiProperty, type ApiPropertyOptions, getSchemaPath } from '@nestjs/swagger';
+import { ApiExtraModels, ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
 import { AppColor, CategoryIcon, StatisticsPeriodType } from '@shared/enums';
+import { nullableObject } from '@shared/swagger';
 import type {
   CategoryBreakdown as CategoryBreakdownShape,
   CategoryItem as CategoryItemShape,
@@ -37,11 +37,6 @@ const MONEY: ApiPropertyOptions = {
   description: 'Money as a decimal string with two digits after the point, never a number.',
 };
 const PERCENT: ApiPropertyOptions = { type: 'number', example: 12.5, description: 'Rounded to one decimal.' };
-// OpenAPI 3.0 has no null type; nullable next to a $ref is ignored by tools.
-const nullableObject = (model: Type<unknown>, description?: string): ApiPropertyOptions => ({
-  anyOf: [{ $ref: getSchemaPath(model) }, { type: 'object', nullable: true, enum: [null] }],
-  description,
-});
 const ALWAYS_NULL: ApiPropertyOptions = { type: String, nullable: true, enum: [null], description: 'Always null.' };
 
 export class StatisticsPeriod implements StatisticsPeriodShape {

@@ -18,3 +18,27 @@ export const resolveTimeZone = (value: string): string | null => {
     return null;
   }
 };
+
+export interface MonthPeriod {
+  time_zone: string;
+  start_date: string; // local dates, inclusive
+  end_date: string;
+  from: Date; // instants, inclusive, to the millisecond
+  to: Date;
+}
+
+export const serverTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// The calendar month containing `now` in the zone.
+export const monthPeriodAt = (now: Date, timeZone: string): MonthPeriod => {
+  const start = DateTime.fromJSDate(now, { zone: timeZone }).startOf('month');
+  const next = start.plus({ months: 1 });
+
+  return {
+    time_zone: timeZone,
+    start_date: start.toISODate()!,
+    end_date: next.minus({ days: 1 }).toISODate()!,
+    from: start.toJSDate(),
+    to: new Date(next.toJSDate().getTime() - 1),
+  };
+};

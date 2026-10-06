@@ -85,3 +85,9 @@ export enum StatisticsPeriodType {
   YEAR = 'year',
   CUSTOM = 'custom',
 }
+
+// public replacement for Category.is_system on transactions
+export enum TransactionKind {
+  REGULAR = 'regular',
+  INITIAL_BALANCE = 'initial_balance',
+}

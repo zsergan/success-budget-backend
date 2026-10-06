@@ -28,6 +28,7 @@ describe('TransactionQueriesService', () => {
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
       getOne: jest.fn(),
+      getCount: jest.fn(),
       getRawMany: jest.fn().mockResolvedValue([]),
       getRawOne: jest.fn(),
     };
@@ -99,6 +100,13 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getPeriodTotals', () => {
+    it('leaves initial balances out of income', async () => {
+      await service.getPeriodTotals([1], new Date(), new Date());
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
+    });
+
     it('returns an all-zero map without querying when there are no wallets', async () => {
       const result = await service.getPeriodTotals([], new Date(), new Date());
 
@@ -130,8 +138,8 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
         walletIds: [1, 2, 3],
       });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp >= :from', { from });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(3, 'transaction.timestamp <= :to', { to });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
       expect(result).toEqual(
         new Map([
@@ -187,6 +195,15 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
 
+    it('orders newest first, then by id, so equal timestamps keep one order', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'));
+
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
+    });
+
     it('adds only the filters that are set', async () => {
       queryBuilder.getMany.mockResolvedValue([]);
 
@@ -206,14 +223,40 @@ describe('TransactionQueriesService', () => {
     });
   });
 
-  describe('getOneWithWallet', () => {
-    it('loads a transaction with its wallet relation', async () => {
+  describe('countForAllWallets', () => {
+    it('counts with the same scope and filters as the list, without loading rows', async () => {
+      queryBuilder.getCount.mockResolvedValue(4);
+
+      await expect(
+        service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { categoryId: 5 }),
+      ).resolves.toBe(4);
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.category_id = :categoryId', { categoryId: 5 });
+      expect(queryBuilder.getMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getOneInSpace', () => {
+    it('loads the transaction with both relations, scoped by its wallet space', async () => {
       queryBuilder.getOne.mockResolvedValue(null);
 
-      await service.getOneWithWallet('tx-1');
+      expect(await service.getOneInSpace(9, 'tx-1')).toBeNull();
 
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+    });
+
+    it('reads through the given manager', async () => {
+      const getRepository = jest.fn().mockReturnValue(transactionRepository);
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      await service.getOneInSpace(9, 'tx-1', { getRepository } as unknown as EntityManager);
+
+      expect(getRepository).toHaveBeenCalledWith(Transaction);
     });
   });
 
