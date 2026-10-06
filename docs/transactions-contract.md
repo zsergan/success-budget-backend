@@ -647,11 +647,14 @@ English display text and may change.
 | 409    | `IDEMPOTENCY_KEY_REUSED`       | The `Idempotency-Key` was used for a different request                 |
 | 428    | `TRANSACTION_VERSION_REQUIRED` | `PATCH` or `DELETE` without `If-Match`                                 |
 | 429    | `TOO_MANY_REQUESTS`            | Rate limit                                                             |
+| 500    | `INTERNAL_SERVER_ERROR`        | Unexpected server failure; details only in the log                     |
 
 Codes are the same on every endpoint of the API, not only on transactions:
 a domain error carries its own code (`FORBIDDEN_LIMIT`, `CATEGORY_IS_SYSTEM`,
 ...), field errors carry `VALIDATION_FAILED`, and any other error carries
-the HTTP status name. A `5xx` may lack `code`; see
+the HTTP status name. An unexpected server failure is
+`500 INTERNAL_SERVER_ERROR` with the fixed message "Internal server error"
+and the `requestId` to quote; its details are only in the server log. See
 [What the client does on a failure](#what-the-client-does-on-a-failure).
 
 In `VALIDATION_FAILED`, `field` is stable and names the request field or

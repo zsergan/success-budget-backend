@@ -167,4 +167,7 @@ Every error body carries `code` next to `message`: the `ErrorMessages` key
 for a domain error (`ApiException`, `assertBelongsToSpace`, `assertFound`,
 `RetryAfterException`), `VALIDATION_FAILED` for field errors, and the HTTP
 status name otherwise (`UNAUTHORIZED`, `TOO_MANY_REQUESTS`, `BAD_REQUEST`
-for a non-numeric path id). Clients branch on `code`, not on `message`.
+for a non-numeric path id). Any other exception is `500` with
+`INTERNAL_SERVER_ERROR` and a fixed message, its details logged only; an
+`http-errors` error from body parsing keeps its 4xx status. Clients branch
+on `code`, not on `message`.

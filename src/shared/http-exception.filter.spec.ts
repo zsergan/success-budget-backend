@@ -1,4 +1,5 @@
-import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { QueryFailedError } from 'typeorm';
 import { ExecutionContextHost } from '@nestjs/core/helpers/execution-context-host';
 
 import { ApiException } from './api.exception';
@@ -12,7 +13,10 @@ describe('HttpExceptionFilter', () => {
     const jsonMock = jest.fn();
     const statusMock = jest.fn().mockReturnValue({ json: jsonMock });
     const setMock = jest.fn();
-    const host = new ExecutionContextHost([{ url }, { status: statusMock, set: setMock }]);
+    const host = new ExecutionContextHost([
+      { url, id: 'req-1' },
+      { status: statusMock, set: setMock },
+    ]);
 
     return { host, statusMock, jsonMock, setMock };
   };
@@ -51,6 +55,61 @@ describe('HttpExceptionFilter', () => {
         code: 'LIMIT_EXISTS',
       }),
     );
+  });
+
+  describe('an unexpected exception', () => {
+    let logError: jest.SpyInstance;
+
+    beforeEach(() => {
+      logError = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    });
+
+    afterEach(() => {
+      logError.mockRestore();
+    });
+
+    it.each<[string, unknown]>([
+      ['an Error', new QueryFailedError('SELECT secret', [], new Error('connect ECONNREFUSED 10.0.0.5:3306'))],
+      ['a thrown string', 'boom'],
+    ])('answers %s with a 500 in the API error shape, without its details', (_, exception) => {
+      const { host, statusMock, jsonMock } = buildHost('/spaces/1/transactions');
+
+      filter.catch(exception, host);
+
+      expect(statusMock).toHaveBeenCalledWith(500);
+      const body = jsonMock.mock.calls[0][0];
+      expect(body).toEqual({
+        timestamp: expect.any(String),
+        path: '/spaces/1/transactions',
+        requestId: 'req-1',
+        statusCode: 500,
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Internal server error',
+      });
+      expect(JSON.stringify(body)).not.toMatch(/secret|ECONNREFUSED|boom/);
+    });
+
+    it('keeps the client status of an http-errors error, such as a payload that is too large', () => {
+      const { host, statusMock, jsonMock } = buildHost('/x');
+      const tooLarge = Object.assign(new Error('request entity too large'), { status: 413, expose: true });
+
+      filter.catch(tooLarge, host);
+
+      expect(statusMock).toHaveBeenCalledWith(413);
+      expect(jsonMock).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 413, code: 'PAYLOAD_TOO_LARGE', message: 'request entity too large' }),
+      );
+      expect(logError).not.toHaveBeenCalled();
+    });
+
+    it('logs the details', () => {
+      const { host } = buildHost('/x');
+      const error = new Error('deadlock retries used up');
+
+      filter.catch(error, host);
+
+      expect(logError).toHaveBeenCalledWith('deadlock retries used up', error.stack);
+    });
   });
 
   describe('code', () => {

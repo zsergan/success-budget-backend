@@ -3,6 +3,7 @@ import request from 'supertest';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 import { monthPeriodAt } from '@shared/utils';
+import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 
 describe('Transactions (e2e)', () => {
   let testApp: TestApp;
@@ -23,6 +24,10 @@ describe('Transactions (e2e)', () => {
     expenseCategoryId = categories.body.expenses[0].id;
     secondExpenseCategoryId = categories.body.expenses[1].id;
     incomeCategoryId = categories.body.incomes[0].id;
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -175,6 +180,26 @@ describe('Transactions (e2e)', () => {
 
         expect(res.body).toEqual(expect.objectContaining({ statusCode: 403, code: 'FORBIDDEN_SPACE' }));
       }
+    });
+
+    it('answers an unexpected failure in the API error shape, with the request id and no details', async () => {
+      jest
+        .spyOn(testApp.app.get(TransactionQueriesService), 'getLatest')
+        .mockRejectedValueOnce(new Error('connect ECONNREFUSED 10.0.0.5:3306'));
+
+      const res = await api(owner)
+        .get(`${base(owner)}/transactions/latest`)
+        .expect(500);
+
+      expect(res.body).toEqual({
+        timestamp: expect.any(String),
+        path: `${base(owner)}/transactions/latest`,
+        requestId: res.headers['x-request-id'],
+        statusCode: 500,
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Internal server error',
+      });
+      expect(res.body.requestId).toEqual(expect.any(String));
     });
 
     it('requires authentication', async () => {
