@@ -5,9 +5,14 @@ space: the domain rules, the requests and responses, compatibility with
 records written under the old rules, and machine-readable errors. It is the
 source of truth for the backend implementation and the mobile integration.
 
-Anything marked _open_ needs sign-off before the stage that implements it.
-Differences from the behavior before this contract are collected under
-[Changes against the current API](#changes-against-the-current-api).
+Everything below is implemented. What the mobile client has to change, the
+deployment order and what an older client still gets are collected under
+[Migration and compatibility](#migration-and-compatibility); request and
+response walkthroughs are under [Examples](#examples).
+
+Out of scope: several currencies in one space, moving a transaction to
+another space, transfers between wallets as one operation, scheduled or
+recurring transactions, and search.
 
 ## Implementation status
 
@@ -31,7 +36,8 @@ schemas in `dto/transaction-responses.ts`, the write unit in
 `transaction-view.spec.ts`, `transactions.service.spec.ts`,
 `idempotency.service.spec.ts`, `test/transactions.e2e-spec.ts`,
 `test/transaction-writes.e2e-spec.ts` (repeats and concurrent writes against
-MySQL) and the response shapes in `test/type-contract.e2e-spec.ts`; the e2e
+MySQL), `test/transaction-lifecycle.e2e-spec.ts` (the full lifecycle with
+every derived figure after each step, DST, and the OpenAPI document) and the response shapes in `test/type-contract.e2e-spec.ts`; the e2e
 tests check the list, latest and details responses against their OpenAPI
 schemas.
 
@@ -649,36 +655,195 @@ the HTTP status name. A `5xx` may lack `code`; see
 In `VALIDATION_FAILED`, `field` is stable and names the request field or
 header (`If-Match`, `Idempotency-Key`); `error` is display text.
 
-## Changes against the current API
+## Examples
 
-What the mobile client has to adapt to once the stages implementing this
-contract ship:
+Bodies are trimmed to what matters; every error also carries `timestamp`,
+`path`, `statusCode` and `requestId`.
 
-- **New (shipped):** `GET /transactions/:id`; `kind`, `version` and
-  `category.is_archived` on every transaction read; `version` on the `POST`
-  results' `transaction`; `code` on every error of the API; optional
-  `Idempotency-Key` on every write; `PATCH /transactions/:id`.
-- **`If-Match` required on `DELETE` (shipped, breaking):** a delete or undo
-  without it is `428 TRANSACTION_VERSION_REQUIRED`. Undo sends the
-  `version` from the `POST` result.
-- **Changed (shipped):** a blank description (legacy `""`) reads as `null`.
-- **`POST` is stricter (shipped):** a zero amount, a timestamp more than a
-  minute ahead, an archived category and a category of the other type are
-  refused (all were accepted). A deleted wallet is `400 WALLET_DELETED`
-  instead of `403 FORBIDDEN_WALLET`. The `CATEGORY_ARCHIVED` message is now
-  generic ("The category is archived"), also on limits.
-- **`POST` response (shipped):** `transaction` is the full transaction view;
-  its `amount` has two decimals instead of echoing the request string.
-- **`description` (shipped):** `""` and whitespace-only input are stored as
-  `null`, input is trimmed, and legacy `""` is read as `null`.
-- **`DELETE` (shipped):** a missing or foreign transaction is
+### Create, with a retry after a lost response
+
+```http
+POST /api/v1/spaces/1/transactions
+Idempotency-Key: 0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70
+
+{ "wallet_id": 7, "category_id": 12, "transaction_type": "expense",
+  "amount": "12.3", "timestamp": "2026-09-15T13:00:00+03:00", "description": "  Lunch " }
+```
+
+```http
+201
+{ "transaction": { "id": "9b1d…", "kind": "regular", "transaction_type": "expense",
+                   "amount": "12.30", "timestamp": "2026-09-15T10:00:00.000Z",
+                   "description": "Lunch", "version": 1,
+                   "wallet": { "id": 7, "wallet_name": "Card", … },
+                   "category": { "id": 12, "name": "Grocery", "is_archived": false, … } },
+  "wallet": { "id": 7, "wallet_name": "Card", …, "balance": 87.7 },
+  "previous_balance": 100 }
+```
+
+The response is lost; the app sends the same request with the same key and
+gets the same `201` body. No second transaction is created. Sending the key
+with another body is `409 IDEMPOTENCY_KEY_REUSED`.
+
+### Edit
+
+```http
+PATCH /api/v1/spaces/1/transactions/9b1d…
+If-Match: "1"
+
+{ "amount": "20", "wallet_id": 8 }
+```
+
+```http
+200
+{ "transaction": { "id": "9b1d…", "amount": "20.00", "version": 2,
+                   "wallet": { "id": 8, … }, … },
+  "wallets": [ { "id": 7, "balance": 100, "is_deleted": false },
+               { "id": 8, "balance": -20, "is_deleted": false } ] }
+```
+
+The same edit sent again with `If-Match: "1"` (for example by a second
+member who read the same version) is refused:
+
+```http
+409
+{ "code": "TRANSACTION_VERSION_CONFLICT", "message": "The transaction was changed since it was read" }
+```
+
+The client re-reads `GET /transactions/9b1d…` (`version: 2`) and lets the
+user decide. Without `If-Match`:
+
+```http
+428
+{ "code": "TRANSACTION_VERSION_REQUIRED", "message": "If-Match with the version that was read is required" }
+```
+
+A field error:
+
+```http
+400
+{ "code": "VALIDATION_FAILED",
+  "message": [ { "field": "amount", "error": "amount must be greater than 0" } ] }
+```
+
+### Delete and undo
+
+Undo right after the create above:
+
+```http
+DELETE /api/v1/spaces/1/transactions/9b1d…
+If-Match: "1"
+Idempotency-Key: 4c2a…
+```
+
+`200 true`. Repeated with the same key, `200 true` again; without a key,
+`404 TRANSACTION_NOT_FOUND`, which the client also treats as done. If
+another member edited the record first, `409 TRANSACTION_VERSION_CONFLICT`
+and nothing is deleted. Deleting the initial balance:
+
+```http
+400
+{ "code": "TRANSACTION_IS_SYSTEM", "message": "The initial balance cannot be edited or deleted" }
+```
+
+### History, count and limits for this month
+
+```http
+GET /api/v1/spaces/1/limits?time_zone=Europe/Moscow
+
+200 { "period": { "time_zone": "Europe/Moscow", "start_date": "2026-10-01",
+                  "end_date": "2026-10-31", "from": "2026-09-30T21:00:00.000Z",
+                  "to": "2026-10-31T20:59:59.999Z" },
+      "total": { "id": 3, "amount": "1000.00", "spent": 20, "in_percent": 2, … }, … }
+
+GET /api/v1/spaces/1/transactions?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z
+GET /api/v1/spaces/1/transactions/count?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z
+
+200 { "count": 5 }
+```
+
+## Migration and compatibility
+
+### Deployment order
+
+1. Run the migrations, in this order (`npm run migration:run:prod`, see
+   [`deployment.md`](deployment.md)):
+   - `1790200000000-AddTransactionVersion`: `transactions.version`,
+     `INT UNSIGNED NOT NULL DEFAULT 1`; existing rows start at 1;
+   - `1790300000000-CreateIdempotencyKeys`: the `idempotency_keys` table.
+2. Deploy the application.
+
+Both migrations only add a column and a table, so the application version
+before this contract keeps working on the migrated schema; the new
+application needs both. Rolling back the application does not need a
+schema rollback. `migration:revert` drops the table, then the column.
+No data is rewritten: legacy zero amounts, future timestamps, `""`
+descriptions and type/category mismatches stay as they are (see
+[Compatibility with existing records](#compatibility-with-existing-records)).
+Expired idempotency keys are removed by the application itself; no
+scheduled job is needed.
+
+### An older client against the new API
+
+| Request of an older client                                                        | Result now                                                              |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `GET /transactions`, `/latest`                                                    | works; new fields are added, `""` description reads as `null`           |
+| `POST /transactions` with a valid, past, positive expense                         | works; `transaction` has more fields and a 2-decimal `amount`           |
+| `POST` with `amount: "0"`, a future timestamp, an archived or wrong-type category | `400` (was accepted)                                                    |
+| `POST` with a date-only or offset-less `timestamp`                                | `400` (was read in server local time)                                   |
+| `POST` on a deleted wallet                                                        | `400 WALLET_DELETED` (was `403 FORBIDDEN_WALLET`)                       |
+| `DELETE` (undo) without `If-Match`                                                | **`428 TRANSACTION_VERSION_REQUIRED`** (was `200`)                      |
+| `DELETE` of a missing transaction                                                 | `404 TRANSACTION_NOT_FOUND` (was `403 FORBIDDEN_WALLET`)                |
+| `GET /wallets`                                                                    | works; `total_income`, `delta_percent` no longer count initial balances |
+| `GET /limits` without `time_zone`                                                 | works; month of the server as before, plus a `period` key               |
+| Any error                                                                         | works; bodies gain `code`                                               |
+
+Undo without `If-Match` is the one break that an older build hits in normal
+use; the new mobile build ships before or together with this backend.
+
+### Mobile checklist
+
+- Read the transaction view everywhere: `kind` decides whether a record is
+  editable (`initial_balance` is read-only), `wallet: null` means a deleted
+  wallet, `category.is_archived` an archived category.
+- Keep `version` from every read and write; send it as `If-Match: "<n>"`
+  on `PATCH` and `DELETE`, including undo (`version` from the `POST`
+  result). On `409`, re-read `GET /:id` and offer the current details.
+- Generate one `Idempotency-Key` (a UUID) per user action and reuse it for
+  every retry of that action, for at most 24 hours.
+- Send timestamps with an offset, and history bounds as instants of the
+  device's day or month; pass the device's IANA zone to statistics and
+  limits; take "this month" from the limits `period`.
+- Edit with `PATCH`, sending only what changed or the whole form; leave
+  `wallet_id`/`category_id` out (or send the current ids) to keep a deleted
+  wallet or an archived category.
+- Use `GET /transactions/count` for the calendar counter; decide "no
+  history" from rows or the count, never from Income being zero.
+- Branch on `statusCode` and `code`, never on `message`.
+
+### Changes against the previous API
+
+- **New:** `GET /transactions/:id`, `PATCH /transactions/:id`,
+  `GET /transactions/count`; `kind`, `version` and `category.is_archived`
+  on every transaction read; `version` on the `POST` results'
+  `transaction`; `code` on every error of the API; optional
+  `Idempotency-Key` on every write; optional `time_zone` and a `period` key
+  on `GET /limits`.
+- **`If-Match` required on `DELETE` (breaking):** a delete or undo without
+  it is `428 TRANSACTION_VERSION_REQUIRED`.
+- **`POST` is stricter:** a zero amount, a timestamp more than a minute
+  ahead or without an offset, an archived category and a category of the
+  other type are refused. A deleted wallet is `400 WALLET_DELETED` instead
+  of `403 FORBIDDEN_WALLET`. The `CATEGORY_ARCHIVED` message is now generic
+  ("The category is archived"), also on limits.
+- **`POST` response:** `transaction` is the full transaction view; its
+  `amount` has two decimals instead of echoing the request string.
+- **`description`:** `""` and whitespace-only input are stored as `null`,
+  input is trimmed, and legacy `""` is read as `null`.
+- **`DELETE`:** a missing or foreign transaction is
   `404 TRANSACTION_NOT_FOUND` instead of `403 FORBIDDEN_WALLET`; the initial
   balance can no longer be deleted (`400 TRANSACTION_IS_SYSTEM`).
-- **`GET /wallets` (shipped):** `total_income` and `delta_percent` stop
-  counting the initial balance, matching the statistics API.
-- **`timestamp` (shipped):** a new or changed timestamp needs `Z` or a UTC
-  offset; a date-only or offset-less value is `400`.
-- **History (shipped):** rows with an equal timestamp are ordered by `id`;
-  `from` after `to` is `400`; new `GET /transactions/count`.
-- **Limits (shipped):** optional `time_zone`; the response has a new
-  `period` key.
+- **`GET /wallets`:** `total_income` and `delta_percent` stop counting the
+  initial balance, matching the statistics API.
+- **History:** rows with an equal timestamp are ordered by `id`; `from`
+  after `to` is `400`.
