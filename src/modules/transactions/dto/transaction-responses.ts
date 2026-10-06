@@ -116,3 +116,19 @@ export class TransactionCount {
   @ApiProperty({ type: 'integer', minimum: 0, description: 'Rows the list returns for the same query.' })
   count!: number;
 }
+
+export class TransactionWalletWithBalance extends TransactionWallet {
+  @ApiProperty({ example: 87.7, description: 'Balance after the write, from the whole history.' })
+  balance!: number;
+}
+
+export class CreateTransactionResult {
+  @ApiProperty({ type: TransactionView, description: 'The stored record, as GET /:id reads it.' })
+  transaction!: TransactionView;
+
+  @ApiProperty({ type: TransactionWalletWithBalance })
+  wallet!: TransactionWalletWithBalance;
+
+  @ApiProperty({ example: 100, description: 'Balance before the transaction, from the whole history.' })
+  previous_balance!: number;
+}

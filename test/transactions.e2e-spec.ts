@@ -332,6 +332,8 @@ describe('Transactions (e2e)', () => {
 
       expect(res.body.transaction).toEqual(read.body);
       expect(res.body.transaction).toEqual(expect.objectContaining({ amount: '12.30', description: 'Lunch' }));
+      const document = createOpenApiDocument(testApp.app);
+      expect(schemaErrors(document, okResponseSchema(document, '/transactions', 'post'), res.body)).toEqual([]);
       expect(res.body).toEqual(
         expect.objectContaining({
           previous_balance: 100,

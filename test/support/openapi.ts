@@ -24,9 +24,14 @@ export function createOpenApiDocument(app: INestApplication): OpenAPIObject {
   return SwaggerModule.createDocument(app, new DocumentBuilder().build());
 }
 
-export function okResponseSchema(document: OpenAPIObject, pathSuffix: string, method: 'get' | 'patch' = 'get'): Schema {
+export function okResponseSchema(
+  document: OpenAPIObject,
+  pathSuffix: string,
+  method: 'get' | 'post' | 'patch' = 'get',
+): Schema {
   const path = Object.keys(document.paths).find((candidate) => candidate.endsWith(pathSuffix));
-  const response = document.paths[path!][method]!.responses['200'] as { content: Record<string, { schema: Schema }> };
+  const responses = document.paths[path!][method]!.responses;
+  const response = (responses['200'] ?? responses['201']) as { content: Record<string, { schema: Schema }> };
 
   return response.content['application/json'].schema;
 }

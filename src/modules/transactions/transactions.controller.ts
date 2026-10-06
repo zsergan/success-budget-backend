@@ -17,6 +17,8 @@ import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiHeader,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -28,7 +30,12 @@ import {
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
-import { TransactionCount, TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
+import {
+  CreateTransactionResult,
+  TransactionCount,
+  TransactionView,
+  UpdateTransactionResult,
+} from './dto/transaction-responses';
 import type { AuthedRequest } from '@shared/types';
 import { TransactionType } from '@shared/enums';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
@@ -73,6 +80,11 @@ export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
   @ApiHeader(IDEMPOTENCY_KEY_HEADER)
+  @ApiCreatedResponse({ type: CreateTransactionResult })
+  @ApiBadRequestResponse({
+    description: 'VALIDATION_FAILED, WALLET_DELETED, CATEGORY_ARCHIVED or CATEGORY_TYPE_MISMATCH.',
+  })
+  @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE, FORBIDDEN_WALLET or FORBIDDEN_CATEGORY.' })
   @ApiConflictResponse({ description: 'IDEMPOTENCY_KEY_REUSED: the key was used for a different request.' })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
