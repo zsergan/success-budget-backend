@@ -395,12 +395,11 @@ describe('App (e2e)', () => {
     expect(Number(wallet.wallet.balance)).toBe(500);
     // total_balance sums every wallet in the space now that currency is
     // unified at the space level: Cash (500) + Savings (200, from the
-    // prior test's starting-balance transaction) = 700. net across the
-    // period equals total_balance here too (the deleted expense no longer
-    // counts), so balance_at_period_start is 0 and delta_percent falls
-    // back to the divide-by-zero guard.
+    // prior test's starting-balance transaction) = 700. Starting balances
+    // are not income, so the period's net is Cash's 500 and the period
+    // started at 200: delta_percent = 500 / 200.
     expect(walletsResponse.body.total_balance).toBe(700);
-    expect(walletsResponse.body.delta_percent).toBe(0);
+    expect(walletsResponse.body.delta_percent).toBe(250);
   });
 
   it('supports a monthly total limit, a group limit, and a single-category limit together', async () => {

@@ -111,9 +111,8 @@ export class TransactionQueriesService {
   }
 
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
-  // income/spend per wallet, grouped in SQL instead of filtering a raw
-  // transaction-row fetch in JS. All-time balance is a separate concern,
-  // still served by getBalances().
+  // income/spend per wallet, grouped in SQL. Initial balances are not income
+  // here, as in statistics; they only count in the balance (getBalances()).
   async getPeriodTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletPeriodTotals>> {
     const totals = new Map<number, WalletPeriodTotals>(walletIds.map((id) => [id, { income: 0n, spend: 0n }]));
 
@@ -123,10 +122,12 @@ export class TransactionQueriesService {
 
     const rows = await this.transactionRepository
       .createQueryBuilder('transaction')
+      .innerJoin('transaction.category', 'category')
       .select('transaction.wallet_id', 'wallet_id')
       .addSelect('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
       .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)', 'spend')
       .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
+      .andWhere('category.is_system = 0')
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
       .setParameter('income', TransactionType.INCOME)

@@ -100,6 +100,13 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getPeriodTotals', () => {
+    it('leaves initial balances out of income', async () => {
+      await service.getPeriodTotals([1], new Date(), new Date());
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
+    });
+
     it('returns an all-zero map without querying when there are no wallets', async () => {
       const result = await service.getPeriodTotals([], new Date(), new Date());
 
@@ -131,8 +138,8 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
         walletIds: [1, 2, 3],
       });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp >= :from', { from });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(3, 'transaction.timestamp <= :to', { to });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
       expect(result).toEqual(
         new Map([
