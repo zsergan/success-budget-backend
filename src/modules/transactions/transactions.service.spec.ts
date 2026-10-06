@@ -26,7 +26,10 @@ describe('TransactionsService', () => {
   let service: TransactionsService;
   let transactionRepository: jest.Mocked<Pick<Repository<Transaction>, 'create' | 'save' | 'delete'>>;
   let transactionQueriesService: jest.Mocked<
-    Pick<TransactionQueriesService, 'getBalances' | 'getForAllWallets' | 'getLatest' | 'getOneInSpace'>
+    Pick<
+      TransactionQueriesService,
+      'getBalances' | 'getForAllWallets' | 'countForAllWallets' | 'getLatest' | 'getOneInSpace'
+    >
   >;
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
@@ -55,6 +58,7 @@ describe('TransactionsService', () => {
     transactionQueriesService = {
       getBalances: jest.fn(async (ids: number[]) => new Map(ids.map((id) => [id, 0n]))),
       getForAllWallets: jest.fn(),
+      countForAllWallets: jest.fn(),
       getLatest: jest.fn(),
       getOneInSpace: jest.fn(),
     };
@@ -576,6 +580,20 @@ describe('TransactionsService', () => {
       expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
     });
 
+    it('rejects from after to, before the access check', async () => {
+      await expect(service.getAll(userId, spaceId, to, from)).rejects.toMatchObject({
+        status: 400,
+        response: { message: [{ field: 'from', error: 'from must not be after to' }] },
+      });
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+    });
+
+    it('accepts from equal to to', async () => {
+      transactionQueriesService.getForAllWallets.mockResolvedValue([]);
+
+      await expect(service.getAll(userId, spaceId, from, from)).resolves.toEqual([]);
+    });
+
     it('nulls out the wallet on transactions whose wallet was soft-deleted', async () => {
       const active = loadedTransaction('1', { id: 1 });
       const deleted = loadedTransaction('2', { id: 2, is_deleted: 1, deleted_at: new Date() });
@@ -633,6 +651,28 @@ describe('TransactionsService', () => {
         status: 403,
       });
       expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('count', () => {
+    const from = new Date(2026, 0, 1);
+    const to = new Date(2026, 0, 31);
+
+    it('counts with the checks and filters of the list', async () => {
+      transactionQueriesService.countForAllWallets.mockResolvedValue(7);
+      const filters = { transactionType: TransactionType.EXPENSE, categoryId: 5, walletId: 1 };
+
+      await expect(service.count(userId, spaceId, from, to, filters)).resolves.toEqual({ count: 7 });
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
+      expect(categoriesService.getOne).toHaveBeenCalledWith(5);
+      expect(walletsService.getOne).toHaveBeenCalledWith(1);
+      expect(transactionQueriesService.countForAllWallets).toHaveBeenCalledWith(spaceId, from, to, filters);
+      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
+    });
+
+    it('rejects from after to', async () => {
+      await expect(service.count(userId, spaceId, to, from)).rejects.toMatchObject({ status: 400 });
+      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
     });
   });
 

@@ -111,3 +111,8 @@ export class UpdateTransactionResult {
   })
   wallets!: TransactionWalletBalance[];
 }
+
+export class TransactionCount {
+  @ApiProperty({ type: 'integer', minimum: 0, description: 'Rows the list returns for the same query.' })
+  count!: number;
+}

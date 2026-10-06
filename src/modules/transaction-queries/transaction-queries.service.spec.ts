@@ -28,6 +28,7 @@ describe('TransactionQueriesService', () => {
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
       getOne: jest.fn(),
+      getCount: jest.fn(),
       getRawMany: jest.fn().mockResolvedValue([]),
       getRawOne: jest.fn(),
     };
@@ -187,6 +188,15 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
 
+    it('orders newest first, then by id, so equal timestamps keep one order', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'));
+
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
+    });
+
     it('adds only the filters that are set', async () => {
       queryBuilder.getMany.mockResolvedValue([]);
 
@@ -203,6 +213,21 @@ describe('TransactionQueriesService', () => {
         'transaction.category_id = :categoryId',
         expect.anything(),
       );
+    });
+  });
+
+  describe('countForAllWallets', () => {
+    it('counts with the same scope and filters as the list, without loading rows', async () => {
+      queryBuilder.getCount.mockResolvedValue(4);
+
+      await expect(
+        service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { categoryId: 5 }),
+      ).resolves.toBe(4);
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.category_id = :categoryId', { categoryId: 5 });
+      expect(queryBuilder.getMany).not.toHaveBeenCalled();
     });
   });
 

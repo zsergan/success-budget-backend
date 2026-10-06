@@ -23,6 +23,7 @@ describe('TransactionsController', () => {
           useValue: {
             create: jest.fn(),
             getAll: jest.fn(),
+            count: jest.fn(),
             getLatest: jest.fn(),
             getById: jest.fn(),
             update: jest.fn(),
@@ -147,6 +148,21 @@ describe('TransactionsController', () => {
       idempotencyKey: 'key-1',
     });
     expect(result).toBe(updated);
+  });
+
+  it('count delegates the history query to TransactionsService.count', async () => {
+    const from = new Date('2026-01-01T00:00:00.000Z');
+    const to = new Date('2026-01-31T23:59:59.999Z');
+    transactionsService.count.mockResolvedValue({ count: 3 });
+
+    const result = await controller.count(req, spaceId, from, to, TransactionType.EXPENSE, 5, 1);
+
+    expect(transactionsService.count).toHaveBeenCalledWith(1, spaceId, from, to, {
+      transactionType: TransactionType.EXPENSE,
+      categoryId: 5,
+      walletId: 1,
+    });
+    expect(result).toEqual({ count: 3 });
   });
 
   it('remove delegates to TransactionsService.remove and returns true', async () => {

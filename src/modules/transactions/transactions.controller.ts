@@ -1,4 +1,5 @@
 import {
+  applyDecorators,
   Body,
   ClassSerializerInterceptor,
   Controller,
@@ -27,7 +28,7 @@ import {
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
-import { TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
+import { TransactionCount, TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
 import type { AuthedRequest } from '@shared/types';
 import { TransactionType } from '@shared/enums';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
@@ -45,6 +46,25 @@ const IDEMPOTENCY_KEY_HEADER = {
     'A client-generated key, e.g. a UUID. A repeat with the same key and request within 24 hours ' +
     'returns the original result instead of applying the write again.',
 };
+
+// the list and its count take the same query
+const ApiHistoryQuery = () =>
+  applyDecorators(
+    ApiQuery({
+      name: 'from',
+      required: false,
+      description: 'Inclusive; without Z/offset it is server local time. Default: start of the current month.',
+    }),
+    ApiQuery({ name: 'to', required: false, description: 'Inclusive, to the millisecond. Default: end of the month.' }),
+    ApiQuery({ name: 'transaction_type', required: false, enum: TransactionType }),
+    ApiQuery({
+      name: 'category_id',
+      required: false,
+      type: Number,
+      description: 'A category of the space, archived allowed; the system one is refused.',
+    }),
+    ApiQuery({ name: 'wallet_id', required: false, type: Number, description: 'An active wallet of the space.' }),
+  );
 
 @ApiTags('transactions')
 @ApiBearerAuth()
@@ -71,20 +91,22 @@ export class TransactionsController {
     return this.transactionsService.getLatest(req.user.id, spaceId);
   }
 
-  @ApiQuery({
-    name: 'from',
-    required: false,
-    description: 'Inclusive; without Z/offset it is server local time. Default: start of the current month.',
-  })
-  @ApiQuery({ name: 'to', required: false, description: 'Inclusive, to the millisecond. Default: end of the month.' })
-  @ApiQuery({ name: 'transaction_type', required: false, enum: TransactionType })
-  @ApiQuery({
-    name: 'category_id',
-    required: false,
-    type: Number,
-    description: 'A category of the space, archived allowed; the system one is refused.',
-  })
-  @ApiQuery({ name: 'wallet_id', required: false, type: Number, description: 'An active wallet of the space.' })
+  @ApiHistoryQuery()
+  @ApiOkResponse({ type: TransactionCount, description: 'The number of rows GET /transactions returns.' })
+  @Get('count')
+  async count(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
+    @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
+    @Query('transaction_type', new ParseOptionalEnumPipe(TransactionType)) transactionType?: TransactionType,
+    @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
+    @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
+  ) {
+    return this.transactionsService.count(req.user.id, spaceId, from, to, { transactionType, categoryId, walletId });
+  }
+
+  @ApiHistoryQuery()
   @ApiOkResponse({ type: TransactionView, isArray: true })
   @Get()
   async getAll(

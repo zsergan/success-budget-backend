@@ -6,7 +6,7 @@ import { Category } from '@entities/category.entity';
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionDto } from './dto/update-transaction.dto';
-import type { TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
+import type { TransactionCount, TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
 import {
   AMOUNT_NOT_POSITIVE,
@@ -185,7 +185,6 @@ export class TransactionsService {
     });
   }
 
-  // An archived category is a valid filter: its history is kept.
   async getAll(
     userId: number,
     spaceId: number,
@@ -193,19 +192,24 @@ export class TransactionsService {
     to: Date,
     filters: TransactionFilters = {},
   ): Promise<TransactionView[]> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-
-    if (filters.categoryId !== undefined) {
-      await this.getUserCategory(spaceId, filters.categoryId);
-    }
-
-    if (filters.walletId !== undefined) {
-      await this.getActiveWallet(spaceId, filters.walletId);
-    }
+    await this.checkHistoryQuery(userId, spaceId, from, to, filters);
 
     const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to, filters);
 
     return transactions.map(toTransactionView);
+  }
+
+  // the number of rows getAll() returns for the same query, initial balances included
+  async count(
+    userId: number,
+    spaceId: number,
+    from: Date,
+    to: Date,
+    filters: TransactionFilters = {},
+  ): Promise<TransactionCount> {
+    await this.checkHistoryQuery(userId, spaceId, from, to, filters);
+
+    return { count: await this.transactionQueriesService.countForAllWallets(spaceId, from, to, filters) };
   }
 
   async getLatest(userId: number, spaceId: number): Promise<TransactionView | null> {
@@ -249,6 +253,29 @@ export class TransactionsService {
 
       return true;
     });
+  }
+
+  // An archived category is a valid filter: its history is kept.
+  private async checkHistoryQuery(
+    userId: number,
+    spaceId: number,
+    from: Date,
+    to: Date,
+    filters: TransactionFilters,
+  ): Promise<void> {
+    if (from.getTime() > to.getTime()) {
+      throw new BadRequestException([{ field: 'from', error: 'from must not be after to' }]);
+    }
+
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    if (filters.categoryId !== undefined) {
+      await this.getUserCategory(spaceId, filters.categoryId);
+    }
+
+    if (filters.walletId !== undefined) {
+      await this.getActiveWallet(spaceId, filters.walletId);
+    }
   }
 
   private async getBalance(manager: EntityManager, walletId: number): Promise<bigint> {

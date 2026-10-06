@@ -796,4 +796,87 @@ describe('Transactions (e2e)', () => {
       }
     });
   });
+
+  describe('history list and count', () => {
+    it('orders equal timestamps by id and counts the rows the list returns, initial balance included', async () => {
+      const member = await createVerifiedMember(testApp, 'transactions-history');
+
+      try {
+        const categories = await api(member)
+          .get(`${base(member)}/categories`)
+          .expect(200);
+        const funded = await createWallet(member, '50');
+        const at = new Date(Date.now() - 60_000).toISOString();
+        for (let i = 0; i < 3; i++) {
+          await api(member)
+            .post(`${base(member)}/transactions`)
+            .send({
+              wallet_id: funded.wallet.id,
+              category_id: categories.body.expenses[0].id,
+              transaction_type: 'expense',
+              amount: '1',
+              timestamp: at,
+            })
+            .expect(201);
+        }
+        const query = { from: new Date(Date.now() - 3_600_000).toISOString(), to: new Date().toISOString() };
+
+        const list = await api(member)
+          .get(`${base(member)}/transactions`)
+          .query(query)
+          .expect(200);
+        const count = await api(member)
+          .get(`${base(member)}/transactions/count`)
+          .query(query)
+          .expect(200);
+        const expenses = await api(member)
+          .get(`${base(member)}/transactions/count`)
+          .query({ ...query, transaction_type: 'expense' })
+          .expect(200);
+
+        const sameInstant = list.body.filter((row: { timestamp: string }) => row.timestamp === at);
+        const ids = sameInstant.map((row: { id: string }) => row.id);
+        expect(ids).toEqual([...ids].sort().reverse());
+        expect(list.body.some((row: { kind: string }) => row.kind === 'initial_balance')).toBe(true);
+        expect(count.body).toEqual({ count: list.body.length });
+        expect(list.body).toHaveLength(4);
+        expect(expenses.body).toEqual({ count: 3 });
+
+        const document = createOpenApiDocument(testApp.app);
+        expect(schemaErrors(document, okResponseSchema(document, '/transactions/count'), count.body)).toEqual([]);
+      } finally {
+        await deleteUsers(testApp.dataSource, [member.userId]);
+      }
+    });
+
+    it('counts only the initial balance of a new wallet as one row, though Income is zero', async () => {
+      const member = await createVerifiedMember(testApp, 'transactions-only-initial');
+
+      try {
+        await createWallet(member, '10');
+
+        const count = await api(member)
+          .get(`${base(member)}/transactions/count`)
+          .expect(200);
+
+        expect(count.body).toEqual({ count: 1 });
+      } finally {
+        await deleteUsers(testApp.dataSource, [member.userId]);
+      }
+    });
+
+    it.each(['transactions', 'transactions/count'])('rejects from after to on %s', async (path) => {
+      const res = await api(owner)
+        .get(`${base(owner)}/${path}`)
+        .query({ from: '2026-09-02T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' })
+        .expect(400);
+
+      expect(res.body).toEqual(
+        expect.objectContaining({
+          code: 'VALIDATION_FAILED',
+          message: [{ field: 'from', error: 'from must not be after to' }],
+        }),
+      );
+    });
+  });
 });
