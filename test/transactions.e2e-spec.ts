@@ -2,6 +2,7 @@ import request from 'supertest';
 
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
+import { monthPeriodAt } from '@shared/utils';
 
 describe('Transactions (e2e)', () => {
   let testApp: TestApp;
@@ -877,6 +878,155 @@ describe('Transactions (e2e)', () => {
           message: [{ field: 'from', error: 'from must not be after to' }],
         }),
       );
+    });
+  });
+
+  describe('derived data after an edit', () => {
+    let member: Member;
+
+    beforeEach(async () => {
+      member = await createVerifiedMember(testApp, 'transactions-derived');
+    });
+
+    afterEach(async () => {
+      await deleteUsers(testApp.dataSource, [member.userId]);
+    });
+
+    async function expenseCategories(): Promise<{ id: number; transaction_count: number }[]> {
+      const res = await api(member)
+        .get(`${base(member)}/categories`)
+        .expect(200);
+      return res.body.expenses;
+    }
+
+    function addExpense(walletId: number, categoryId: number, amount: string, timestamp: string) {
+      return api(member)
+        .post(`${base(member)}/transactions`)
+        .send({ wallet_id: walletId, category_id: categoryId, transaction_type: 'expense', amount, timestamp })
+        .expect(201)
+        .then((res) => res.body.transaction as { id: string; version: number });
+    }
+
+    it('counts limits in the month of the requested zone and reports its bounds', async () => {
+      const [category] = await expenseCategories();
+      const { wallet } = await createWallet(member);
+      await api(member)
+        .post(`${base(member)}/limits`)
+        .send({ amount: '1000' })
+        .expect(201);
+      // the first instant of this month at UTC+14 is always past, and still
+      // the previous month at UTC-11 unless that zone's month has not turned yet
+      const east = monthPeriodAt(new Date(), 'Pacific/Kiritimati');
+      await addExpense(wallet.id, category.id, '10', east.from.toISOString());
+
+      const limitsIn = (timeZone: string) =>
+        api(member)
+          .get(`${base(member)}/limits`)
+          .query({ time_zone: timeZone })
+          .expect(200)
+          .then((res) => res.body);
+      const eastLimits = await limitsIn('Pacific/Kiritimati');
+      const westLimits = await limitsIn('Pacific/Pago_Pago');
+      const west = monthPeriodAt(new Date(), 'Pacific/Pago_Pago');
+
+      expect(eastLimits.period).toEqual({
+        time_zone: 'Pacific/Kiritimati',
+        start_date: east.start_date,
+        end_date: east.end_date,
+        from: east.from.toISOString(),
+        to: east.to.toISOString(),
+      });
+      expect(eastLimits.total.spent).toBe(10);
+      expect(westLimits.total.spent).toBe(east.from >= west.from && east.from <= west.to ? 10 : 0);
+    });
+
+    it('rejects a fixed offset as the limits zone', async () => {
+      const res = await api(member)
+        .get(`${base(member)}/limits`)
+        .query({ time_zone: '+03:00' })
+        .expect(400);
+
+      expect(res.body.message).toEqual([{ field: 'time_zone', error: 'time_zone must be an IANA time zone name' }]);
+    });
+
+    it('moves an edited expense across the month boundary in limits, statistics, history and counters', async () => {
+      const [first, second] = await expenseCategories();
+      const { wallet } = await createWallet(member, '100');
+      await api(member)
+        .post(`${base(member)}/limits`)
+        .send({ amount: '1000' })
+        .expect(201);
+      await api(member)
+        .post(`${base(member)}/limits`)
+        .send({ amount: '500', category_ids: [first.id] })
+        .expect(201);
+      const zone = 'Europe/Moscow';
+      const month = monthPeriodAt(new Date(), zone);
+      const created = await addExpense(wallet.id, first.id, '25', month.from.toISOString());
+      // the last millisecond of the previous month in Moscow
+      const previousMonthEnd = new Date(month.from.getTime() - 1).toISOString();
+
+      const snapshot = async () => {
+        const [limits, summary, history, count, categories, wallets] = await Promise.all([
+          api(member)
+            .get(`${base(member)}/limits`)
+            .query({ time_zone: zone })
+            .expect(200),
+          api(member)
+            .get(`${base(member)}/statistics/summary`)
+            .query({ period: 'month', time_zone: zone })
+            .expect(200),
+          api(member)
+            .get(`${base(member)}/transactions`)
+            .query({ from: month.from.toISOString(), to: month.to.toISOString(), transaction_type: 'expense' })
+            .expect(200),
+          api(member)
+            .get(`${base(member)}/transactions/count`)
+            .query({ from: month.from.toISOString(), to: month.to.toISOString(), transaction_type: 'expense' })
+            .expect(200),
+          expenseCategories(),
+          api(member)
+            .get(`${base(member)}/wallets`)
+            .expect(200),
+        ]);
+        const counter = (id: number) => categories.find((category) => category.id === id)?.transaction_count;
+        return {
+          total: limits.body.total.spent,
+          firstLimit: limits.body.categories[0].spent,
+          expense: summary.body.expense,
+          history: history.body.length,
+          count: count.body.count,
+          counters: [counter(first.id), counter(second.id)],
+          balance: wallets.body.wallets.find((entry: { wallet: { id: number } }) => entry.wallet.id === wallet.id)
+            .wallet.balance,
+        };
+      };
+
+      expect(await snapshot()).toEqual({
+        total: 25,
+        firstLimit: 25,
+        expense: { amount: '25.00', count: 1 },
+        history: 1,
+        count: 1,
+        counters: [1, 0],
+        balance: 75,
+      });
+
+      await api(member)
+        .patch(`${base(member)}/transactions/${created.id}`)
+        .set('If-Match', '"1"')
+        .send({ timestamp: previousMonthEnd, category_id: second.id, amount: '30' })
+        .expect(200);
+
+      expect(await snapshot()).toEqual({
+        total: 0,
+        firstLimit: 0,
+        expense: { amount: '0.00', count: 0 },
+        history: 0,
+        count: 0,
+        counters: [0, 1],
+        balance: 70,
+      });
     });
   });
 });

@@ -11,10 +11,10 @@ import {
   assertBelongsToSpace,
   assertFound,
   floorPercent,
-  getEndOfMonth,
-  getStartOfMonth,
   moneyToNumber,
+  monthPeriodAt,
   parseMoney,
+  serverTimeZone,
   withRelations,
 } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
@@ -52,17 +52,16 @@ export class LimitsService {
     return limits.map((limit) => withRelations(limit, 'categories'));
   }
 
-  async getSummary(userId: number, spaceId: number) {
+  // Spending of the current calendar month in the client's zone; without one,
+  // in the server's. The period tells the client which month was counted.
+  async getSummary(userId: number, spaceId: number, timeZone = serverTimeZone(), now = new Date()) {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
+    const period = monthPeriodAt(now, timeZone);
     const limits = await this.getAll(spaceId);
-    const categoryTotals = await this.transactionQueriesService.getExpensesByCategory(
-      spaceId,
-      getStartOfMonth(new Date()),
-      getEndOfMonth(new Date()),
-    );
+    const categoryTotals = await this.transactionQueriesService.getExpensesByCategory(spaceId, period.from, period.to);
 
-    return this.calculateSpending(limits, categoryTotals);
+    return { period, ...this.calculateSpending(limits, categoryTotals) };
   }
 
   async create(userId: number, spaceId: number, createLimit: CreateLimitDto): Promise<LimitWithCategories> {

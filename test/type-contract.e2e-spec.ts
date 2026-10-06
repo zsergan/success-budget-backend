@@ -869,7 +869,8 @@ describe('Boundary type contract (e2e)', () => {
       expect(keys(limit.body.categories[0])).toEqual(CATEGORY);
 
       const summary = await api().get(`${base()}/limits`).expect(200);
-      expect(keys(summary.body)).toEqual(['categories', 'over_allocation', 'total']);
+      expect(keys(summary.body)).toEqual(['categories', 'over_allocation', 'period', 'total']);
+      expect(keys(summary.body.period)).toEqual(['end_date', 'from', 'start_date', 'time_zone', 'to']);
       const view = summary.body.categories.find((item: { id: number }) => item.id === limit.body.id);
       expect(keys(view)).toEqual(['amount', 'categories', 'id', 'in_percent', 'name', 'spent']);
       expect(keys(view.categories[0])).toEqual(['color', 'icon', 'id', 'name']);
