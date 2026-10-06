@@ -402,7 +402,11 @@ describe('Boundary type contract (e2e)', () => {
         .send({ wallet_name: 'Period', initial_balance: '0', design: 'slate' })
         .expect(201);
       const periodWalletId = wallet.body.wallet.id;
-      const noonLocal = await createTransaction({ wallet_id: periodWalletId, timestamp: '2026-03-10T12:00:00' });
+      // local noon of the server, which offset-less query bounds are read in
+      const noonLocal = await createTransaction({
+        wallet_id: periodWalletId,
+        timestamp: new Date(2026, 2, 10, 12).toISOString(),
+      });
       const exactUtc = await createTransaction({ wallet_id: periodWalletId, timestamp: '2026-03-12T08:00:00.250Z' });
       expect(noonLocal.status).toBe(201);
       expect(exactUtc.status).toBe(201);
@@ -455,21 +459,28 @@ describe('Boundary type contract (e2e)', () => {
       expect(res.body.message).toEqual([{ field: 'to', error: 'to must be a valid ISO 8601 date' }]);
     });
 
-    it.each([null, 1700000000000, 'garbage', '2026-02-30', '2026-W03', '2099-01-01T00:00:00Z', '1969-12-31'])(
-      'rejects a transaction timestamp of %p without creating it',
-      async (timestamp) => {
-        const countTransactions = () =>
-          countRows(
-            'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
-            [spaceId],
-          );
-        const before = await countTransactions();
+    it.each([
+      null,
+      1700000000000,
+      'garbage',
+      '2026-02-30',
+      '2026-W03',
+      '2099-01-01T00:00:00Z',
+      '1969-12-31T00:00:00Z',
+      '2026-01-15',
+      '2026-01-15T10:00:00',
+    ])('rejects a transaction timestamp of %p without creating it', async (timestamp) => {
+      const countTransactions = () =>
+        countRows(
+          'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
+          [spaceId],
+        );
+      const before = await countTransactions();
 
-        const res = await createTransaction({ timestamp }).expect(400);
-        expectFieldError(res, 'timestamp');
-        expect(await countTransactions()).toBe(before);
-      },
-    );
+      const res = await createTransaction({ timestamp }).expect(400);
+      expectFieldError(res, 'timestamp');
+      expect(await countTransactions()).toBe(before);
+    });
   });
 
   describe('missing values', () => {

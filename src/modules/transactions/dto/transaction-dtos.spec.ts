@@ -39,6 +39,22 @@ describe('CreateTransactionDto', () => {
     expect(errors.amount).toEqual(['amount must be a non-negative decimal string with at most 2 decimal places']);
   });
 
+  it.each(['2026-01-15', '2026-01-15T10:00:00', '2026-01-15T10:00:00.000'])(
+    'refuses the timestamp %p without Z or an offset',
+    async (timestamp) => {
+      expect((await errorsOf(CreateTransactionDto, { ...valid, timestamp })).errors).toEqual({
+        timestamp: ['timestamp must be an ISO 8601 date-time with Z or a UTC offset'],
+      });
+    },
+  );
+
+  it.each(['2026-01-15T10:00:00Z', '2026-01-15T10:00:00.250+03:00', '2026-01-15T10:00:00-0530'])(
+    'accepts the instant %p',
+    async (timestamp) => {
+      expect((await errorsOf(CreateTransactionDto, { ...valid, timestamp })).errors).toEqual({});
+    },
+  );
+
   it('refuses a timestamp more than a minute ahead, accepts one within it', async () => {
     const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
 
@@ -74,6 +90,12 @@ describe('CreateTransactionDto', () => {
 describe('UpdateTransactionDto', () => {
   it('accepts an empty body', async () => {
     expect((await errorsOf(UpdateTransactionDto, {})).errors).toEqual({});
+  });
+
+  it('requires an instant for a timestamp', async () => {
+    expect((await errorsOf(UpdateTransactionDto, { timestamp: '2026-01-15' })).errors).toEqual({
+      timestamp: ['timestamp must be an ISO 8601 date-time with Z or a UTC offset'],
+    });
   });
 
   it('leaves the amount and timestamp rules for new values to the service', async () => {

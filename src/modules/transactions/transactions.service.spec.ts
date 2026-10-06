@@ -265,11 +265,11 @@ describe('TransactionsService', () => {
       await expect(service.create(userId, spaceId, dto())).rejects.toThrow(RangeError);
     });
 
-    it('stores a blank description as null and converts a date-only timestamp to local midnight', async () => {
-      await service.create(userId, spaceId, dto({ timestamp: '2026-01-15', description: '   ' }));
+    it('stores a blank description as null and the timestamp as the instant sent', async () => {
+      await service.create(userId, spaceId, dto({ timestamp: '2026-01-15T03:00:00+03:00', description: '   ' }));
 
       expect(transactionRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ description: null, timestamp: new Date(2026, 0, 15) }),
+        expect.objectContaining({ description: null, timestamp: new Date('2026-01-15T00:00:00.000Z') }),
       );
     });
   });

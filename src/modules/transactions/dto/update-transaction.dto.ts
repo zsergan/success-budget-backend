@@ -1,7 +1,7 @@
 import { IsNumber, IsEnum } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
-import { IsInTimestampRange, IsIsoDate } from '@shared/decorators/is-iso-date.decorator';
+import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
 import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 import { IsDescription } from './transaction-field.decorators';
@@ -27,7 +27,7 @@ export class UpdateTransactionDto {
   amount?: string;
 
   @IsOptionalNonNull()
-  @IsIsoDate()
+  @IsIsoInstant()
   @IsInTimestampRange()
   timestamp?: string;
 
