@@ -359,20 +359,45 @@ still returns its wallet and does not bump `version`.
 ### `DELETE /spaces/:spaceId/transactions/:transactionId`
 
 Deletes a regular transaction, also one on a deleted wallet or an archived
-category. `200` with the body `true`, as before.
+category. `200` with the body `true`, as before. The record is removed;
+there is no compensating "reverse" transaction.
 
-Headers, both optional:
+Headers:
 
-- `If-Match: "<version>"`: delete only if the record is still at this
-  version. The client sends it whenever it has the record (the details
-  screen; undo right after create has `version: 1` from the `POST` result).
-  Without it the delete is unconditional, which keeps clients that predate
-  this contract working.
-- `Idempotency-Key`: a repeat answers `200 true` instead of `404`.
+- `If-Match: "<version>"`, required: delete only if the record is still at
+  the version the client read. Without it the delete is refused with
+  `428 TRANSACTION_VERSION_REQUIRED`, so a delete never removes a version
+  the user has not seen.
+- `Idempotency-Key`, optional: a repeat answers `200 true` instead of `404`.
 
 Errors, in check order: `VALIDATION_FAILED` (`If-Match`, `Idempotency-Key`),
-`FORBIDDEN_SPACE`, `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_NOT_FOUND`,
-`TRANSACTION_IS_SYSTEM`, `TRANSACTION_VERSION_CONFLICT`.
+`TRANSACTION_VERSION_REQUIRED`, `FORBIDDEN_SPACE`, `IDEMPOTENCY_KEY_REUSED`,
+`TRANSACTION_NOT_FOUND`, `TRANSACTION_IS_SYSTEM`,
+`TRANSACTION_VERSION_CONFLICT`.
+
+| Result                    | Response                           | Client                                                   |
+| ------------------------- | ---------------------------------- | -------------------------------------------------------- |
+| Deleted                   | `200 true`                         | done                                                     |
+| Already gone              | `404 TRANSACTION_NOT_FOUND`        | done: deleted by an earlier attempt or by another member |
+| Changed since it was read | `409 TRANSACTION_VERSION_CONFLICT` | nothing deleted; offer to open the current details       |
+| Access lost               | `403 FORBIDDEN_SPACE`              | leave the space                                          |
+| Initial balance           | `400 TRANSACTION_IS_SYSTEM`        | not offered by the UI                                    |
+
+With an `Idempotency-Key`, a repeat of a delete that succeeded answers
+`200 true` again, so "already gone" then only means another member deleted
+it. A repeat still checks access first.
+
+**Undo of a create** is this same delete of the record the `POST` created,
+with `If-Match` set to `transaction.version` from the `POST` result (`1`).
+If another member, or another device, edited the record in between, undo
+gets `409` and deletes nothing; the client offers to open `GET /:id`
+instead of removing a version the user has not seen. Undo follows every
+rule of an ordinary delete.
+
+**Effects.** Deleting a record of a deleted wallet removes it from the
+history, statistics and limit spending. It changes no active wallet's
+balance, and `total_balance` only counts active wallets, so it is unchanged
+too.
 
 ## Retries and concurrency
 
@@ -439,7 +464,7 @@ from the same version exactly one applies.
 
 `If-Match` takes one version as a quoted entity tag: `"3"`; the bare `3` is
 also accepted. A list, `*` or a weak tag (`W/"3"`) is
-`400 VALIDATION_FAILED`. `PATCH` requires it, `DELETE` does not (see above).
+`400 VALIDATION_FAILED`. `PATCH` and `DELETE` require it.
 `GET` responses carry no `ETag` header: the client reads `version` from the
 body.
 
@@ -541,7 +566,7 @@ English display text and may change.
 | 404    | `TRANSACTION_NOT_FOUND`        | No such transaction in the space, or a malformed id                    |
 | 409    | `TRANSACTION_VERSION_CONFLICT` | `If-Match` differs from the stored version                             |
 | 409    | `IDEMPOTENCY_KEY_REUSED`       | The `Idempotency-Key` was used for a different request                 |
-| 428    | `TRANSACTION_VERSION_REQUIRED` | `PATCH` without `If-Match`                                             |
+| 428    | `TRANSACTION_VERSION_REQUIRED` | `PATCH` or `DELETE` without `If-Match`                                 |
 | 429    | `TOO_MANY_REQUESTS`            | Rate limit                                                             |
 
 Codes are the same on every endpoint of the API, not only on transactions:
@@ -561,8 +586,10 @@ contract ship:
 - **New (shipped):** `GET /transactions/:id`; `kind`, `version` and
   `category.is_archived` on every transaction read; `version` on the `POST`
   results' `transaction`; `code` on every error of the API; optional
-  `Idempotency-Key` on every write and optional `If-Match` on `DELETE`;
-  `PATCH /transactions/:id` with a required `If-Match`.
+  `Idempotency-Key` on every write; `PATCH /transactions/:id`.
+- **`If-Match` required on `DELETE` (shipped, breaking):** a delete or undo
+  without it is `428 TRANSACTION_VERSION_REQUIRED`. Undo sends the
+  `version` from the `POST` result.
 - **Changed (shipped):** a blank description (legacy `""`) reads as `null`.
 - **`POST` is stricter (shipped):** a zero amount, a timestamp more than a
   minute ahead, an archived category and a category of the other type are
