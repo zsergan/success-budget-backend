@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
@@ -119,8 +119,9 @@ export class SpacesService {
     });
   }
 
-  async getOne(spaceId: number): Promise<SpaceWithCurrency | null> {
-    const space = await this.spaceRepository.findOne({ where: { id: spaceId }, relations: { currency: true } });
+  async getOne(spaceId: number, manager?: EntityManager): Promise<SpaceWithCurrency | null> {
+    const repository = manager?.getRepository(Space) ?? this.spaceRepository;
+    const space = await repository.findOne({ where: { id: spaceId }, relations: { currency: true } });
 
     return space && withRelations(space, 'currency');
   }

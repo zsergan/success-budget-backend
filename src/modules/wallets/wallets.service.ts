@@ -14,10 +14,11 @@ import {
   lockRows,
   moneyToNumber,
   parseMoney,
+  readSnapshot,
   roundPercentToTenth,
   runWriteTransaction,
 } from '@shared/utils';
-import { SpacesService } from '@modules/spaces/spaces.service';
+import { SpacesService, type SpaceWithCurrency } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import {
   TransactionQueriesService,
@@ -61,24 +62,27 @@ export class WalletsService {
     return this.walletRepository.findOne({ where: { id: walletId } });
   }
 
-  async getAll(spaceId: number): Promise<Wallet[]> {
-    return await this.walletRepository
-      .createQueryBuilder('wallet')
-      .where({ space_id: spaceId, is_deleted: 0 })
-      .getMany();
+  async getAll(spaceId: number, manager?: EntityManager): Promise<Wallet[]> {
+    const repository = manager?.getRepository(Wallet) ?? this.walletRepository;
+
+    return await repository.createQueryBuilder('wallet').where({ space_id: spaceId, is_deleted: 0 }).getMany();
   }
 
   async getOverview(userId: number, spaceId: number, from: Date, to: Date): Promise<WalletsOverview> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    const wallets = await this.getAll(spaceId);
-    const walletIds = wallets.map((wallet) => wallet.id);
-    const [periodTotals, balances] = await Promise.all([
-      this.transactionQueriesService.getPeriodTotals(walletIds, from, to),
-      this.transactionQueriesService.getBalances(walletIds),
-    ]);
+    // the wallets, balances and period totals of one response come from one
+    // snapshot, so a balance never includes a transaction the totals miss
+    return readSnapshot(this.dataSource, async (manager) => {
+      const wallets = await this.getAll(spaceId, manager);
+      const walletIds = wallets.map((wallet) => wallet.id);
+      const periodTotals = await this.transactionQueriesService.getPeriodTotals(walletIds, from, to, manager);
+      const balances = await this.transactionQueriesService.getBalances(walletIds, manager);
+      const space = await this.spacesService.getOne(spaceId, manager);
+      assertFound(space);
 
-    return this.buildOverview(spaceId, wallets, periodTotals, balances);
+      return buildOverview(space, wallets, periodTotals, balances);
+    });
   }
 
   async create(userId: number, spaceId: number, createWalletDto: CreateWalletDto): Promise<CreateWalletResult> {
@@ -157,38 +161,35 @@ export class WalletsService {
 
     return wallet;
   }
+}
 
-  private async buildOverview(
-    spaceId: number,
-    walletRows: Wallet[],
-    periodTotals: Map<number, WalletPeriodTotals>,
-    balances: Map<number, bigint>,
-  ): Promise<WalletsOverview> {
-    const space = await this.spacesService.getOne(spaceId);
-    assertFound(space);
+function buildOverview(
+  space: SpaceWithCurrency,
+  walletRows: Wallet[],
+  periodTotals: Map<number, WalletPeriodTotals>,
+  balances: Map<number, bigint>,
+): WalletsOverview {
+  let totalBalance = 0n;
+  let net = 0n;
 
-    let totalBalance = 0n;
-    let net = 0n;
+  const wallets = walletRows.map((row): WalletSummary => {
+    const balance = balances.get(row.id) ?? 0n;
+    const { income, spend } = periodTotals.get(row.id) ?? { income: 0n, spend: 0n };
 
-    const wallets = walletRows.map((row): WalletSummary => {
-      const balance = balances.get(row.id) ?? 0n;
-      const { income, spend } = periodTotals.get(row.id) ?? { income: 0n, spend: 0n };
-
-      totalBalance += balance;
-      net += income - spend;
-
-      return {
-        wallet: Object.assign(row, { balance: moneyToNumber(balance) }),
-        total_spend: moneyToNumber(spend),
-        total_income: moneyToNumber(income),
-      };
-    });
+    totalBalance += balance;
+    net += income - spend;
 
     return {
-      total_balance: moneyToNumber(totalBalance),
-      total_balance_currency: space.currency.code,
-      delta_percent: roundPercentToTenth(net, totalBalance - net),
-      wallets,
+      wallet: Object.assign(row, { balance: moneyToNumber(balance) }),
+      total_spend: moneyToNumber(spend),
+      total_income: moneyToNumber(income),
     };
-  }
+  });
+
+  return {
+    total_balance: moneyToNumber(totalBalance),
+    total_balance_currency: space.currency.code,
+    delta_percent: roundPercentToTenth(net, totalBalance - net),
+    wallets,
+  };
 }

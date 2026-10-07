@@ -23,7 +23,7 @@ describe('WalletsService', () => {
   let spacesService: jest.Mocked<SpacesService>;
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
   let transactionQueriesService: jest.Mocked<TransactionQueriesService>;
-  let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
+  let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock; createQueryBuilder: jest.Mock };
   let transactionRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let walletLock: { setLock: jest.Mock; whereInIds: jest.Mock; orderBy: jest.Mock; getMany: jest.Mock };
   let systemCategoryLock: { setLock: jest.Mock; where: jest.Mock; getOneOrFail: jest.Mock };
@@ -45,6 +45,7 @@ describe('WalletsService', () => {
       create: jest.fn((entity) => entity),
       save: jest.fn((entity) => entity),
       update: jest.fn(),
+      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
     };
     transactionRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn((entity) => ({ ...entity })) };
     walletLock = {
@@ -285,6 +286,16 @@ describe('WalletsService', () => {
       expect(transactionQueriesService.getBalances).not.toHaveBeenCalled();
     });
 
+    it('reads the wallets, totals, balances and space in one REPEATABLE READ snapshot', async () => {
+      await service.getOverview(userId, spaceId, from, to);
+
+      expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
+      expect(walletRepositoryInTx.createQueryBuilder).toHaveBeenCalledWith('wallet');
+      expect(repository.createQueryBuilder).not.toHaveBeenCalled();
+      const membership = spaceAccessService.assertMembership.mock.invocationCallOrder[0];
+      expect(membership).toBeLessThan(dataSource.transaction.mock.invocationCallOrder[0]);
+    });
+
     it('sums wallet balances and the period delta from the aggregated maps', async () => {
       queryBuilder.getMany.mockResolvedValue([buildWallet({ id: 1 }), buildWallet({ id: 2 })]);
       transactionQueriesService.getPeriodTotals.mockResolvedValue(
@@ -304,9 +315,9 @@ describe('WalletsService', () => {
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-      expect(transactionQueriesService.getPeriodTotals).toHaveBeenCalledWith([1, 2], from, to);
-      expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1, 2]);
-      expect(spacesService.getOne).toHaveBeenCalledWith(spaceId);
+      expect(transactionQueriesService.getPeriodTotals).toHaveBeenCalledWith([1, 2], from, to, manager);
+      expect(transactionQueriesService.getBalances).toHaveBeenCalledWith([1, 2], manager);
+      expect(spacesService.getOne).toHaveBeenCalledWith(spaceId, manager);
       // total_balance = 1500, net = 200 - 50 = 150, base = 1500 - 150 = 1350
       expect(result.total_balance).toBe(1500);
       expect(result.total_balance_currency).toBe('USD');

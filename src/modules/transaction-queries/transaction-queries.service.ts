@@ -113,14 +113,19 @@ export class TransactionQueriesService {
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
   // income/spend per wallet, grouped in SQL. Initial balances are not income
   // here, as in statistics; they only count in the balance (getBalances()).
-  async getPeriodTotals(walletIds: number[], from: Date, to: Date): Promise<Map<number, WalletPeriodTotals>> {
+  async getPeriodTotals(
+    walletIds: number[],
+    from: Date,
+    to: Date,
+    manager?: EntityManager,
+  ): Promise<Map<number, WalletPeriodTotals>> {
     const totals = new Map<number, WalletPeriodTotals>(walletIds.map((id) => [id, { income: 0n, spend: 0n }]));
 
     if (walletIds.length === 0) {
       return totals;
     }
 
-    const rows = await this.transactionRepository
+    const rows = await this.repository(manager)
       .createQueryBuilder('transaction')
       .innerJoin('transaction.category', 'category')
       .select('transaction.wallet_id', 'wallet_id')
@@ -147,8 +152,13 @@ export class TransactionQueriesService {
   // scope by space_id (still includes deleted-wallet history, since limits
   // track space spend, not per-wallet); no wallet/category entities loaded.
   // Sums are in cents.
-  async getExpensesByCategory(spaceId: number, from: Date, to: Date): Promise<Map<number, bigint>> {
-    const rows = await this.transactionRepository
+  async getExpensesByCategory(
+    spaceId: number,
+    from: Date,
+    to: Date,
+    manager?: EntityManager,
+  ): Promise<Map<number, bigint>> {
+    const rows = await this.repository(manager)
       .createQueryBuilder('transaction')
       .innerJoin('transaction.wallet', 'wallet')
       .select('transaction.category_id', 'category_id')
