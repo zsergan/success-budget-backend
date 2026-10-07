@@ -558,6 +558,10 @@ instead.
 
 Every derived figure is computed from history at read time, so a create,
 edit or delete is reflected by the next read; nothing stored is patched.
+`GET /wallets` reads the wallets, their balances and period totals, and
+`GET /limits` reads the limits and their spending, each in one database
+snapshot: a write committed during the request is in none of its figures or
+in all of them, never in a balance but not in the totals.
 
 | Figure                                          | Initial balance | Regular transactions                              |
 | ----------------------------------------------- | --------------- | ------------------------------------------------- |
