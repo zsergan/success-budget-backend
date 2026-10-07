@@ -1,6 +1,7 @@
 import request from 'supertest';
 
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { IdempotencyKeyPurger } from '@modules/idempotency/idempotency-key-purger';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
@@ -8,6 +9,7 @@ import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency'
 const LOCK_WALLET = '%FROM `wallets` `row`%FOR UPDATE%';
 const LOCK_TRANSACTION = '%FROM `transactions` `row`%FOR UPDATE%';
 const CLAIM_KEY = 'INSERT INTO `idempotency_keys`%';
+const REMOVE_MEMBER = 'DELETE FROM `space_members`%';
 
 describe('Transaction writes (e2e)', () => {
   let testApp: TestApp;
@@ -418,6 +420,122 @@ describe('Transaction writes (e2e)', () => {
         { id: otherId, balance: -1, is_deleted: false },
         { id: s.walletId, balance: -2, is_deleted: false },
       ]);
+    });
+
+    it('refuses a delete of the version an in-flight edit replaces', async () => {
+      const s = await setup();
+      const created = await api(s.member)
+        .post(`${base(s.member)}/transactions`)
+        .send(expense(s))
+        .expect(201);
+      const url = `${base(s.member)}/transactions/${created.body.transaction.id}`;
+      const checkpoint = pauseAfterFirstCall(queries(), 'getOneInSpace', insideWrite);
+
+      const [edited, deleted] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        LOCK_TRANSACTION,
+        () => api(s.member).patch(url).set('If-Match', '"1"').send({ amount: '20' }),
+        () => api(s.member).delete(url).set('If-Match', '"1"'),
+      );
+
+      expect(edited.status).toBe(200);
+      expect(deleted.status).toBe(409);
+      expect(deleted.body.code).toBe('TRANSACTION_VERSION_CONFLICT');
+      const read = await api(s.member).get(url).expect(200);
+      expect(read.body).toEqual(expect.objectContaining({ amount: '20.00', version: 2 }));
+    });
+
+    it('makes deleting a wallet wait for a move onto it, so the moved record stays on it', async () => {
+      const s = await setup();
+      const target = await api(s.member)
+        .post(`${base(s.member)}/wallets`)
+        .send({ wallet_name: 'Target', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const targetId = target.body.wallet.id as number;
+      const created = await api(s.member)
+        .post(`${base(s.member)}/transactions`)
+        .send(expense(s, '3.00'))
+        .expect(201);
+      const checkpoint = pauseAfterFirstCall(queries(), 'getBalances', insideWrite);
+
+      const [moved, deleted] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        LOCK_WALLET,
+        () =>
+          api(s.member)
+            .patch(`${base(s.member)}/transactions/${created.body.transaction.id}`)
+            .set('If-Match', '"1"')
+            .send({ wallet_id: targetId }),
+        () => api(s.member).delete(`${base(s.member)}/wallets/${targetId}`),
+      );
+
+      expect(moved.status).toBe(200);
+      expect(moved.body.wallets).toEqual([
+        { id: s.walletId, balance: 0, is_deleted: false },
+        { id: targetId, balance: -3, is_deleted: false },
+      ]);
+      expect(deleted.status).toBe(200);
+      const read = await api(s.member)
+        .get(`${base(s.member)}/transactions/${created.body.transaction.id}`)
+        .expect(200);
+      expect(read.body.wallet).toBeNull();
+    });
+  });
+  describe('access revocation', () => {
+    async function withGuest(): Promise<Setup & { guest: Member }> {
+      const owner = await setup();
+      const guest = await createVerifiedMember(testApp, 'tx-writes-guest');
+      userIds.push(guest.userId);
+      await testApp.dataSource.query("INSERT INTO space_members (space_id, user_id, role) VALUES (?, ?, 'member')", [
+        owner.member.spaceId,
+        guest.userId,
+      ]);
+
+      return { ...owner, guest };
+    }
+
+    const removeGuest = (s: Setup & { guest: Member }) =>
+      api(s.member).delete(`${base(s.member)}/members/${s.guest.userId}`);
+
+    it("makes a member removal wait for the member's in-flight create, then refuses the next one", async () => {
+      const s = await withGuest();
+      const checkpoint = pauseAfterFirstCall(testApp.app.get(SpaceAccessService), 'lockSpace');
+
+      const [created, removed] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        REMOVE_MEMBER,
+        () => createWithKey(s.guest, 'in-flight', expense(s), s.member.spaceId),
+        () => removeGuest(s),
+      );
+
+      expect(created.status).toBe(201);
+      expect(removed.status).toBe(200);
+      const after = await createWithKey(s.guest, 'after-removal', expense(s), s.member.spaceId).expect(403);
+      expect(after.body.code).toBe('FORBIDDEN_SPACE');
+      expect(await transactionCount(s.walletId)).toBe(1);
+    });
+
+    it("makes a member removal wait for the member's in-flight delete", async () => {
+      const s = await withGuest();
+      const created = await createWithKey(s.guest, 'to-delete', expense(s), s.member.spaceId).expect(201);
+      const checkpoint = pauseAfterFirstCall(testApp.app.get(SpaceAccessService), 'lockSpace');
+
+      const [deleted, removed] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        REMOVE_MEMBER,
+        () =>
+          api(s.guest)
+            .delete(`${base(s.guest, s.member.spaceId)}/transactions/${created.body.transaction.id}`)
+            .set('If-Match', '"1"'),
+        () => removeGuest(s),
+      );
+
+      expect([deleted.status, removed.status]).toEqual([200, 200]);
+      expect(await transactionCount(s.walletId)).toBe(0);
     });
   });
 });
