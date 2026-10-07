@@ -135,7 +135,12 @@ Migrations live in `src/migrations/` and are always run as their own
 explicit step, in this order: **database up → migrations → app start**. The
 app's own `TypeOrmModule` config (`src/config/ormconfig.ts`) sets
 `migrationsRun: false` unconditionally - it never touches the schema itself,
-in any environment, including production.
+in any environment, including production. It does refuse to start while a
+migration of its build has not run (`src/database/schema-check.ts`), so a
+skipped migration step fails on boot; `npm run schema:check` (`:prod`
+variant also available) runs the same check on its own. Adding a migration
+also means updating `REQUIRED_MIGRATION` there - a unit test fails until it
+names the newest migration.
 
 ```bash
 # check what's pending, without running anything
