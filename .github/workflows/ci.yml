@@ -151,6 +151,28 @@ jobs:
           mysql -uroot -pchange-me -e
           "SET GLOBAL sql_mode = CONCAT(@@GLOBAL.sql_mode, ',ANSI_QUOTES')"
       - run: docker build -t success-budget-backend:ci .
+      - name: The image contains every migration of the source tree
+        run: |
+          expected=$(ls src/migrations/*.ts | xargs -n1 basename | sed 's/\.ts$//' | sort)
+          actual=$(docker run --rm success-budget-backend:ci sh -c 'ls dist/migrations/*.js' | xargs -n1 basename | sed 's/\.js$//' | sort)
+          diff <(echo "$expected") <(echo "$actual") || {
+            echo "dist/migrations in the image differs from src/migrations" >&2
+            exit 1
+          }
+      - name: The app refuses to start before the migrations ran
+        run: |
+          set +e
+          output=$(docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PORT -e NODE_ENV=production \
+            success-budget-backend:ci 2>&1)
+          status=$?
+          set -e
+          echo "$output" | tail -20
+          if [ "$status" = "0" ] || ! echo "$output" | grep -q "run the migrations first"; then
+            echo "The app started on an unmigrated database instead of refusing to" >&2
+            exit 1
+          fi
       - name: Run migrations against the test database
         run: |
           docker run --rm --network host \
@@ -168,6 +190,12 @@ jobs:
             echo "Second migration:run applied something - migrations are not idempotent" >&2
             exit 1
           }
+      - name: The schema matches the build
+        run: |
+          docker run --rm --network host \
+            -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE \
+            success-budget-backend:ci \
+            node dist/database/check-schema.js
       - name: Verify reference data landed
         run: |
           docker run --rm --network host \
