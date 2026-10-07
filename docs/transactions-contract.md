@@ -37,10 +37,13 @@ schemas in `dto/transaction-responses.ts`, the write unit in
 `src/shared/api.exception.ts` and `http-exception.filter.ts`. Tests:
 `transaction-view.spec.ts`, `transactions.service.spec.ts`,
 `idempotency.service.spec.ts`, `test/transactions.e2e-spec.ts`,
-`test/transaction-writes.e2e-spec.ts` (repeats and concurrent writes against
+`test/transaction-writes.e2e-spec.ts` (repeats, concurrent writes and access revocation against
 MySQL), `test/transaction-operations.e2e-spec.ts` (recovering a create after
 the key expired), `test/transaction-lifecycle.e2e-spec.ts` (the full lifecycle with
-every derived figure after each step, DST, and the OpenAPI document) and the response shapes in `test/type-contract.e2e-spec.ts`; the e2e
+every derived figure after each step, DST, and the OpenAPI document),
+`test/api-contract.e2e-spec.ts` (`PATCH` as the edit, required versions,
+the maximum amount on every money field, the monthly total limit) and the
+response shapes in `test/type-contract.e2e-spec.ts`; the e2e
 tests check the list, latest and details responses against their OpenAPI
 schemas.
 
@@ -927,11 +930,14 @@ GET /api/v1/spaces/1/transactions/count?from=2026-09-30T21:00:00.000Z&to=2026-10
    - `1790300000000-CreateIdempotencyKeys`: the `idempotency_keys` table;
    - `1790400000000-CreateTransactionOperations`: the
      `transaction_operations` table (rows removed with their space).
-2. Deploy the application.
+2. Check the schema (`node dist/database/check-schema.js`).
+3. Deploy the application.
 
-The migrations only add a column and tables, so the application version
-before this contract keeps working on the migrated schema; the new
-application needs both. Rolling back the application does not need a
+The new application refuses to start until every migration of its build has
+run (see [`deployment.md`](deployment.md#schema-check)), so it is never
+released on the old schema. The migrations only add a column and tables, so
+the application version before this contract keeps working on the migrated
+schema and starts with a warning about the migrations it does not know. Rolling back the application does not need a
 schema rollback. `migration:revert` drops the tables, then the column.
 No data is rewritten: legacy zero amounts, future timestamps, `""`
 descriptions and type/category mismatches stay as they are (see
