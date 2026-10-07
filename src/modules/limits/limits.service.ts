@@ -14,6 +14,7 @@ import {
   moneyToNumber,
   monthPeriodAt,
   parseMoney,
+  readSnapshot,
   serverTimeZone,
   withRelations,
 } from '@shared/utils';
@@ -42,8 +43,9 @@ export class LimitsService {
     return limit && withRelations(limit, 'categories');
   }
 
-  async getAll(spaceId: number): Promise<LimitWithCategories[]> {
-    const limits = await this.limitRepository
+  async getAll(spaceId: number, manager?: EntityManager): Promise<LimitWithCategories[]> {
+    const repository = manager?.getRepository(Limit) ?? this.limitRepository;
+    const limits = await repository
       .createQueryBuilder('limit')
       .where('limit.space_id = :spaceId', { spaceId })
       .leftJoinAndSelect('limit.categories', 'categories')
@@ -58,8 +60,11 @@ export class LimitsService {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
     const period = monthPeriodAt(now, timeZone);
-    const limits = await this.getAll(spaceId);
-    const categoryTotals = await this.transactionQueriesService.getExpensesByCategory(spaceId, period.from, period.to);
+    // the limits and the spending they are compared with come from one snapshot
+    const [limits, categoryTotals] = await readSnapshot(this.dataSource, async (manager) => [
+      await this.getAll(spaceId, manager),
+      await this.transactionQueriesService.getExpensesByCategory(spaceId, period.from, period.to, manager),
+    ]);
 
     return { period, ...this.calculateSpending(limits, categoryTotals) };
   }

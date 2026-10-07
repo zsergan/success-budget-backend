@@ -83,7 +83,9 @@ describe('LimitsService', () => {
     repository = module.get(getRepositoryToken(Limit));
     manager = { getRepository: jest.fn().mockReturnValue(repository) };
     dataSource = module.get(DataSource);
-    dataSource.transaction.mockImplementation((callback: (m: typeof manager) => unknown) => callback(manager));
+    dataSource.transaction.mockImplementation((...args: unknown[]) =>
+      (args[args.length - 1] as (m: typeof manager) => unknown)(manager),
+    );
   });
 
   describe('transaction boundary', () => {
@@ -340,8 +342,17 @@ describe('LimitsService', () => {
         spaceId,
         expect.any(Date),
         expect.any(Date),
+        manager,
       );
       expect(result.total).toMatchObject({ id: 1, spent: 30, in_percent: 30 });
+    });
+
+    it('getSummary reads the limits and their spending in one REPEATABLE READ snapshot', async () => {
+      await service.getSummary(userId, spaceId);
+
+      expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
+      expect(manager.getRepository).toHaveBeenCalledWith(Limit);
+      expect(spaceAccessService.lockSpace).not.toHaveBeenCalled();
     });
 
     it('getSummary counts the current month of the given zone and reports it', async () => {
@@ -363,6 +374,7 @@ describe('LimitsService', () => {
         spaceId,
         result.period.from,
         result.period.to,
+        manager,
       );
     });
 
