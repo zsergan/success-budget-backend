@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import { Transaction } from '@entities/transaction.entity';
@@ -8,7 +8,15 @@ import { Category } from '@entities/category.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
-import { assertBelongsToSpace, assertFound, moneyToNumber, parseMoney, roundPercentToTenth } from '@shared/utils';
+import {
+  assertBelongsToSpace,
+  assertFound,
+  lockRows,
+  moneyToNumber,
+  parseMoney,
+  roundPercentToTenth,
+  runWriteTransaction,
+} from '@shared/utils';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import {
@@ -74,9 +82,7 @@ export class WalletsService {
   }
 
   async create(userId: number, spaceId: number, createWalletDto: CreateWalletDto): Promise<CreateWalletResult> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-
-    return this.dataSource.transaction(async (manager) => {
+    return this.write(userId, spaceId, async (manager) => {
       const walletRepository = manager.getRepository(Wallet);
       const wallet = await walletRepository.save(
         walletRepository.create({
@@ -93,8 +99,10 @@ export class WalletsService {
       }
 
       const systemCategory = await manager
-        .getRepository(Category)
-        .findOneOrFail({ where: { space_id: spaceId, is_system: 1 } });
+        .createQueryBuilder(Category, 'category')
+        .setLock('pessimistic_read')
+        .where('category.space_id = :spaceId AND category.is_system = 1', { spaceId })
+        .getOneOrFail();
 
       const transactionRepository = manager.getRepository(Transaction);
       const saved = await transactionRepository.save(
@@ -118,21 +126,33 @@ export class WalletsService {
   }
 
   async update(userId: number, spaceId: number, walletId: number, updateWalletDto: UpdateWalletDto): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.getSpaceWallet(spaceId, walletId);
-
-    await this.walletRepository.update({ id: walletId }, updateWalletDto);
+    await this.write(userId, spaceId, async (manager) => {
+      await this.lockSpaceWallet(manager, spaceId, walletId);
+      await manager.getRepository(Wallet).update({ id: walletId }, updateWalletDto);
+    });
   }
 
   async delete(userId: number, spaceId: number, walletId: number): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.getSpaceWallet(spaceId, walletId);
-
-    await this.walletRepository.update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
+    await this.write(userId, spaceId, async (manager) => {
+      await this.lockSpaceWallet(manager, spaceId, walletId);
+      await manager.getRepository(Wallet).update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
+    });
   }
 
-  private async getSpaceWallet(spaceId: number, walletId: number): Promise<Wallet> {
-    const wallet = await this.getOne(walletId);
+  // Locks in the order of transaction writes (TransactionsService.write()):
+  // member, space, wallet, categories. The member row stays locked until
+  // commit, so access cannot be revoked between the check and the write.
+  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return runWriteTransaction(this.dataSource, async (manager) => {
+      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager, 'shared');
+
+      return work(manager);
+    });
+  }
+
+  private async lockSpaceWallet(manager: EntityManager, spaceId: number, walletId: number): Promise<Wallet> {
+    const [wallet] = await lockRows(manager, Wallet, [walletId], 'exclusive');
     assertBelongsToSpace(wallet, spaceId, 'FORBIDDEN_WALLET');
 
     return wallet;

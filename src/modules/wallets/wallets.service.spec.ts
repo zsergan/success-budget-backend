@@ -23,9 +23,11 @@ describe('WalletsService', () => {
   let spacesService: jest.Mocked<SpacesService>;
   let spaceAccessService: jest.Mocked<SpaceAccessService>;
   let transactionQueriesService: jest.Mocked<TransactionQueriesService>;
-  let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
-  let categoryRepositoryInTx: { findOneOrFail: jest.Mock };
+  let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
   let transactionRepositoryInTx: { create: jest.Mock; save: jest.Mock };
+  let walletLock: { setLock: jest.Mock; whereInIds: jest.Mock; orderBy: jest.Mock; getMany: jest.Mock };
+  let systemCategoryLock: { setLock: jest.Mock; where: jest.Mock; getOneOrFail: jest.Mock };
+  let manager: { getRepository: jest.Mock; createQueryBuilder: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   const userId = 1;
@@ -39,18 +41,36 @@ describe('WalletsService', () => {
       getMany: jest.fn().mockResolvedValue([]),
     };
 
-    walletRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn((entity) => entity) };
-    categoryRepositoryInTx = { findOneOrFail: jest.fn() };
+    walletRepositoryInTx = {
+      create: jest.fn((entity) => entity),
+      save: jest.fn((entity) => entity),
+      update: jest.fn(),
+    };
     transactionRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn((entity) => ({ ...entity })) };
-    const manager = {
+    walletLock = {
+      setLock: jest.fn().mockReturnThis(),
+      whereInIds: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([buildWallet({ id: 1, space_id: spaceId })]),
+    };
+    systemCategoryLock = {
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOneOrFail: jest.fn(),
+    };
+    manager = {
       getRepository: jest.fn((entity) => {
         if (entity === Wallet) return walletRepositoryInTx;
-        if (entity === Category) return categoryRepositoryInTx;
         if (entity === Transaction) return transactionRepositoryInTx;
         throw new Error(`Unexpected entity: ${entity}`);
       }),
+      createQueryBuilder: jest.fn((entity) => {
+        if (entity === Wallet) return walletLock;
+        if (entity === Category) return systemCategoryLock;
+        throw new Error(`Unexpected entity: ${entity}`);
+      }),
     };
-    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    dataSource = { transaction: jest.fn((_isolation, callback) => callback(manager)) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -70,6 +90,8 @@ describe('WalletsService', () => {
           provide: SpaceAccessService,
           useValue: {
             assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ space_id: spaceId, user_id: userId })),
+            lockMembership: jest.fn().mockResolvedValue(buildSpaceMember({ space_id: spaceId, user_id: userId })),
+            lockSpace: jest.fn(),
           },
         },
         {
@@ -115,13 +137,16 @@ describe('WalletsService', () => {
   });
 
   describe('create', () => {
-    it('rejects a non-member before creating anything', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+    it('checks membership under its lock, in the write transaction, before creating anything', async () => {
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace);
 
       await expect(
         service.create(userId, 5, { wallet_name: 'Cash', initial_balance: '0', design: AppColor.SLATE }),
       ).rejects.toMatchObject(forbiddenSpace);
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledWith('READ COMMITTED', expect.any(Function));
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(5, userId, manager);
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+      expect(walletRepositoryInTx.save).not.toHaveBeenCalled();
     });
 
     it('creates the wallet with no starting transaction when initial_balance is 0', async () => {
@@ -129,14 +154,14 @@ describe('WalletsService', () => {
 
       const result = await service.create(userId, 5, dto);
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(5, userId);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(5, manager, 'shared');
       // the create() mock argument is asserted after the call: it's the
       // same object the service later mutates in place to set balance
       expect(walletRepositoryInTx.create).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 5, wallet_name: 'Cash', design: 'slate' }),
       );
-      expect(categoryRepositoryInTx.findOneOrFail).not.toHaveBeenCalled();
+      expect(systemCategoryLock.getOneOrFail).not.toHaveBeenCalled();
       expect(transactionRepositoryInTx.create).not.toHaveBeenCalled();
       expect(result).toEqual({ wallet: expect.objectContaining({ balance: 0 }), transaction: null });
     });
@@ -144,11 +169,14 @@ describe('WalletsService', () => {
     it('records a starting-balance transaction against the space system category when initial_balance > 0', async () => {
       const dto: CreateWalletDto = { wallet_name: 'Cash', initial_balance: '100.00', design: AppColor.SLATE };
       walletRepositoryInTx.save.mockResolvedValue(buildWallet({ id: 7, space_id: 5 }));
-      categoryRepositoryInTx.findOneOrFail.mockResolvedValue(buildCategory({ id: 3, space_id: 5, is_system: 1 }));
+      systemCategoryLock.getOneOrFail.mockResolvedValue(buildCategory({ id: 3, space_id: 5, is_system: 1 }));
 
       const result = await service.create(userId, 5, dto);
 
-      expect(categoryRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { space_id: 5, is_system: 1 } });
+      expect(systemCategoryLock.setLock).toHaveBeenCalledWith('pessimistic_read');
+      expect(systemCategoryLock.where).toHaveBeenCalledWith('category.space_id = :spaceId AND category.is_system = 1', {
+        spaceId: 5,
+      });
       expect(transactionRepositoryInTx.create).toHaveBeenCalledWith({
         wallet_id: 7,
         category_id: 3,
@@ -159,65 +187,83 @@ describe('WalletsService', () => {
       expect(result.wallet).toEqual(expect.objectContaining({ id: 7, balance: 100 }));
       expect(result.transaction).toEqual(expect.objectContaining({ amount: 100 }));
     });
+
+    it('locks member, space, the new wallet and the system category in the transaction write order', async () => {
+      const dto: CreateWalletDto = { wallet_name: 'Cash', initial_balance: '100.00', design: AppColor.SLATE };
+      systemCategoryLock.getOneOrFail.mockResolvedValue(buildCategory({ id: 3, space_id: 5, is_system: 1 }));
+
+      await service.create(userId, 5, dto);
+
+      const order = [
+        spaceAccessService.lockMembership,
+        spaceAccessService.lockSpace,
+        walletRepositoryInTx.save,
+        systemCategoryLock.getOneOrFail,
+        transactionRepositoryInTx.save,
+      ].map((mock) => mock.mock.invocationCallOrder[0]);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+    });
   });
 
-  describe('update', () => {
-    it('rejects a non-member without loading the wallet', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+  describe.each([
+    ['update', (walletId: number) => service.update(userId, spaceId, walletId, { wallet_name: 'Renamed' })],
+    ['delete', (walletId: number) => service.delete(userId, spaceId, walletId)],
+  ])('%s', (_, run) => {
+    it('rejects a non-member under the member lock without locking the wallet', async () => {
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace);
 
-      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(forbiddenSpace);
-      expect(repository.findOne).not.toHaveBeenCalled();
-      expect(repository.update).not.toHaveBeenCalled();
+      await expect(run(1)).rejects.toMatchObject(forbiddenSpace);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(spaceId, userId, manager);
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+      expect(walletLock.getMany).not.toHaveBeenCalled();
+      expect(walletRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
     it('rejects a wallet that belongs to a different space', async () => {
-      repository.findOne.mockResolvedValue(buildWallet({ id: 1, space_id: 20 }));
+      walletLock.getMany.mockResolvedValue([buildWallet({ id: 1, space_id: 20 })]);
 
-      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(forbiddenWallet);
-      expect(repository.update).not.toHaveBeenCalled();
+      await expect(run(1)).rejects.toMatchObject(forbiddenWallet);
+      expect(walletRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
     it('rejects a wallet that does not exist', async () => {
-      repository.findOne.mockResolvedValue(null);
+      walletLock.getMany.mockResolvedValue([]);
 
-      await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(forbiddenWallet);
-      expect(repository.update).not.toHaveBeenCalled();
+      await expect(run(1)).rejects.toMatchObject(forbiddenWallet);
+      expect(walletRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
-    it('updates a wallet of the space', async () => {
-      repository.findOne.mockResolvedValue(buildWallet({ id: 1, space_id: spaceId }));
+    it('locks member, space and then the wallet row exclusively before writing', async () => {
+      await run(1);
 
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager, 'shared');
+      expect(walletLock.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(walletLock.whereInIds).toHaveBeenCalledWith([1]);
+      const order = [
+        spaceAccessService.lockMembership,
+        spaceAccessService.lockSpace,
+        walletLock.getMany,
+        walletRepositoryInTx.update,
+      ].map((mock) => mock.mock.invocationCallOrder[0]);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+    });
+  });
+
+  describe('update', () => {
+    it('renames a wallet of the space', async () => {
       await service.update(userId, spaceId, 1, { wallet_name: 'Renamed' });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-      expect(repository.update).toHaveBeenCalledWith({ id: 1 }, { wallet_name: 'Renamed' });
+      expect(walletRepositoryInTx.update).toHaveBeenCalledWith({ id: 1 }, { wallet_name: 'Renamed' });
+      expect(repository.update).not.toHaveBeenCalled();
     });
   });
 
   describe('delete', () => {
-    it('rejects a non-member without loading the wallet', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
-
-      await expect(service.delete(userId, spaceId, 1)).rejects.toMatchObject(forbiddenSpace);
-      expect(repository.findOne).not.toHaveBeenCalled();
-      expect(repository.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects a wallet that belongs to a different space', async () => {
-      repository.findOne.mockResolvedValue(buildWallet({ id: 1, space_id: 20 }));
-
-      await expect(service.delete(userId, spaceId, 1)).rejects.toMatchObject(forbiddenWallet);
-      expect(repository.update).not.toHaveBeenCalled();
-    });
-
     it('soft-deletes a wallet of the space', async () => {
-      repository.findOne.mockResolvedValue(buildWallet({ id: 1, space_id: spaceId }));
-
       await service.delete(userId, spaceId, 1);
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(repository.update).toHaveBeenCalledWith({ id: 1 }, expect.objectContaining({ is_deleted: 1 }));
+      expect(walletRepositoryInTx.update).toHaveBeenCalledWith({ id: 1 }, expect.objectContaining({ is_deleted: 1 }));
+      expect(repository.update).not.toHaveBeenCalled();
     });
   });
 
