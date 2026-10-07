@@ -20,7 +20,7 @@ import {
   resolveTrendIntervals,
   trendGranularity,
 } from './statistics-period';
-import { assertFound, formatMoney, roundPercentToTenth } from '@shared/utils';
+import { assertFound, formatMoney, readSnapshot, roundPercentToTenth } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import {
@@ -207,9 +207,7 @@ export class StatisticsService {
     return { period, currency: space.currency.code };
   }
 
-  // InnoDB takes the snapshot at the first read, so the later reads of a
-  // block see no commits made in between. Plain reads, no locks.
   private readSnapshot<T>(read: (manager: EntityManager) => Promise<T>): Promise<T> {
-    return this.dataSource.transaction('REPEATABLE READ', read);
+    return readSnapshot(this.dataSource, read);
   }
 }
