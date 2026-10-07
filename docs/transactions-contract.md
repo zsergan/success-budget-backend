@@ -467,8 +467,8 @@ them in the order above, so two writes never wait on each other crosswise:
 | Category edit, archive, delete; limit create, edit, delete | space (X), then their own rows                                                         |
 | Space delete                                               | member rows (X), space (X)                                                             |
 | Member removal                                             | member row (X)                                                                         |
-| Wallet rename, delete                                      | wallet row (X)                                                                         |
-| Wallet create with an initial balance                      | new rows only; the system category (S) through the foreign key                         |
+| Wallet rename, delete                                      | member (S), space (S), wallet (X)                                                      |
+| Wallet create                                              | member (S), space (S), the new rows; the system category (S) with an initial balance   |
 | Category create, reorder                                   | their own rows (X)                                                                     |
 
 (S = shared, X = exclusive.) Consequences:
@@ -479,6 +479,10 @@ them in the order above, so two writes never wait on each other crosswise:
 - Category and limit changes take the space row exclusively, so they wait
   for in-flight transaction writes and the other way round: a category
   deleted while a transaction is being added to it is archived, not removed.
+- Wallet writes check access under the same member lock, so removing a
+  member waits for their in-flight wallet write, and a write that starts
+  after the removal committed is refused. Deleting a wallet waits for
+  in-flight transaction writes to it.
 - Moving a transaction between wallets locks both wallets in ascending id
   order, whichever is the source.
 - MySQL may still detect a deadlock in rare cases (for example, two waiting
