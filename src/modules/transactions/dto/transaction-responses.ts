@@ -1,6 +1,6 @@
 import { ApiExtraModels, ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
-import { AppColor, CategoryIcon, TransactionKind, TransactionType } from '@shared/enums';
+import { AppColor, CategoryIcon, TransactionKind, TransactionOperationStatus, TransactionType } from '@shared/enums';
 import { nullableObject } from '@shared/swagger';
 
 // Every property is decorated explicitly and the file has no .dto.ts suffix,
@@ -131,4 +131,29 @@ export class CreateTransactionResult {
 
   @ApiProperty({ example: 100, description: 'Balance before the transaction, from the whole history.' })
   previous_balance!: number;
+}
+
+@ApiExtraModels(TransactionView)
+export class TransactionOperationView {
+  @ApiProperty({ format: 'uuid', description: 'client_operation_id of the create.' })
+  operation_id!: string;
+
+  @ApiProperty({
+    enum: TransactionOperationStatus,
+    enumName: 'TransactionOperationStatus',
+    description: 'applied: the transaction exists, maybe edited since; deleted: it was created, then deleted.',
+  })
+  status!: TransactionOperationStatus;
+
+  @ApiProperty({ format: 'uuid' })
+  transaction_id!: string;
+
+  @ApiProperty({ ...INSTANT, description: 'When the create committed.' })
+  created_at!: Date;
+
+  @ApiProperty({ ...INSTANT, nullable: true, description: 'When the transaction was deleted; null while it exists.' })
+  deleted_at!: Date | null;
+
+  @ApiProperty(nullableObject(TransactionView, 'The current record, as GET /:id reads it; null when deleted.'))
+  transaction!: TransactionView | null;
 }

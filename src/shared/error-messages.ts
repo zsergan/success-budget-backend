@@ -25,6 +25,8 @@ export const ErrorMessages = {
   TRANSACTION_IS_SYSTEM: 'The initial balance cannot be edited or deleted',
   TRANSACTION_VERSION_CONFLICT: 'The transaction was changed since it was read',
   TRANSACTION_VERSION_REQUIRED: 'If-Match with the version that was read is required',
+  TRANSACTION_OPERATION_EXISTS: 'A transaction was already created for this client_operation_id',
+  TRANSACTION_OPERATION_NOT_FOUND: 'No transaction was created for this operation',
   IDEMPOTENCY_KEY_REUSED: 'This Idempotency-Key was already used for a different request',
 } as const;
 

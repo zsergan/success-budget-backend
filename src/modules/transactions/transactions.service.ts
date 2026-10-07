@@ -1,12 +1,19 @@
 import { BadRequestException, HttpStatus, Injectable } from '@nestjs/common';
+import { isUUID } from 'class-validator';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
+import { TRANSACTION_OPERATION_SCOPE, TransactionOperation } from '@entities/transaction-operation.entity';
 import { Category } from '@entities/category.entity';
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionDto } from './dto/update-transaction.dto';
-import type { TransactionCount, TransactionView, UpdateTransactionResult } from './dto/transaction-responses';
+import type {
+  TransactionCount,
+  TransactionOperationView,
+  TransactionView,
+  UpdateTransactionResult,
+} from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
 import {
   AMOUNT_NOT_POSITIVE,
@@ -25,7 +32,17 @@ import {
   assertWalletInSpace,
 } from './transaction-checks';
 import { ApiException } from '@shared/api.exception';
-import { assertFound, lockRows, moneyToNumber, parseMoney, runWriteTransaction, toDate } from '@shared/utils';
+import { TransactionOperationStatus } from '@shared/enums';
+import {
+  assertFound,
+  isDuplicateKey,
+  lockRows,
+  moneyToNumber,
+  parseMoney,
+  readSnapshot,
+  runWriteTransaction,
+  toDate,
+} from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
@@ -75,7 +92,15 @@ export class TransactionsService {
       payload: createTransactionDto,
     };
 
+    const operationId = createTransactionDto.client_operation_id?.toLowerCase();
+
     return this.write(userId, spaceId, idempotency, async (manager) => {
+      // before the domain checks: a create that already happened is reported
+      // as such even if its wallet or category has changed since
+      if (operationId !== undefined) {
+        await this.assertOperationUnused(manager, spaceId, operationId);
+      }
+
       const [wallet] = await lockRows(manager, Wallet, [createTransactionDto.wallet_id], 'exclusive');
       assertWalletInSpace(wallet, spaceId);
       assertWalletActive(wallet);
@@ -98,6 +123,11 @@ export class TransactionsService {
           description: normalizeDescription(createTransactionDto.description),
         }),
       );
+
+      if (operationId !== undefined) {
+        await this.recordOperation(manager, spaceId, operationId, saved.id);
+      }
+
       const balance = await this.getBalance(manager, wallet.id);
       const created = await this.transactionQueriesService.getOneInSpace(spaceId, saved.id, manager);
       assertFound(created, 'TRANSACTION_NOT_FOUND');
@@ -250,8 +280,46 @@ export class TransactionsService {
       await lockRows(manager, Wallet, [transaction.wallet_id], 'exclusive');
 
       await manager.getRepository(Transaction).delete(transaction.id);
+      await manager
+        .getRepository(TransactionOperation)
+        .update({ transaction_id: transaction.id }, { deleted_at: new Date() });
 
       return true;
+    });
+  }
+
+  // What became of a create sent with this client_operation_id, for as long
+  // as the space exists. Not found means the create never committed.
+  async getOperation(userId: number, spaceId: number, operationId: string): Promise<TransactionOperationView> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    if (!isUUID(operationId)) {
+      throw new ApiException('TRANSACTION_OPERATION_NOT_FOUND', HttpStatus.NOT_FOUND);
+    }
+
+    return readSnapshot(this.dataSource, async (manager) => {
+      const operation = await manager
+        .getRepository(TransactionOperation)
+        .findOne({ where: { space_id: spaceId, operation_id: operationId.toLowerCase() } });
+
+      if (!operation) {
+        throw new ApiException('TRANSACTION_OPERATION_NOT_FOUND', HttpStatus.NOT_FOUND);
+      }
+
+      const transaction = await this.transactionQueriesService.getOneInSpace(
+        spaceId,
+        operation.transaction_id,
+        manager,
+      );
+
+      return {
+        operation_id: operation.operation_id,
+        status: transaction ? TransactionOperationStatus.APPLIED : TransactionOperationStatus.DELETED,
+        transaction_id: operation.transaction_id,
+        created_at: operation.created_at,
+        deleted_at: transaction ? null : operation.deleted_at,
+        transaction: transaction && toTransactionView(transaction),
+      };
     });
   }
 
@@ -278,6 +346,41 @@ export class TransactionsService {
     }
   }
 
+  private async assertOperationUnused(manager: EntityManager, spaceId: number, operationId: string): Promise<void> {
+    const used = await manager
+      .getRepository(TransactionOperation)
+      .exists({ where: { space_id: spaceId, operation_id: operationId } });
+
+    if (used) {
+      throw new ApiException('TRANSACTION_OPERATION_EXISTS', HttpStatus.CONFLICT);
+    }
+  }
+
+  // The unique key settles a race the check above cannot see: a concurrent
+  // create with the same id makes this insert wait for it, then fail.
+  private async recordOperation(
+    manager: EntityManager,
+    spaceId: number,
+    operationId: string,
+    transactionId: string,
+  ): Promise<void> {
+    try {
+      await manager.getRepository(TransactionOperation).insert({
+        space_id: spaceId,
+        operation_id: operationId,
+        transaction_id: transactionId,
+        created_at: new Date(),
+        deleted_at: null,
+      });
+    } catch (error) {
+      if (isDuplicateKey(error, TRANSACTION_OPERATION_SCOPE)) {
+        throw new ApiException('TRANSACTION_OPERATION_EXISTS', HttpStatus.CONFLICT);
+      }
+
+      throw error;
+    }
+  }
+
   private async getBalance(manager: EntityManager, walletId: number): Promise<bigint> {
     const balances = await this.transactionQueriesService.getBalances([walletId], manager);
 
@@ -300,7 +403,8 @@ export class TransactionsService {
 
   // One DB transaction per write, locks taken in one order across the app:
   // the acting member's row, the space row, the idempotency key, the
-  // transaction row, wallet rows by ascending id, category rows. Access is
+  // transaction row, wallet rows by ascending id, category rows, the
+  // operation row. Access is
   // checked under these locks, so a membership removed or a category archived
   // meanwhile is seen, and a repeat with the same key gets the stored result.
   private write<T>(

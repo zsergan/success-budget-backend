@@ -28,16 +28,22 @@ recurring transactions, and search.
 | Initial balance out of `GET /wallets` income                        | implemented |
 | `GET /transactions/count`, stable history order                     | implemented |
 | Limits month in the client's `time_zone`                            | implemented |
+| `client_operation_id`, `GET /transactions/operations/:id`           | implemented |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
-`TransactionsService.write()`), `src/modules/idempotency`, error codes in
+`TransactionsService.write()`, operations in
+`entities/transaction-operation.entity.ts`), `src/modules/idempotency`, error codes in
 `src/shared/api.exception.ts` and `http-exception.filter.ts`. Tests:
 `transaction-view.spec.ts`, `transactions.service.spec.ts`,
 `idempotency.service.spec.ts`, `test/transactions.e2e-spec.ts`,
-`test/transaction-writes.e2e-spec.ts` (repeats and concurrent writes against
-MySQL), `test/transaction-lifecycle.e2e-spec.ts` (the full lifecycle with
-every derived figure after each step, DST, and the OpenAPI document) and the response shapes in `test/type-contract.e2e-spec.ts`; the e2e
+`test/transaction-writes.e2e-spec.ts` (repeats, concurrent writes and access revocation against
+MySQL), `test/transaction-operations.e2e-spec.ts` (recovering a create after
+the key expired), `test/transaction-lifecycle.e2e-spec.ts` (the full lifecycle with
+every derived figure after each step, DST, and the OpenAPI document),
+`test/api-contract.e2e-spec.ts` (`PATCH` as the edit, required versions,
+the maximum amount on every money field, the monthly total limit) and the
+response shapes in `test/type-contract.e2e-spec.ts`; the e2e
 tests check the list, latest and details responses against their OpenAPI
 schemas.
 
@@ -245,6 +251,7 @@ interface CreateTransactionRequest {
   amount: string;
   timestamp: string;
   description?: string | null;
+  client_operation_id?: string; // UUID, one per user action
 }
 ```
 
@@ -273,12 +280,21 @@ The server checks the wallet (of the space, not deleted), then the category
 `transaction_type`).
 
 Takes an optional `Idempotency-Key` header (see
-[Idempotency-Key](#idempotency-key)); the mobile client sends one with every
-create.
+[Idempotency-Key](#idempotency-key)) and an optional `client_operation_id`
+(see [Recovering an unfinished create](#recovering-an-unfinished-create));
+the mobile client sends both with every create, with the same UUID.
+
+`client_operation_id` is unique in the space for as long as the space
+exists, also after the transaction is deleted. A create with an id that was
+already used is `409 TRANSACTION_OPERATION_EXISTS` and writes nothing,
+whatever its body; it is checked before the wallet and the category, so a
+create that already happened is reported as such even if its wallet was
+deleted since. The id is compared case-insensitively.
 
 Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
-`IDEMPOTENCY_KEY_REUSED`, `FORBIDDEN_WALLET`, `WALLET_DELETED`,
-`FORBIDDEN_CATEGORY`, `CATEGORY_ARCHIVED`, `CATEGORY_TYPE_MISMATCH`.
+`IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_OPERATION_EXISTS`, `FORBIDDEN_WALLET`,
+`WALLET_DELETED`, `FORBIDDEN_CATEGORY`, `CATEGORY_ARCHIVED`,
+`CATEGORY_TYPE_MISMATCH`.
 
 ### `GET /spaces/:spaceId/transactions`, `GET .../latest`
 
@@ -309,6 +325,35 @@ the same query (`from`, `to`, `transaction_type`, `category_id`,
 `wallet_id`, same defaults and errors), initial balances included when they
 fall into it. It reads no rows, so the calendar counter does not load the
 list. Errors as for the list.
+
+### `GET /spaces/:spaceId/transactions/operations/:operationId`
+
+What became of the create sent with `client_operation_id: operationId`:
+
+```ts
+interface TransactionOperation {
+  operation_id: string; // lowercase
+  status: 'applied' | 'deleted';
+  transaction_id: string;
+  created_at: string; // when the create committed
+  deleted_at: string | null; // null while the transaction exists
+  transaction: TransactionView | null; // its current state; null when deleted
+}
+```
+
+- `200 applied`: the create committed and the transaction exists.
+  `transaction` is its current state, as `GET /:id` reads it; `version`
+  above 1 means it was edited since (by anyone), and the client shows this
+  state, not its own draft.
+- `200 deleted`: the create committed, and the transaction was deleted
+  later. It is not created again.
+- `404 TRANSACTION_OPERATION_NOT_FOUND`: no create with this id committed in
+  the space. A malformed id is the same `404`.
+
+Any member of the space can ask. Operations are kept for as long as the
+space exists, independently of the 24-hour `Idempotency-Key` retention, and
+the answer is read in one snapshot. Records created without
+`client_operation_id` (older clients, initial balances) cannot be looked up.
 
 ### `GET /spaces/:spaceId/transactions/:transactionId`
 
@@ -452,7 +497,9 @@ transaction (`READ COMMITTED`) that does, in this order:
 5. lock the wallet rows (exclusive, ascending id) — every wallet whose
    balance the write changes;
 6. lock the category rows (shared);
-7. check the domain rules, write, store the idempotent result.
+7. check the domain rules, write, record the `client_operation_id` (a create
+   with a used id waits here for the other create, then is refused), store
+   the idempotent result.
 
 Either all of it commits or nothing does. Every read after a lock sees the
 latest committed state, so a membership removed, a wallet deleted or a
@@ -461,15 +508,15 @@ category archived by a request that committed first is seen and refused.
 **Lock order.** Every write that takes more than one of these locks takes
 them in the order above, so two writes never wait on each other crosswise:
 
-| Operation                                                  | Locks, in order                                                                        |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Transaction `POST` / `PATCH` / `DELETE`                    | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S) |
-| Category edit, archive, delete; limit create, edit, delete | space (X), then their own rows                                                         |
-| Space delete                                               | member rows (X), space (X)                                                             |
-| Member removal                                             | member row (X)                                                                         |
-| Wallet rename, delete                                      | wallet row (X)                                                                         |
-| Wallet create with an initial balance                      | new rows only; the system category (S) through the foreign key                         |
-| Category create, reorder                                   | their own rows (X)                                                                     |
+| Operation                                                  | Locks, in order                                                                                       |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Transaction `POST` / `PATCH` / `DELETE`                    | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
+| Category edit, archive, delete; limit create, edit, delete | space (X), then their own rows                                                                        |
+| Space delete                                               | member rows (X), space (X)                                                                            |
+| Member removal                                             | member row (X)                                                                                        |
+| Wallet rename, delete                                      | member (S), space (S), wallet (X)                                                                     |
+| Wallet create                                              | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
+| Category create, reorder                                   | their own rows (X)                                                                                    |
 
 (S = shared, X = exclusive.) Consequences:
 
@@ -479,6 +526,10 @@ them in the order above, so two writes never wait on each other crosswise:
 - Category and limit changes take the space row exclusively, so they wait
   for in-flight transaction writes and the other way round: a category
   deleted while a transaction is being added to it is archived, not removed.
+- Wallet writes check access under the same member lock, so removing a
+  member waits for their in-flight wallet write, and a write that starts
+  after the removal committed is refused. Deleting a wallet waits for
+  in-flight transaction writes to it.
 - Moving a transaction between wallets locks both wallets in ascending id
   order, whichever is the source.
 - MySQL may still detect a deadlock in rare cases (for example, two waiting
@@ -530,30 +581,102 @@ generates a UUID per user action and reuses it for every retry of that
 action, including after an app restart. Anything else is
 `400 VALIDATION_FAILED`.
 
-**Retention.** A key is kept for 24 hours from the original request. After
-that it is forgotten: a repeat with an expired key runs as a new request (a
-create creates a second transaction). Expired keys are deleted by a
-background job of the application every 10 minutes, never on a request's
-path; the job skips keys a request is holding instead of waiting for them.
-A client therefore stops retrying an action after 24 hours and re-reads
-instead.
+**Safe replay window: 24 hours.** A key is kept for exactly 24 hours from
+the original request (`IDEMPOTENCY_KEY_TTL_MS`). Within the window a repeat
+gets the original response. After it the key is forgotten and a repeat runs
+as a new request: a create without `client_operation_id` creates a second
+transaction, one with it is `409 TRANSACTION_OPERATION_EXISTS`. Expired keys
+are deleted by a background job of the application every 10 minutes, never
+on a request's path; the job skips keys a request is holding instead of
+waiting for them.
+
+The window only bounds how long the original _response_ can be replayed.
+Whether a create happened at all is answered, without a time limit, by
+`client_operation_id` and its lookup; see
+[Recovering an unfinished create](#recovering-an-unfinished-create). The
+client counts the window from its first send of the action, on its own
+clock, and treats it as closed after 23 hours to stay clear of the edge.
 
 ### What the client does on a failure
 
 | Situation                          | Without a key                                  | With a key              |
 | ---------------------------------- | ---------------------------------------------- | ----------------------- |
-| `POST`, response lost              | a retry creates a second transaction           | retry: original result  |
+| `POST`, response lost              | a retry creates a second transaction¹          | retry: original result² |
 | `PATCH`, response lost             | retry: `409` (its own edit bumped the version) | retry: original result  |
 | `DELETE`, response lost            | retry: `404`, treated as done                  | retry: `200 true`       |
 | `409 TRANSACTION_VERSION_CONFLICT` | re-read `GET /:id`, let the user decide        | same                    |
 | `5xx` or timeout                   | the write may or may not have applied          | retry with the same key |
 
+¹ Unless the request carries `client_operation_id`: a retry is then
+`409 TRANSACTION_OPERATION_EXISTS`. ² Within 24 hours; after that, or
+whenever the client is unsure, see below.
+
 `GET` is always safe to repeat.
+
+### Recovering an unfinished create
+
+A create the client sent but has no answer for (no network, timeout, `5xx`,
+app killed) has an unknown outcome. The client never decides it by finding
+a transaction with the same amount, date and category: two real purchases
+can match exactly, and the record may have been edited or deleted since.
+Only `client_operation_id` identifies the create.
+
+Each pending create on the device keeps: the request body, its
+`client_operation_id` (also used as its `Idempotency-Key`) and the time of
+its first send. Its states:
+
+| State       | Meaning                                    | Next                                                                     |
+| ----------- | ------------------------------------------ | ------------------------------------------------------------------------ |
+| `queued`    | not sent yet (offline)                     | send when online → `sending`                                             |
+| `sending`   | sent, waiting for the answer               | see the answers below                                                    |
+| `unknown`   | sent, no answer                            | within 23 h of the first send: resend → `sending`; later: look up        |
+| `checking`  | `GET /transactions/operations/:id` is sent | see the lookup answers below                                             |
+| `synced`    | the create committed; server record known  | final: show the server record                                            |
+| `discarded` | it committed but was deleted since         | final: drop the draft; tell the user it was deleted elsewhere            |
+| `failed`    | refused by a rule (`400`, `403`)           | final: show the error; the user fixes and sends as a new action (new id) |
+
+Answers to a send (`POST`, the same body, id and key every time):
+
+| Answer                             | Next state                                          |
+| ---------------------------------- | --------------------------------------------------- |
+| `201`                              | `synced`, with the returned record                  |
+| `409 TRANSACTION_OPERATION_EXISTS` | `checking`                                          |
+| `400`, `403` on the first send     | `failed`                                            |
+| `400`, `403` on a resend           | `checking` first: the first send may have committed |
+| `409 IDEMPOTENCY_KEY_REUSED`       | `checking` (the body changed on the device: a bug)  |
+| no answer, timeout, `5xx`          | `unknown`                                           |
+| `401`, `429`                       | stay; resend after re-login / back-off              |
+
+Answers to a lookup:
+
+| Answer                                | Next state                                                   |
+| ------------------------------------- | ------------------------------------------------------------ |
+| `200 applied`                         | `synced`, with `transaction` (edited since if `version` > 1) |
+| `200 deleted`                         | `discarded`                                                  |
+| `404 TRANSACTION_OPERATION_NOT_FOUND` | resend the same body with the same id → `sending`            |
+| `403 FORBIDDEN_SPACE`                 | `failed`: access to the space was lost                       |
+| no answer, `5xx`                      | stay `checking`; ask again later                             |
+
+A resend after `404` is safe even if the original request is still in flight
+on the server: the id is unique, so of the two at most one commits and the
+other is `409 TRANSACTION_OPERATION_EXISTS`. Because the operation is kept
+as long as the space, a device that comes back after weeks resolves every
+pending create the same way, without creating any of them twice.
+
+The other writes need no lookup: the outcome of an edit or a delete is the
+record's current state. After a lost `PATCH` the client re-reads
+`GET /:id` (an unknown edit may or may not be in it; a retry with the old
+`If-Match` is `409` if it was); after a lost `DELETE`, `404` means the
+record is gone.
 
 ## Effects on derived data
 
 Every derived figure is computed from history at read time, so a create,
 edit or delete is reflected by the next read; nothing stored is patched.
+`GET /wallets` reads the wallets, their balances and period totals, and
+`GET /limits` reads the limits and their spending, each in one database
+snapshot: a write committed during the request is in none of its figures or
+in all of them, never in a balance but not in the totals.
 
 | Figure                                          | Initial balance | Regular transactions                              |
 | ----------------------------------------------- | --------------- | ------------------------------------------------- |
@@ -630,24 +753,26 @@ English display text and may change.
 }
 ```
 
-| Status | `code`                         | When                                                                   |
-| ------ | ------------------------------ | ---------------------------------------------------------------------- |
-| 400    | `VALIDATION_FAILED`            | Request shape, field rule or header; `message` is `[{ field, error }]` |
-| 400    | `TRANSACTION_IS_SYSTEM`        | `PATCH`/`DELETE` of the initial balance                                |
-| 400    | `WALLET_DELETED`               | A deleted wallet chosen on create, or a different deleted one on edit  |
-| 400    | `CATEGORY_ARCHIVED`            | An archived category chosen on create, or a different one on edit      |
-| 400    | `CATEGORY_TYPE_MISMATCH`       | The resulting category type differs from the transaction type          |
-| 400    | `BAD_REQUEST`                  | A non-numeric `:spaceId`                                               |
-| 401    | `UNAUTHORIZED`                 | Missing, invalid or revoked token                                      |
-| 403    | `FORBIDDEN_SPACE`              | Not a member, or no such space                                         |
-| 403    | `FORBIDDEN_WALLET`             | No such wallet in the space                                            |
-| 403    | `FORBIDDEN_CATEGORY`           | No such category in the space, or the system category                  |
-| 404    | `TRANSACTION_NOT_FOUND`        | No such transaction in the space, or a malformed id                    |
-| 409    | `TRANSACTION_VERSION_CONFLICT` | `If-Match` differs from the stored version                             |
-| 409    | `IDEMPOTENCY_KEY_REUSED`       | The `Idempotency-Key` was used for a different request                 |
-| 428    | `TRANSACTION_VERSION_REQUIRED` | `PATCH` or `DELETE` without `If-Match`                                 |
-| 429    | `TOO_MANY_REQUESTS`            | Rate limit                                                             |
-| 500    | `INTERNAL_SERVER_ERROR`        | Unexpected server failure; details only in the log                     |
+| Status | `code`                            | When                                                                   |
+| ------ | --------------------------------- | ---------------------------------------------------------------------- |
+| 400    | `VALIDATION_FAILED`               | Request shape, field rule or header; `message` is `[{ field, error }]` |
+| 400    | `TRANSACTION_IS_SYSTEM`           | `PATCH`/`DELETE` of the initial balance                                |
+| 400    | `WALLET_DELETED`                  | A deleted wallet chosen on create, or a different deleted one on edit  |
+| 400    | `CATEGORY_ARCHIVED`               | An archived category chosen on create, or a different one on edit      |
+| 400    | `CATEGORY_TYPE_MISMATCH`          | The resulting category type differs from the transaction type          |
+| 400    | `BAD_REQUEST`                     | A non-numeric `:spaceId`                                               |
+| 401    | `UNAUTHORIZED`                    | Missing, invalid or revoked token                                      |
+| 403    | `FORBIDDEN_SPACE`                 | Not a member, or no such space                                         |
+| 403    | `FORBIDDEN_WALLET`                | No such wallet in the space                                            |
+| 403    | `FORBIDDEN_CATEGORY`              | No such category in the space, or the system category                  |
+| 404    | `TRANSACTION_NOT_FOUND`           | No such transaction in the space, or a malformed id                    |
+| 404    | `TRANSACTION_OPERATION_NOT_FOUND` | No create with this `client_operation_id` committed in the space       |
+| 409    | `TRANSACTION_VERSION_CONFLICT`    | `If-Match` differs from the stored version                             |
+| 409    | `IDEMPOTENCY_KEY_REUSED`          | The `Idempotency-Key` was used for a different request                 |
+| 409    | `TRANSACTION_OPERATION_EXISTS`    | The `client_operation_id` was already used in the space                |
+| 428    | `TRANSACTION_VERSION_REQUIRED`    | `PATCH` or `DELETE` without `If-Match`                                 |
+| 429    | `TOO_MANY_REQUESTS`               | Rate limit                                                             |
+| 500    | `INTERNAL_SERVER_ERROR`           | Unexpected server failure; details only in the log                     |
 
 Codes are the same on every endpoint of the API, not only on transactions:
 a domain error carries its own code (`FORBIDDEN_LIMIT`, `CATEGORY_IS_SYSTEM`,
@@ -689,6 +814,33 @@ Idempotency-Key: 0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70
 The response is lost; the app sends the same request with the same key and
 gets the same `201` body. No second transaction is created. Sending the key
 with another body is `409 IDEMPOTENCY_KEY_REUSED`.
+
+### Create, recovered after days offline
+
+The same create with `"client_operation_id": "0f8e3b1c-…"` and the same key
+was sent three days ago and its answer was lost. The key has expired, so the
+app looks the operation up instead of resending:
+
+```http
+GET /api/v1/spaces/1/transactions/operations/0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70
+
+200
+{ "operation_id": "0f8e3b1c-…", "status": "applied", "transaction_id": "9b1d…",
+  "created_at": "2026-09-15T10:00:01.204Z", "deleted_at": null,
+  "transaction": { "id": "9b1d…", "amount": "20.00", "version": 2, … } }
+```
+
+It committed and was edited since (`version: 2`); the app shows this record.
+Had another member deleted it, the answer would be `"status": "deleted"`,
+`"transaction": null`, and the app drops the draft. A `404` means it never
+committed: the app resends the same body with the same id. Resending
+without the lookup is also safe:
+
+```http
+409
+{ "code": "TRANSACTION_OPERATION_EXISTS",
+  "message": "A transaction was already created for this client_operation_id" }
+```
 
 ### Edit
 
@@ -775,13 +927,18 @@ GET /api/v1/spaces/1/transactions/count?from=2026-09-30T21:00:00.000Z&to=2026-10
    [`deployment.md`](deployment.md)):
    - `1790200000000-AddTransactionVersion`: `transactions.version`,
      `INT UNSIGNED NOT NULL DEFAULT 1`; existing rows start at 1;
-   - `1790300000000-CreateIdempotencyKeys`: the `idempotency_keys` table.
-2. Deploy the application.
+   - `1790300000000-CreateIdempotencyKeys`: the `idempotency_keys` table;
+   - `1790400000000-CreateTransactionOperations`: the
+     `transaction_operations` table (rows removed with their space).
+2. Check the schema (`node dist/database/check-schema.js`).
+3. Deploy the application.
 
-Both migrations only add a column and a table, so the application version
-before this contract keeps working on the migrated schema; the new
-application needs both. Rolling back the application does not need a
-schema rollback. `migration:revert` drops the table, then the column.
+The new application refuses to start until every migration of its build has
+run (see [`deployment.md`](deployment.md#schema-check)), so it is never
+released on the old schema. The migrations only add a column and tables, so
+the application version before this contract keeps working on the migrated
+schema and starts with a warning about the migrations it does not know. Rolling back the application does not need a
+schema rollback. `migration:revert` drops the tables, then the column.
 No data is rewritten: legacy zero amounts, future timestamps, `""`
 descriptions and type/category mismatches stay as they are (see
 [Compatibility with existing records](#compatibility-with-existing-records)).
@@ -814,8 +971,15 @@ use; the new mobile build ships before or together with this backend.
 - Keep `version` from every read and write; send it as `If-Match: "<n>"`
   on `PATCH` and `DELETE`, including undo (`version` from the `POST`
   result). On `409`, re-read `GET /:id` and offer the current details.
-- Generate one `Idempotency-Key` (a UUID) per user action and reuse it for
-  every retry of that action, for at most 24 hours.
+- Generate one UUID per create and send it both as `Idempotency-Key` and as
+  `client_operation_id`, on every retry of that create; persist it with the
+  pending create. Within 23 hours of the first send, retry; after that, or
+  on `409 TRANSACTION_OPERATION_EXISTS`, resolve it with
+  `GET /transactions/operations/:id` (see
+  [Recovering an unfinished create](#recovering-an-unfinished-create)).
+  Never decide a create by matching amount, date and category.
+- Generate one `Idempotency-Key` per edit or delete and reuse it for its
+  retries, for at most 24 hours.
 - Send timestamps with an offset, and history bounds as instants of the
   device's day or month; pass the device's IANA zone to statistics and
   limits; take "this month" from the limits `period`.
@@ -833,7 +997,8 @@ use; the new mobile build ships before or together with this backend.
   on every transaction read; `version` on the `POST` results'
   `transaction`; `code` on every error of the API; optional
   `Idempotency-Key` on every write; optional `time_zone` and a `period` key
-  on `GET /limits`.
+  on `GET /limits`; optional `client_operation_id` on `POST` and
+  `GET /transactions/operations/:operationId`.
 - **`If-Match` required on `DELETE` (breaking):** a delete or undo without
   it is `428 TRANSACTION_VERSION_REQUIRED`.
 - **`POST` is stricter:** a zero amount, a timestamp more than a minute

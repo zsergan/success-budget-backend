@@ -33,6 +33,7 @@ import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import {
   CreateTransactionResult,
   TransactionCount,
+  TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
 } from './dto/transaction-responses';
@@ -85,7 +86,11 @@ export class TransactionsController {
     description: 'VALIDATION_FAILED, WALLET_DELETED, CATEGORY_ARCHIVED or CATEGORY_TYPE_MISMATCH.',
   })
   @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE, FORBIDDEN_WALLET or FORBIDDEN_CATEGORY.' })
-  @ApiConflictResponse({ description: 'IDEMPOTENCY_KEY_REUSED: the key was used for a different request.' })
+  @ApiConflictResponse({
+    description:
+      'IDEMPOTENCY_KEY_REUSED: the key was used for a different request. ' +
+      'TRANSACTION_OPERATION_EXISTS: client_operation_id was already used; GET /operations/:id tells the result.',
+  })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
   async create(
@@ -116,6 +121,19 @@ export class TransactionsController {
     @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
   ) {
     return this.transactionsService.count(req.user.id, spaceId, from, to, { transactionType, categoryId, walletId });
+  }
+
+  @ApiOkResponse({ type: TransactionOperationView })
+  @ApiNotFoundResponse({
+    description: 'TRANSACTION_OPERATION_NOT_FOUND: no create with this client_operation_id committed in the space.',
+  })
+  @Get('operations/:operationId')
+  async getOperation(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('operationId') operationId: string,
+  ): Promise<TransactionOperationView> {
+    return this.transactionsService.getOperation(req.user.id, spaceId, operationId);
   }
 
   @ApiHistoryQuery()

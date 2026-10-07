@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import { Transaction } from '@entities/transaction.entity';
@@ -8,8 +8,17 @@ import { Category } from '@entities/category.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
-import { assertBelongsToSpace, assertFound, moneyToNumber, parseMoney, roundPercentToTenth } from '@shared/utils';
-import { SpacesService } from '@modules/spaces/spaces.service';
+import {
+  assertBelongsToSpace,
+  assertFound,
+  lockRows,
+  moneyToNumber,
+  parseMoney,
+  readSnapshot,
+  roundPercentToTenth,
+  runWriteTransaction,
+} from '@shared/utils';
+import { SpacesService, type SpaceWithCurrency } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import {
   TransactionQueriesService,
@@ -53,30 +62,31 @@ export class WalletsService {
     return this.walletRepository.findOne({ where: { id: walletId } });
   }
 
-  async getAll(spaceId: number): Promise<Wallet[]> {
-    return await this.walletRepository
-      .createQueryBuilder('wallet')
-      .where({ space_id: spaceId, is_deleted: 0 })
-      .getMany();
+  async getAll(spaceId: number, manager?: EntityManager): Promise<Wallet[]> {
+    const repository = manager?.getRepository(Wallet) ?? this.walletRepository;
+
+    return await repository.createQueryBuilder('wallet').where({ space_id: spaceId, is_deleted: 0 }).getMany();
   }
 
   async getOverview(userId: number, spaceId: number, from: Date, to: Date): Promise<WalletsOverview> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    const wallets = await this.getAll(spaceId);
-    const walletIds = wallets.map((wallet) => wallet.id);
-    const [periodTotals, balances] = await Promise.all([
-      this.transactionQueriesService.getPeriodTotals(walletIds, from, to),
-      this.transactionQueriesService.getBalances(walletIds),
-    ]);
+    // the wallets, balances and period totals of one response come from one
+    // snapshot, so a balance never includes a transaction the totals miss
+    return readSnapshot(this.dataSource, async (manager) => {
+      const wallets = await this.getAll(spaceId, manager);
+      const walletIds = wallets.map((wallet) => wallet.id);
+      const periodTotals = await this.transactionQueriesService.getPeriodTotals(walletIds, from, to, manager);
+      const balances = await this.transactionQueriesService.getBalances(walletIds, manager);
+      const space = await this.spacesService.getOne(spaceId, manager);
+      assertFound(space);
 
-    return this.buildOverview(spaceId, wallets, periodTotals, balances);
+      return buildOverview(space, wallets, periodTotals, balances);
+    });
   }
 
   async create(userId: number, spaceId: number, createWalletDto: CreateWalletDto): Promise<CreateWalletResult> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-
-    return this.dataSource.transaction(async (manager) => {
+    return this.write(userId, spaceId, async (manager) => {
       const walletRepository = manager.getRepository(Wallet);
       const wallet = await walletRepository.save(
         walletRepository.create({
@@ -93,8 +103,10 @@ export class WalletsService {
       }
 
       const systemCategory = await manager
-        .getRepository(Category)
-        .findOneOrFail({ where: { space_id: spaceId, is_system: 1 } });
+        .createQueryBuilder(Category, 'category')
+        .setLock('pessimistic_read')
+        .where('category.space_id = :spaceId AND category.is_system = 1', { spaceId })
+        .getOneOrFail();
 
       const transactionRepository = manager.getRepository(Transaction);
       const saved = await transactionRepository.save(
@@ -118,57 +130,66 @@ export class WalletsService {
   }
 
   async update(userId: number, spaceId: number, walletId: number, updateWalletDto: UpdateWalletDto): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.getSpaceWallet(spaceId, walletId);
-
-    await this.walletRepository.update({ id: walletId }, updateWalletDto);
+    await this.write(userId, spaceId, async (manager) => {
+      await this.lockSpaceWallet(manager, spaceId, walletId);
+      await manager.getRepository(Wallet).update({ id: walletId }, updateWalletDto);
+    });
   }
 
   async delete(userId: number, spaceId: number, walletId: number): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-    await this.getSpaceWallet(spaceId, walletId);
-
-    await this.walletRepository.update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
+    await this.write(userId, spaceId, async (manager) => {
+      await this.lockSpaceWallet(manager, spaceId, walletId);
+      await manager.getRepository(Wallet).update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
+    });
   }
 
-  private async getSpaceWallet(spaceId: number, walletId: number): Promise<Wallet> {
-    const wallet = await this.getOne(walletId);
+  // Locks in the order of transaction writes (TransactionsService.write()):
+  // member, space, wallet, categories. The member row stays locked until
+  // commit, so access cannot be revoked between the check and the write.
+  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return runWriteTransaction(this.dataSource, async (manager) => {
+      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager, 'shared');
+
+      return work(manager);
+    });
+  }
+
+  private async lockSpaceWallet(manager: EntityManager, spaceId: number, walletId: number): Promise<Wallet> {
+    const [wallet] = await lockRows(manager, Wallet, [walletId], 'exclusive');
     assertBelongsToSpace(wallet, spaceId, 'FORBIDDEN_WALLET');
 
     return wallet;
   }
+}
 
-  private async buildOverview(
-    spaceId: number,
-    walletRows: Wallet[],
-    periodTotals: Map<number, WalletPeriodTotals>,
-    balances: Map<number, bigint>,
-  ): Promise<WalletsOverview> {
-    const space = await this.spacesService.getOne(spaceId);
-    assertFound(space);
+function buildOverview(
+  space: SpaceWithCurrency,
+  walletRows: Wallet[],
+  periodTotals: Map<number, WalletPeriodTotals>,
+  balances: Map<number, bigint>,
+): WalletsOverview {
+  let totalBalance = 0n;
+  let net = 0n;
 
-    let totalBalance = 0n;
-    let net = 0n;
+  const wallets = walletRows.map((row): WalletSummary => {
+    const balance = balances.get(row.id) ?? 0n;
+    const { income, spend } = periodTotals.get(row.id) ?? { income: 0n, spend: 0n };
 
-    const wallets = walletRows.map((row): WalletSummary => {
-      const balance = balances.get(row.id) ?? 0n;
-      const { income, spend } = periodTotals.get(row.id) ?? { income: 0n, spend: 0n };
-
-      totalBalance += balance;
-      net += income - spend;
-
-      return {
-        wallet: Object.assign(row, { balance: moneyToNumber(balance) }),
-        total_spend: moneyToNumber(spend),
-        total_income: moneyToNumber(income),
-      };
-    });
+    totalBalance += balance;
+    net += income - spend;
 
     return {
-      total_balance: moneyToNumber(totalBalance),
-      total_balance_currency: space.currency.code,
-      delta_percent: roundPercentToTenth(net, totalBalance - net),
-      wallets,
+      wallet: Object.assign(row, { balance: moneyToNumber(balance) }),
+      total_spend: moneyToNumber(spend),
+      total_income: moneyToNumber(income),
     };
-  }
+  });
+
+  return {
+    total_balance: moneyToNumber(totalBalance),
+    total_balance_currency: space.currency.code,
+    delta_percent: roundPercentToTenth(net, totalBalance - net),
+    wallets,
+  };
 }

@@ -33,6 +33,12 @@ describe('CreateTransactionDto', () => {
     });
   });
 
+  it('reports an amount above the maximum by its range only', async () => {
+    const { errors } = await errorsOf(CreateTransactionDto, { ...valid, amount: '100000000' });
+
+    expect(errors.amount).toEqual(['amount must not be greater than 99999999.99']);
+  });
+
   it('reports a malformed amount by its format only', async () => {
     const { errors } = await errorsOf(CreateTransactionDto, { ...valid, amount: '-1' });
 

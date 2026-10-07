@@ -91,3 +91,8 @@ export enum TransactionKind {
   REGULAR = 'regular',
   INITIAL_BALANCE = 'initial_balance',
 }
+
+export enum TransactionOperationStatus {
+  APPLIED = 'applied',
+  DELETED = 'deleted',
+}

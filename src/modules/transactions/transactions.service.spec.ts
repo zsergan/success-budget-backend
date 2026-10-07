@@ -1,12 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException } from '@nestjs/common';
-import { DataSource, type EntityManager, type Repository } from 'typeorm';
+import { DataSource, QueryFailedError, type EntityManager, type Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { toTransactionView } from './transaction-view';
 import { Transaction } from '@entities/transaction.entity';
+import { TRANSACTION_OPERATION_SCOPE, TransactionOperation } from '@entities/transaction-operation.entity';
 import { Category } from '@entities/category.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { TransactionType } from '@shared/enums';
@@ -35,6 +36,8 @@ describe('TransactionsService', () => {
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getOne'>>;
   let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembership' | 'lockSpace'>>;
   let idempotencyService: { run: jest.Mock };
+  let operationRepository: Record<'exists' | 'insert' | 'update' | 'findOne', jest.Mock>;
+  let dataSource: { transaction: jest.Mock };
   let manager: EntityManager;
   let lockedRows: Map<unknown, unknown[]>;
   let updateQuery: Record<'update' | 'set' | 'where' | 'execute', jest.Mock>;
@@ -95,12 +98,20 @@ describe('TransactionsService', () => {
               getMany: jest.fn(async () => lockedRows.get(entity) ?? []),
             },
       ),
-      getRepository: jest.fn(() => transactionRepository),
+      getRepository: jest.fn((entity: unknown) =>
+        entity === TransactionOperation ? operationRepository : transactionRepository,
+      ),
     } as unknown as EntityManager;
+    operationRepository = {
+      exists: jest.fn().mockResolvedValue(false),
+      insert: jest.fn(),
+      update: jest.fn(),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     idempotencyService = {
       run: jest.fn((_manager, _request, work) => work()),
     };
-    const dataSource = {
+    dataSource = {
       transaction: jest.fn((_level: string, work: (m: EntityManager) => Promise<unknown>) => work(manager)),
     };
 
@@ -134,6 +145,61 @@ describe('TransactionsService', () => {
 
     beforeEach(() => {
       transactionQueriesService.getOneInSpace.mockResolvedValue(created);
+    });
+
+    describe('client_operation_id', () => {
+      const operationId = '0F8E3B1C-5D2A-4E8F-9A61-2C7D4B5E6F70';
+      const operationExists = new HttpException(ErrorMessages.TRANSACTION_OPERATION_EXISTS, 409);
+
+      it('records the operation, lowercased, with the created transaction', async () => {
+        await service.create(userId, spaceId, dto({ client_operation_id: operationId }));
+
+        expect(operationRepository.exists).toHaveBeenCalledWith({
+          where: { space_id: spaceId, operation_id: operationId.toLowerCase() },
+        });
+        expect(operationRepository.insert).toHaveBeenCalledWith({
+          space_id: spaceId,
+          operation_id: operationId.toLowerCase(),
+          transaction_id: 'tx-new',
+          created_at: expect.any(Date),
+          deleted_at: null,
+        });
+      });
+
+      it('records nothing without one', async () => {
+        await service.create(userId, spaceId, dto());
+
+        expect(operationRepository.exists).not.toHaveBeenCalled();
+        expect(operationRepository.insert).not.toHaveBeenCalled();
+      });
+
+      it('refuses a used id before the wallet and category checks', async () => {
+        operationRepository.exists.mockResolvedValue(true);
+        lockedRows.set(Wallet, [buildWallet({ id: 1, space_id: spaceId, is_deleted: 1 })]);
+
+        await expect(service.create(userId, spaceId, dto({ client_operation_id: operationId }))).rejects.toMatchObject(
+          operationExists,
+        );
+        expect(manager.createQueryBuilder).not.toHaveBeenCalled();
+        expect(transactionRepository.save).not.toHaveBeenCalled();
+      });
+
+      it('refuses an id a concurrent create recorded first', async () => {
+        operationRepository.insert.mockRejectedValue(
+          new QueryFailedError(
+            'INSERT',
+            [],
+            Object.assign(new Error('Duplicate'), {
+              code: 'ER_DUP_ENTRY',
+              sqlMessage: `Duplicate entry for key 'transaction_operations.${TRANSACTION_OPERATION_SCOPE}'`,
+            }),
+          ),
+        );
+
+        await expect(service.create(userId, spaceId, dto({ client_operation_id: operationId }))).rejects.toMatchObject(
+          operationExists,
+        );
+      });
     });
 
     it('rejects a non-member before loading anything', async () => {
@@ -742,6 +808,69 @@ describe('TransactionsService', () => {
     });
   });
 
+  describe('getOperation', () => {
+    const operationId = '0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70';
+    const createdAt = new Date('2026-09-15T10:00:00.000Z');
+    const operation = (deletedAt: Date | null = null) =>
+      Object.assign(new TransactionOperation(), {
+        space_id: spaceId,
+        operation_id: operationId,
+        transaction_id: 'tx-1',
+        created_at: createdAt,
+        deleted_at: deletedAt,
+      });
+    const notFound = new HttpException(ErrorMessages.TRANSACTION_OPERATION_NOT_FOUND, 404);
+
+    it('rejects a non-member before reading the operation', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
+
+      await expect(service.getOperation(userId, spaceId, operationId)).rejects.toMatchObject(forbidden());
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('is not found for an id that is not a UUID', async () => {
+      await expect(service.getOperation(userId, spaceId, 'nope')).rejects.toMatchObject(notFound);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('is not found when no create with the id committed in the space', async () => {
+      await expect(service.getOperation(userId, spaceId, operationId.toUpperCase())).rejects.toMatchObject(notFound);
+      expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
+      expect(operationRepository.findOne).toHaveBeenCalledWith({
+        where: { space_id: spaceId, operation_id: operationId },
+      });
+    });
+
+    it('returns the current record of an applied create, edited or not', async () => {
+      const transaction = Object.assign(loadedTransaction('tx-1', { id: 1 }), { version: 3 });
+      operationRepository.findOne.mockResolvedValue(operation());
+      transactionQueriesService.getOneInSpace.mockResolvedValue(transaction);
+
+      await expect(service.getOperation(userId, spaceId, operationId)).resolves.toEqual({
+        operation_id: operationId,
+        status: 'applied',
+        transaction_id: 'tx-1',
+        created_at: createdAt,
+        deleted_at: null,
+        transaction: toTransactionView(transaction),
+      });
+      expect(transactionQueriesService.getOneInSpace).toHaveBeenCalledWith(spaceId, 'tx-1', manager);
+    });
+
+    it('reports a create whose transaction was deleted since', async () => {
+      const deletedAt = new Date('2026-09-16T10:00:00.000Z');
+      operationRepository.findOne.mockResolvedValue(operation(deletedAt));
+      transactionQueriesService.getOneInSpace.mockResolvedValue(null);
+
+      await expect(service.getOperation(userId, spaceId, operationId)).resolves.toMatchObject({
+        status: 'deleted',
+        transaction_id: 'tx-1',
+        deleted_at: deletedAt,
+        transaction: null,
+      });
+    });
+  });
+
   describe('remove', () => {
     const lockedTransaction = (overrides: Partial<Transaction> = {}) => {
       const transaction = Object.assign(loadedTransaction('tx-1', { id: 1 }), overrides);
@@ -819,6 +948,17 @@ describe('TransactionsService', () => {
       await service.remove(userId, spaceId, 'tx-1', { expectedVersion: 3 });
 
       expect(transactionRepository.delete).toHaveBeenCalledWith('tx-1');
+    });
+
+    it('marks the operation that created the transaction as deleted', async () => {
+      lockedTransaction();
+
+      await service.remove(userId, spaceId, 'tx-1', { expectedVersion: 1 });
+
+      expect(operationRepository.update).toHaveBeenCalledWith(
+        { transaction_id: 'tx-1' },
+        { deleted_at: expect.any(Date) },
+      );
     });
 
     it('deletes a record of a deleted wallet', async () => {

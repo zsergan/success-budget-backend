@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
 
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
@@ -6,7 +7,11 @@ import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
 // Not PartialType(CreateLimitDto): its added @IsOptional() would let null
 // through for category_ids and amount.
 export class UpdateLimitDto {
-  // absent keeps the current categories, [] turns the limit into the total limit
+  @ApiPropertyOptional({
+    type: 'integer',
+    isArray: true,
+    description: 'Absent keeps the current categories; [] turns the limit into the monthly total limit.',
+  })
   @IsOptionalNonNull()
   @IsArray()
   @IsInt({ each: true })
@@ -17,6 +22,7 @@ export class UpdateLimitDto {
   @MaxLength(60)
   name?: string | null;
 
+  @ApiPropertyOptional({ example: '1000.00', description: 'Decimal string, 0 to 99999999.99, at most 2 decimals.' })
   @IsOptionalNonNull()
   @IsMoneyAmount()
   amount?: string;

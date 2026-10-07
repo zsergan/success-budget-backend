@@ -10,14 +10,15 @@ import {
   isPositiveAmount,
   normalizeDescription,
 } from '../transaction-rules';
-import { isMoneyInputFormat, parseIsoDate } from '@shared/utils';
+import { parseIsoDate, parseMoneyInput } from '@shared/utils';
 
 // Run after the format validators: a malformed value is reported by them.
 export const IsPositiveAmount = () =>
   ValidateBy({
     name: 'isPositiveAmount',
     validator: {
-      validate: (value: unknown) => !isMoneyInputFormat(value) || isPositiveAmount(value),
+      validate: (value: unknown) =>
+        typeof value !== 'string' || parseMoneyInput(value) === null || isPositiveAmount(value),
       defaultMessage: () => AMOUNT_NOT_POSITIVE,
     },
   });
