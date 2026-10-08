@@ -9,7 +9,7 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { TransactionType } from '@shared/enums';
 import { ApiException } from '@shared/api.exception';
-import { assertBelongsToSpace } from '@shared/utils';
+import { assertBelongsToSpace, runWriteTransaction } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 export interface CategoryView {
@@ -91,10 +91,7 @@ export class CategoriesService {
     categoryId: number,
     updateCategory: UpdateCategoryDto,
   ): Promise<Category> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
-
+    return this.write(userId, spaceId, async (manager) => {
       const category = await this.getEditableCategory(spaceId, categoryId, manager);
       const activeChanged = updateCategory.is_active !== undefined && updateCategory.is_active !== category.is_active;
 
@@ -115,16 +112,14 @@ export class CategoriesService {
   }
 
   async create(userId: number, spaceId: number, category: CreateCategoryDto): Promise<Category> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
-
-    const entity = this.categoryRepository.create({ ...category, space_id: spaceId });
-    return this.categoryRepository.save(entity);
+    return this.write(userId, spaceId, async (manager) => {
+      const repository = manager.getRepository(Category);
+      return repository.save(repository.create({ ...category, space_id: spaceId }));
+    });
   }
 
   async deleteOrArchive(userId: number, spaceId: number, categoryId: number): Promise<{ archived: boolean }> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+    return this.write(userId, spaceId, async (manager) => {
       await this.getEditableCategory(spaceId, categoryId, manager);
 
       const counts = await this.getTransactionCounts([categoryId], manager);
@@ -145,38 +140,48 @@ export class CategoriesService {
   }
 
   async reorder(userId: number, spaceId: number, categoryIds: number[]): Promise<void> {
-    await this.spaceAccessService.assertMembership(spaceId, userId);
+    return this.write(userId, spaceId, async (manager) => {
+      const repository = manager.getRepository(Category);
 
-    if (categoryIds.length === 0) {
-      return;
-    }
-
-    const categories = await this.categoryRepository.find({ where: { id: In(categoryIds) } });
-
-    if (categories.length !== categoryIds.length) {
-      throw new ApiException('FORBIDDEN_CATEGORY', HttpStatus.FORBIDDEN);
-    }
-
-    for (const category of categories) {
-      assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
-
-      if (category.is_system) {
-        throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
+      if (categoryIds.length === 0) {
+        return;
       }
-    }
 
-    const types = new Set(categories.map((category) => category.transaction_type));
-    const hasArchived = categories.some((category) => category.is_active === 0);
+      const categories = await repository.find({ where: { id: In(categoryIds) } });
 
-    if (types.size > 1 || hasArchived) {
-      throw new ApiException('INVALID_REORDER', HttpStatus.BAD_REQUEST);
-    }
+      if (categories.length !== categoryIds.length) {
+        throw new ApiException('FORBIDDEN_CATEGORY', HttpStatus.FORBIDDEN);
+      }
 
-    // 100/200 partition income vs expense sort ranges so they never collide
-    const prefix = categories[0].transaction_type === TransactionType.INCOME ? 100 : 200;
-    const reordered = categoryIds.map((id, index) => ({ id, sort: prefix + index + 1 }));
+      for (const category of categories) {
+        assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
 
-    await this.categoryRepository.save(reordered);
+        if (category.is_system) {
+          throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
+        }
+      }
+
+      const types = new Set(categories.map((category) => category.transaction_type));
+      const hasArchived = categories.some((category) => category.is_active === 0);
+
+      if (types.size > 1 || hasArchived) {
+        throw new ApiException('INVALID_REORDER', HttpStatus.BAD_REQUEST);
+      }
+
+      // 100/200 partition income vs expense sort ranges so they never collide
+      const prefix = categories[0].transaction_type === TransactionType.INCOME ? 100 : 200;
+      const reordered = categoryIds.map((id, index) => ({ id, sort: prefix + index + 1 }));
+
+      await repository.save(reordered);
+    });
+  }
+
+  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return runWriteTransaction(this.dataSource, async (manager) => {
+      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      return work(manager);
+    });
   }
 
   private async getEditableCategory(spaceId: number, categoryId: number, manager: EntityManager): Promise<Category> {
