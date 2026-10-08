@@ -91,7 +91,12 @@ schemas.
 ## Endpoints
 
 All routes are under `/api/v1` and require the bearer token and membership
-in the space. Checks run in this order: request shape
+in the target space. Transaction `wallet_id` and `category_id` are positive
+integers within the signed MySQL `INT` range (1–2147483647); invalid values
+return `400 VALIDATION_FAILED`. Limit `category_ids` follow the same range
+and must not repeat.
+
+Checks run in this order: request shape
 (`400 VALIDATION_FAILED`, before anything is read), membership
 (`403 FORBIDDEN_SPACE`), then the endpoint's own checks.
 
@@ -511,12 +516,11 @@ them in the order above, so two writes never wait on each other crosswise:
 | Operation                                                  | Locks, in order                                                                                       |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Transaction `POST` / `PATCH` / `DELETE`                    | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
-| Category edit, archive, delete; limit create, edit, delete | space (X), then their own rows                                                                        |
+| Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                |
 | Space delete                                               | member rows (X), space (X)                                                                            |
 | Member removal                                             | member row (X)                                                                                        |
 | Wallet rename, delete                                      | member (S), space (S), wallet (X)                                                                     |
 | Wallet create                                              | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
-| Category create, reorder                                   | their own rows (X)                                                                                    |
 
 (S = shared, X = exclusive.) Consequences:
 
@@ -526,6 +530,10 @@ them in the order above, so two writes never wait on each other crosswise:
 - Category and limit changes take the space row exclusively, so they wait
   for in-flight transaction writes and the other way round: a category
   deleted while a transaction is being added to it is archived, not removed.
+- Category and limit writes also hold the acting member's row until commit.
+  Removal cannot overtake an authorized write; requests after removal are
+  refused. Reordering validates and writes inside the same transaction,
+  serialized with category archival and deletion.
 - Wallet writes check access under the same member lock, so removing a
   member waits for their in-flight wallet write, and a write that starts
   after the removal committed is refused. Deleting a wallet waits for
@@ -677,6 +685,10 @@ edit or delete is reflected by the next read; nothing stored is patched.
 `GET /limits` reads the limits and their spending, each in one database
 snapshot: a write committed during the request is in none of its figures or
 in all of them, never in a balance but not in the totals.
+
+`GET /categories` likewise reads category state, transaction counts and
+limit links from one snapshot. Concurrent archival cannot return an active
+category combined with the link removals of the archived state.
 
 | Figure                                          | Initial balance | Regular transactions                              |
 | ----------------------------------------------- | --------------- | ------------------------------------------------- |

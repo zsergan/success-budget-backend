@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { IsNotEmpty, IsInt, Min, Max, IsEnum, IsOptional, IsUUID } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
 import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
@@ -10,7 +10,9 @@ import { IsDescription, IsNotInFuture, IsPositiveAmount } from './transaction-fi
 export class CreateTransactionDto {
   @ApiProperty({ type: 'integer', example: 7, description: 'An active wallet of the space.' })
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
   wallet_id!: number;
 
   @ApiProperty({
@@ -19,7 +21,9 @@ export class CreateTransactionDto {
     description: 'An active, non-system category of the space whose type is transaction_type.',
   })
   @IsNotEmpty()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
   category_id!: number;
 
   @ApiProperty({ enum: TransactionType, enumName: 'TransactionType' })

@@ -90,6 +90,10 @@ jobs:
       - run: npm run migration:run
       - run: npm run verify:reference-data
       - run: npm run test:e2e
+      - name: Timestamps are independent of the Node host timezone
+        run: npm run test:e2e -- database-timestamps
+        env:
+          TZ: America/Chicago
 
   build:
     runs-on: ubuntu-latest

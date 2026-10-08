@@ -85,7 +85,10 @@ describe('CategoriesService', () => {
           },
         },
         { provide: DataSource, useValue: { transaction: jest.fn() } },
-        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn(), lockSpace: jest.fn() } },
+        {
+          provide: SpaceAccessService,
+          useValue: { assertMembership: jest.fn(), lockMembership: jest.fn(), lockSpace: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -101,7 +104,9 @@ describe('CategoriesService', () => {
     ]);
     manager = { getRepository: jest.fn((entity) => repositories.get(entity)) };
     dataSource = module.get(DataSource);
-    dataSource.transaction.mockImplementation((callback: (m: typeof manager) => unknown) => callback(manager));
+    dataSource.transaction.mockImplementation((...args: unknown[]) =>
+      (args[args.length - 1] as (m: typeof manager) => unknown)(manager),
+    );
   });
 
   describe('transaction boundary', () => {
@@ -142,9 +147,9 @@ describe('CategoriesService', () => {
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(spaceId, manager);
       const lockOrder = spaceAccessService.lockSpace.mock.invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(spaceAccessService.assertMembership.mock.invocationCallOrder[0]);
+      expect(spaceAccessService.lockMembership.mock.invocationCallOrder[0]).toBeLessThan(lockOrder);
       expect(lockOrder).toBeLessThan(manager.getRepository.mock.invocationCallOrder[0]);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId, undefined, manager);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(spaceId, userId, manager);
       expect(txCategoryRepository.findOne).toHaveBeenCalled();
       expect(txLimitRepository.delete).toHaveBeenCalledWith(5);
       expect(categoryRepository.findOne).not.toHaveBeenCalled();
@@ -257,7 +262,7 @@ describe('CategoriesService', () => {
     const spaceId = 3;
 
     it('rejects a non-member without loading the category', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace);
 
       await expect(service.update(userId, spaceId, 1, {})).rejects.toMatchObject(forbiddenSpace);
       expect(categoryRepository.findOne).not.toHaveBeenCalled();
@@ -305,8 +310,8 @@ describe('CategoriesService', () => {
 
       await service.update(userId, spaceId, 1, { name: 'New' });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId, undefined, manager);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(spaceId, userId, manager);
       expect(categoryRepository.findOne).toHaveBeenCalledTimes(1);
       expect(categoryRepository.save).toHaveBeenCalledWith(
         buildCategory({ id: 1, space_id: spaceId, name: 'New', sort: 1, is_active: 1 }),
@@ -349,7 +354,7 @@ describe('CategoriesService', () => {
 
   describe('create', () => {
     it('rejects a non-member without saving', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace);
 
       await expect(
         service.create(userId, 9, {
@@ -390,7 +395,7 @@ describe('CategoriesService', () => {
     });
 
     it('rejects a non-member without loading the category', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace);
 
       await expect(service.deleteOrArchive(userId, spaceId, 1)).rejects.toMatchObject(forbiddenSpace);
       expect(categoryRepository.findOne).not.toHaveBeenCalled();
@@ -422,7 +427,7 @@ describe('CategoriesService', () => {
 
       const result = await service.deleteOrArchive(userId, spaceId, 1);
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
       expect(categoryRepository.delete).toHaveBeenCalledWith(1);
       expect(result).toEqual({ archived: false });
     });
@@ -484,7 +489,7 @@ describe('CategoriesService', () => {
 
   describe('reorder', () => {
     it('rejects a non-member before loading categories', async () => {
-      spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace);
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace);
 
       await expect(service.reorder(userId, 1, [1])).rejects.toMatchObject(forbiddenSpace);
       expect(categoryRepository.find).not.toHaveBeenCalled();
