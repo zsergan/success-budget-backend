@@ -84,13 +84,21 @@ compact and epoch forms are rejected.
 | Query `as_of` on `GET /statistics/*` (`@IsIsoInstant`)                             | `string` | ISO instant **with** `Z` or an offset (no local-time reading), in the `TIMESTAMP` range, at most 60 s ahead of the server                                                                      |
 | `period.from`/`to`/`as_of`/`actual_to`, bucket `from`/`to` in statistics responses | `Date`   | ISO-8601 UTC string with milliseconds; passed verbatim as history `from`/`to`                                                                                                                  |
 | `TIMESTAMP` columns read                                                           | `Date`   | `Date`; serialized as ISO-8601 UTC string                                                                                                                                                      |
-| `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`)                          | `Date`   | read in the Node process's local time zone, so shifted when it differs from the MySQL session zone; app-written values round-trip. Out of scope for typing.                                    |
+| `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`)                          | `Date`   | read as UTC, independently of the Node host's local zone                                                                                                                                        |
 
-Period filters stay inclusive on both ends. Compared with the raw strings
-MySQL used to receive, date-only and offset-less values select the same
-rows. `Z`/offset values select the same rows when the app runs in UTC (the
-container default); on a non-UTC host they are now compared as the instant
-they denote instead of being shifted by the MySQL session zone.
+Period filters stay inclusive on both ends. Date-only and offset-less
+request values still use the Node host's local zone; explicit offsets
+denote exact instants. The driver writes and reads all database dates in
+UTC (`timezone: 'Z'`), including migrations and server-generated audit
+timestamps. MySQL sessions must use UTC too (server `time_zone = '+00:00'`,
+or `SYSTEM` on a UTC host). Client calendar zones affect period boundaries,
+never the storage zone.
+
+This does not rewrite existing timestamps. Records previously written by
+a non-UTC Node process against a UTC MySQL session may already be shifted;
+they require a separate data audit before any correction. UTC deployments
+keep the same stored instants. Regression coverage:
+`test/database-timestamps.e2e-spec.ts`, also run with `TZ=America/Chicago`.
 
 ## Nullable columns and relations
 
