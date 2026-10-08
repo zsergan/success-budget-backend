@@ -1,7 +1,10 @@
 import request from 'supertest';
+import { SelectQueryBuilder } from 'typeorm';
+import { Category } from '@entities/category.entity';
 
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+import { pauseAfterFirstCall } from './support/concurrency';
 
 interface Space {
   member: Member;
@@ -150,5 +153,35 @@ describe('Wallet overview and limits under concurrent writes (e2e)', () => {
 
     const next = await api(space.member).get('/limits').expect(200);
     expect(next.body.total).toMatchObject({ amount: '500.00', spent: 150, in_percent: 30 });
+  });
+
+  it('GET /categories: archival cannot mix an active category with its already-removed limit link', async () => {
+    const space = await createSpace('categories-snapshot');
+    const limit = await api(space.member)
+      .post('/limits')
+      .send({ category_ids: [space.categoryId], amount: '100' })
+      .expect(201);
+    const pause = pauseAfterFirstCall(
+      SelectQueryBuilder.prototype,
+      'getMany',
+      (self) => (self as SelectQueryBuilder<Category>).expressionMap.mainAlias?.target === Category,
+    );
+    const { response } = await startHeld(space.member, '/categories', pause);
+    try {
+      await api(space.member).put(`/categories/${space.categoryId}`).send({ is_active: 0 }).expect(200);
+    } finally {
+      pause.release();
+    }
+    const res = await response;
+    expect(res.status).toBe(200);
+    expect(res.body.expenses.find((category: { id: number }) => category.id === space.categoryId)).toMatchObject({
+      is_active: 1,
+      limit: { id: limit.body.id },
+    });
+    const next = await api(space.member).get('/categories').expect(200);
+    expect(next.body.archived.find((category: { id: number }) => category.id === space.categoryId)).toMatchObject({
+      is_active: 0,
+      limit: null,
+    });
   });
 });

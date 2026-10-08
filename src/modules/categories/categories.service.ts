@@ -9,7 +9,7 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { TransactionType } from '@shared/enums';
 import { ApiException } from '@shared/api.exception';
-import { assertBelongsToSpace, runWriteTransaction } from '@shared/utils';
+import { assertBelongsToSpace, readSnapshot, runWriteTransaction } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 
 export interface CategoryView {
@@ -29,10 +29,6 @@ export class CategoriesService {
   constructor(
     @InjectRepository(Category)
     private readonly categoryRepository: Repository<Category>,
-    @InjectRepository(Transaction)
-    private readonly transactionRepository: Repository<Transaction>,
-    @InjectRepository(Limit)
-    private readonly limitRepository: Repository<Limit>,
     private readonly dataSource: DataSource,
     private readonly spaceAccessService: SpaceAccessService,
   ) {}
@@ -63,26 +59,29 @@ export class CategoriesService {
   ): Promise<{ incomes: CategoryView[]; expenses: CategoryView[]; archived: CategoryView[] }> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    const categories = await this.categoryRepository
-      .createQueryBuilder('category')
-      .where('category.space_id = :spaceId', { spaceId })
-      .andWhere('category.is_system = 0')
-      .orderBy('category.sort', 'ASC')
-      .getMany();
+    return readSnapshot(this.dataSource, async (manager) => {
+      const categories = await manager
+        .getRepository(Category)
+        .createQueryBuilder('category')
+        .where('category.space_id = :spaceId', { spaceId })
+        .andWhere('category.is_system = 0')
+        .orderBy('category.sort', 'ASC')
+        .getMany();
 
-    const categoryIds = categories.map((category) => category.id);
-    const [counts, limitMembership] = await Promise.all([
-      this.getTransactionCounts(categoryIds),
-      this.getLimitMembership(spaceId),
-    ]);
+      const categoryIds = categories.map((category) => category.id);
+      const [counts, limitMembership] = await Promise.all([
+        this.getTransactionCounts(categoryIds, manager),
+        this.getLimitMembership(spaceId, manager),
+      ]);
 
-    const views = categories.map((category) => this.buildCategoryView(category, counts, limitMembership));
+      const views = categories.map((category) => this.buildCategoryView(category, counts, limitMembership));
 
-    return {
-      incomes: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.INCOME),
-      expenses: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.EXPENSE),
-      archived: views.filter((view) => view.is_active === 0),
-    };
+      return {
+        incomes: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.INCOME),
+        expenses: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.EXPENSE),
+        archived: views.filter((view) => view.is_active === 0),
+      };
+    });
   }
 
   async update(
@@ -195,12 +194,13 @@ export class CategoriesService {
     return category;
   }
 
-  private async getTransactionCounts(categoryIds: number[], manager?: EntityManager): Promise<Map<number, number>> {
+  private async getTransactionCounts(categoryIds: number[], manager: EntityManager): Promise<Map<number, number>> {
     if (categoryIds.length === 0) {
       return new Map();
     }
 
-    const rows = await (manager?.getRepository(Transaction) ?? this.transactionRepository)
+    const rows = await manager
+      .getRepository(Transaction)
       .createQueryBuilder('transaction')
       .select('transaction.category_id', 'category_id')
       .addSelect('COUNT(*)', 'count')
@@ -211,8 +211,12 @@ export class CategoriesService {
     return new Map(rows.map((row) => [Number(row.category_id), Number(row.count)]));
   }
 
-  private async getLimitMembership(spaceId: number): Promise<Map<number, { id: number; name: string | null }>> {
-    const rows = await this.limitRepository
+  private async getLimitMembership(
+    spaceId: number,
+    manager: EntityManager,
+  ): Promise<Map<number, { id: number; name: string | null }>> {
+    const rows = await manager
+      .getRepository(Limit)
       .createQueryBuilder('limit')
       .innerJoin('limit.categories', 'category')
       .where('limit.space_id = :spaceId', { spaceId })

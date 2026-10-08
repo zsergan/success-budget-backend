@@ -686,6 +686,10 @@ edit or delete is reflected by the next read; nothing stored is patched.
 snapshot: a write committed during the request is in none of its figures or
 in all of them, never in a balance but not in the totals.
 
+`GET /categories` likewise reads category state, transaction counts and
+limit links from one snapshot. Concurrent archival cannot return an active
+category combined with the link removals of the archived state.
+
 | Figure                                          | Initial balance | Regular transactions                              |
 | ----------------------------------------------- | --------------- | ------------------------------------------------- |
 | History rows, `GET /transactions/count`         | included        | in `from`..`to`, by the filters                   |
