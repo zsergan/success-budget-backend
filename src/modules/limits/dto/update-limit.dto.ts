@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsArray, IsInt, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsArray, ArrayUnique, IsInt, Min, Max, IsString, MaxLength } from 'class-validator';
 
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
@@ -14,7 +14,10 @@ export class UpdateLimitDto {
   })
   @IsOptionalNonNull()
   @IsArray()
+  @ArrayUnique()
   @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(2147483647, { each: true })
   category_ids?: number[];
 
   @IsOptional()

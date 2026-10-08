@@ -84,6 +84,60 @@ describe('API contract (e2e)', () => {
     return (document.paths[path] as Record<string, never>)[method];
   }
 
+  describe('identifier validation', () => {
+    it.each(['post', 'put'] as const)(
+      '%s rejects duplicate limit categories without changing the limit',
+      async (method) => {
+        const s = await space();
+        const original = await api(s.member)
+          .post('/limits')
+          .send({ amount: '100', category_ids: [s.expenses[0]] })
+          .expect(201);
+        const path = method === 'post' ? '/limits' : `/limits/${original.body.id}`;
+        const response = await api(s.member)
+          [method](path)
+          .send({ amount: '200', name: 'Group', category_ids: [s.expenses[1], s.expenses[1]] })
+          .expect(400);
+        expect(response.body.code).toBe('VALIDATION_FAILED');
+        const limits = await api(s.member).get('/limits').expect(200);
+        expect(limits.body.categories).toHaveLength(1);
+        expect(limits.body.categories[0]).toMatchObject({
+          id: original.body.id,
+          amount: '100.00',
+          categories: [{ id: s.expenses[0] }],
+        });
+      },
+    );
+
+    it.each([0, -1, 1.5, 2147483648])(
+      'rejects invalid transaction ids %s before looking up a wallet or category',
+      async (id) => {
+        const s = await space();
+        const created = await createTransaction(s, s.expenses[0], '10').expect(201);
+        for (const field of ['wallet_id', 'category_id']) {
+          const create = await api(s.member)
+            .post('/transactions')
+            .send({
+              wallet_id: s.walletId,
+              category_id: s.expenses[0],
+              transaction_type: 'expense',
+              amount: '10',
+              timestamp: '2026-09-15T10:00:00.000Z',
+              [field]: id,
+            })
+            .expect(400);
+          const update = await api(s.member)
+            .patch(`/transactions/${created.body.transaction.id}`)
+            .set('If-Match', '1')
+            .send({ [field]: id })
+            .expect(400);
+          expect(create.body.code).toBe('VALIDATION_FAILED');
+          expect(update.body.code).toBe('VALIDATION_FAILED');
+        }
+      },
+    );
+  });
+
   describe('editing is PATCH', () => {
     it('updates with PATCH and has no PUT on a transaction', async () => {
       const s = await space();

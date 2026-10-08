@@ -91,7 +91,12 @@ schemas.
 ## Endpoints
 
 All routes are under `/api/v1` and require the bearer token and membership
-in the space. Checks run in this order: request shape
+in the target space. Transaction `wallet_id` and `category_id` are positive
+integers within the signed MySQL `INT` range (1–2147483647); invalid values
+return `400 VALIDATION_FAILED`. Limit `category_ids` follow the same range
+and must not repeat.
+
+Checks run in this order: request shape
 (`400 VALIDATION_FAILED`, before anything is read), membership
 (`403 FORBIDDEN_SPACE`), then the endpoint's own checks.
 
