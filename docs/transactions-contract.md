@@ -315,6 +315,11 @@ description reads as `null`.
   A wallet created with a starting balance therefore has a non-empty
   history even though its Income is zero; the client decides "no history"
   from the rows (or the count), never from an amount.
+- **`kind` filter:** optional `kind=regular` leaves initial balances out,
+  `kind=initial_balance` lists only them; without it both are listed. It
+  is decided by the system category, never by name, and combines with the
+  other filters. The statistics drill-down always sends `kind=regular`
+  ([statistics contract](statistics-contract.md#opening-a-breakdown-item)).
 - **Query:** `from` and `to` are inclusive instants (send them with `Z` or
   an offset: the device's day and month bounds; an offset-less value is
   read in server local time). Defaults are the server's current month.
@@ -326,10 +331,10 @@ description reads as `null`.
 ### `GET /spaces/:spaceId/transactions/count`
 
 `200 { count: number }`: the number of rows `GET /transactions` returns for
-the same query (`from`, `to`, `transaction_type`, `category_id`,
+the same query (`from`, `to`, `transaction_type`, `kind`, `category_id`,
 `wallet_id`, same defaults and errors), initial balances included when they
-fall into it. It reads no rows, so the calendar counter does not load the
-list. Errors as for the list.
+fall into it and `kind` does not leave them out. It reads no rows, so the
+calendar counter does not load the list. Errors as for the list.
 
 ### `GET /spaces/:spaceId/transactions/operations/:operationId`
 

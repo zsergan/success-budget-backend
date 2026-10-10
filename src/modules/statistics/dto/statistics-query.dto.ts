@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum } from 'class-validator';
 
-import { StatisticsPeriodType } from '@shared/enums';
+import { StatisticsPeriodType, TransactionType } from '@shared/enums';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
 import { IsLocalDate, IsTimeZone } from '@shared/decorators/is-local-date.decorator';
@@ -41,4 +41,15 @@ export class StatisticsQueryDto {
   @IsIsoInstant()
   @IsInTimestampRange()
   as_of?: string;
+}
+
+export class StatisticsBreakdownQueryDto extends StatisticsQueryDto {
+  @ApiPropertyOptional({
+    enum: TransactionType,
+    enumName: 'TransactionType',
+    description: 'Which transactions the breakdown groups; echoed as transaction_type. Default: expense.',
+  })
+  @IsOptionalNonNull()
+  @IsEnum(TransactionType)
+  transaction_type?: TransactionType;
 }

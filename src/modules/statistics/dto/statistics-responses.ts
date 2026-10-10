@@ -1,6 +1,6 @@
 import { ApiExtraModels, ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
-import { AppColor, CategoryIcon, StatisticsPeriodType } from '@shared/enums';
+import { AppColor, CategoryIcon, StatisticsPeriodType, TransactionType } from '@shared/enums';
 import { nullableObject } from '@shared/swagger';
 import type {
   CategoryBreakdown as CategoryBreakdownShape,
@@ -361,7 +361,13 @@ export class WalletBreakdown implements WalletBreakdownShape {
 }
 
 export class StatisticsBreakdown extends StatisticsBlock implements StatisticsBreakdownShape {
-  @ApiProperty({ type: () => MoneyCount, description: 'Control sum, equal to the summary expense of the same cycle.' })
+  @ApiProperty({ enum: TransactionType, enumName: 'TransactionType', description: 'The applied transaction_type.' })
+  transaction_type!: TransactionType;
+
+  @ApiProperty({
+    type: () => MoneyCount,
+    description: 'Control sum, equal to the summary income or expense (by transaction_type) of the same cycle.',
+  })
   total!: MoneyCount;
 
   @ApiProperty({ type: () => CategoryBreakdown })

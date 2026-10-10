@@ -38,7 +38,7 @@ import {
   UpdateTransactionResult,
 } from './dto/transaction-responses';
 import type { AuthedRequest } from '@shared/types';
-import { TransactionType } from '@shared/enums';
+import { TransactionKind, TransactionType } from '@shared/enums';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
 import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
 import { ParseOptionalEnumPipe } from '@shared/pipes/parse-optional-enum.pipe';
@@ -65,6 +65,12 @@ const ApiHistoryQuery = () =>
     }),
     ApiQuery({ name: 'to', required: false, description: 'Inclusive, to the millisecond. Default: end of the month.' }),
     ApiQuery({ name: 'transaction_type', required: false, enum: TransactionType }),
+    ApiQuery({
+      name: 'kind',
+      required: false,
+      enum: TransactionKind,
+      description: 'regular leaves out starting balances; initial_balance lists only them.',
+    }),
     ApiQuery({
       name: 'category_id',
       required: false,
@@ -117,10 +123,16 @@ export class TransactionsController {
     @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
     @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
     @Query('transaction_type', new ParseOptionalEnumPipe(TransactionType)) transactionType?: TransactionType,
+    @Query('kind', new ParseOptionalEnumPipe(TransactionKind)) kind?: TransactionKind,
     @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
     @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
   ) {
-    return this.transactionsService.count(req.user.id, spaceId, from, to, { transactionType, categoryId, walletId });
+    return this.transactionsService.count(req.user.id, spaceId, from, to, {
+      transactionType,
+      kind,
+      categoryId,
+      walletId,
+    });
   }
 
   @ApiOkResponse({ type: TransactionOperationView })
@@ -145,10 +157,16 @@ export class TransactionsController {
     @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
     @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
     @Query('transaction_type', new ParseOptionalEnumPipe(TransactionType)) transactionType?: TransactionType,
+    @Query('kind', new ParseOptionalEnumPipe(TransactionKind)) kind?: TransactionKind,
     @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
     @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
   ) {
-    return this.transactionsService.getAll(req.user.id, spaceId, from, to, { transactionType, categoryId, walletId });
+    return this.transactionsService.getAll(req.user.id, spaceId, from, to, {
+      transactionType,
+      kind,
+      categoryId,
+      walletId,
+    });
   }
 
   @ApiOkResponse({ type: TransactionView })

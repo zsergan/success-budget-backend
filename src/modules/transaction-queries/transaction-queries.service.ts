@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { AppColor, TransactionType } from '@shared/enums';
+import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
 
@@ -11,6 +11,7 @@ export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'
 
 export interface TransactionFilters {
   transactionType?: TransactionType;
+  kind?: TransactionKind;
   categoryId?: number;
   walletId?: number;
 }
@@ -30,7 +31,7 @@ const toStatisticsTotals = (row: TotalsRow | undefined): StatisticsTotals => ({
   expenseCount: Number(row?.expense_count ?? 0),
 });
 
-export interface StatisticsCategoryExpense {
+export interface StatisticsCategoryGroup {
   id: number;
   name: string;
   icon: string;
@@ -41,7 +42,7 @@ export interface StatisticsCategoryExpense {
   count: number;
 }
 
-export interface StatisticsWalletExpense {
+export interface StatisticsWalletGroup {
   id: number;
   name: string;
   design: AppColor;
@@ -192,7 +193,10 @@ export class TransactionQueriesService {
 
   // the number of rows getForAllWallets() returns for the same arguments
   async countForAllWallets(spaceId: number, from: Date, to: Date, filters: TransactionFilters = {}): Promise<number> {
-    return this.historyScope(spaceId, from, to, filters).innerJoin('transaction.wallet', 'wallet').getCount();
+    return this.historyScope(spaceId, from, to, filters)
+      .innerJoin('transaction.wallet', 'wallet')
+      .innerJoin('transaction.category', 'category')
+      .getCount();
   }
 
   async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
@@ -255,13 +259,14 @@ export class TransactionQueriesService {
     return totals;
   }
 
-  async getStatisticsExpenseByCategory(
+  async getStatisticsByCategory(
     spaceId: number,
+    transactionType: TransactionType,
     from: Date,
     to: Date,
     manager: EntityManager,
-  ): Promise<StatisticsCategoryExpense[]> {
-    const rows = await this.statisticsExpenseScope(manager, spaceId, from, to)
+  ): Promise<StatisticsCategoryGroup[]> {
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
       .select('category.id', 'id')
       .addSelect('category.name', 'name')
       .addSelect('category.icon', 'icon')
@@ -291,13 +296,14 @@ export class TransactionQueriesService {
     }));
   }
 
-  async getStatisticsExpenseByWallet(
+  async getStatisticsByWallet(
     spaceId: number,
+    transactionType: TransactionType,
     from: Date,
     to: Date,
     manager: EntityManager,
-  ): Promise<StatisticsWalletExpense[]> {
-    const rows = await this.statisticsExpenseScope(manager, spaceId, from, to)
+  ): Promise<StatisticsWalletGroup[]> {
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
       .select('wallet.id', 'id')
       .addSelect('wallet.wallet_name', 'name')
       .addSelect('wallet.design', 'design')
@@ -335,7 +341,7 @@ export class TransactionQueriesService {
     return transaction?.timestamp ?? null;
   }
 
-  // the wallet join, aliased "wallet", is added by the caller
+  // the wallet and category joins, aliased "wallet" and "category", are added by the caller
   private historyScope(
     spaceId: number,
     from: Date,
@@ -350,6 +356,10 @@ export class TransactionQueriesService {
 
     if (filters.transactionType) {
       query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
+    }
+
+    if (filters.kind) {
+      query.andWhere(`category.is_system = ${filters.kind === TransactionKind.INITIAL_BALANCE ? 1 : 0}`);
     }
 
     if (filters.categoryId) {
@@ -367,15 +377,17 @@ export class TransactionQueriesService {
     return manager?.getRepository(Transaction) ?? this.transactionRepository;
   }
 
-  private statisticsExpenseScope(
+  private statisticsTypeScope(
     manager: EntityManager,
     spaceId: number,
+    transactionType: TransactionType,
     from: Date,
     to: Date,
   ): SelectQueryBuilder<Transaction> {
-    return this.statisticsScope(manager, spaceId, from, to).andWhere('transaction.transaction_type = :expense', {
-      expense: TransactionType.EXPENSE,
-    });
+    return this.statisticsScope(manager, spaceId, from, to).andWhere(
+      'transaction.transaction_type = :transactionType',
+      { transactionType },
+    );
   }
 
   private selectStatisticsTotals(query: SelectQueryBuilder<Transaction>): SelectQueryBuilder<Transaction> {
