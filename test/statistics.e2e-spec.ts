@@ -579,14 +579,7 @@ describe('Statistics blocks (e2e)', () => {
       expect((await get(past)).body.total).toEqual({ amount: '300000007.27', count: 6 });
       expect((await get({ ...past, time_zone: 'UTC' })).body.total).toEqual({ amount: '300000012.27', count: 7 });
 
-      const future = (
-        await get({
-          period: 'month',
-          time_zone: 'Europe/Moscow',
-          anchor_date: '2026-12-15',
-          transaction_type: 'income',
-        })
-      ).body;
+      const future = (await get({ ...income, anchor_date: '2026-12-15' })).body;
       expect(future.period.state).toBe('future');
       expectEmpty(future, 'income');
     } finally {
