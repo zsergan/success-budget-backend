@@ -4,7 +4,7 @@ import type { EntityManager } from 'typeorm';
 
 import { TransactionQueriesService } from './transaction-queries.service';
 import { Transaction } from '@entities/transaction.entity';
-import { TransactionType } from '@shared/enums';
+import { TransactionKind, TransactionType } from '@shared/enums';
 
 describe('TransactionQueriesService', () => {
   let service: TransactionQueriesService;
@@ -220,6 +220,19 @@ describe('TransactionQueriesService', () => {
         'transaction.category_id = :categoryId',
         expect.anything(),
       );
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('is_system'));
+    });
+
+    it.each([
+      [TransactionKind.REGULAR, 'category.is_system = 0'],
+      [TransactionKind.INITIAL_BALANCE, 'category.is_system = 1'],
+    ])('filters kind %s by the system flag of the category', async (kind, condition) => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { kind });
+
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(condition);
     });
   });
 
@@ -228,10 +241,15 @@ describe('TransactionQueriesService', () => {
       queryBuilder.getCount.mockResolvedValue(4);
 
       await expect(
-        service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { categoryId: 5 }),
+        service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), {
+          categoryId: 5,
+          kind: TransactionKind.REGULAR,
+        }),
       ).resolves.toBe(4);
 
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.category_id = :categoryId', { categoryId: 5 });
       expect(queryBuilder.getMany).not.toHaveBeenCalled();

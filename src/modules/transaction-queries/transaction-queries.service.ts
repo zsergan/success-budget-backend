@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { AppColor, TransactionType } from '@shared/enums';
+import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
 
@@ -11,6 +11,7 @@ export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'
 
 export interface TransactionFilters {
   transactionType?: TransactionType;
+  kind?: TransactionKind;
   categoryId?: number;
   walletId?: number;
 }
@@ -192,7 +193,10 @@ export class TransactionQueriesService {
 
   // the number of rows getForAllWallets() returns for the same arguments
   async countForAllWallets(spaceId: number, from: Date, to: Date, filters: TransactionFilters = {}): Promise<number> {
-    return this.historyScope(spaceId, from, to, filters).innerJoin('transaction.wallet', 'wallet').getCount();
+    return this.historyScope(spaceId, from, to, filters)
+      .innerJoin('transaction.wallet', 'wallet')
+      .innerJoin('transaction.category', 'category')
+      .getCount();
   }
 
   async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
@@ -337,7 +341,7 @@ export class TransactionQueriesService {
     return transaction?.timestamp ?? null;
   }
 
-  // the wallet join, aliased "wallet", is added by the caller
+  // the wallet and category joins, aliased "wallet" and "category", are added by the caller
   private historyScope(
     spaceId: number,
     from: Date,
@@ -352,6 +356,10 @@ export class TransactionQueriesService {
 
     if (filters.transactionType) {
       query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
+    }
+
+    if (filters.kind) {
+      query.andWhere(`category.is_system = ${filters.kind === TransactionKind.INITIAL_BALANCE ? 1 : 0}`);
     }
 
     if (filters.categoryId) {
