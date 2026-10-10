@@ -489,6 +489,109 @@ describe('Statistics blocks (e2e)', () => {
     expect(own.body.total).toEqual({ amount: '660.25', count: 5 });
     expect(other.body.total).toEqual({ amount: '999.00', count: 1 });
     expect(other.body.by_wallet.primary_items.map((item: { name: string }) => item.name)).toEqual(['Neighbour card']);
+
+    // the neighbour has only expenses: the owner's income does not leak in
+    const [ownIncome, otherIncome] = await Promise.all([
+      getBlock('breakdown', { ...MONTH, transaction_type: 'income' }).expect(200),
+      api(neighbour)
+        .get(`${base(neighbour)}/statistics/breakdown`)
+        .query({ ...MONTH, transaction_type: 'income' })
+        .expect(200),
+    ]);
+
+    expect(ownIncome.body.total).toEqual({ amount: '3000.00', count: 1 });
+    expect(otherIncome.body.total).toEqual({ amount: '0.00', count: 0 });
+    expect(otherIncome.body.by_category).toEqual({
+      total_amount: '0.00',
+      source_count: 0,
+      primary_items: [],
+      other: null,
+    });
+  });
+
+  it('income breakdown: empty, one exact group, period bounds, zone, as_of and a future period', async () => {
+    const member = await createVerifiedMember(testApp, 'statistics-income-only');
+
+    try {
+      const url = base(member);
+      const get = (query: Record<string, string>) =>
+        api(member).get(`${url}/statistics/breakdown`).query(query).expect(200);
+      const EMPTY_WALLETS = {
+        total_amount: '0.00',
+        source_count: 0,
+        primary_items: [],
+        deleted_wallets: null,
+        other: null,
+      };
+      const expectEmpty = (body: Record<string, unknown>, type: string) =>
+        expect(body).toMatchObject({
+          transaction_type: type,
+          total: { amount: '0.00', count: 0 },
+          by_category: { total_amount: '0.00', source_count: 0, primary_items: [], other: null },
+          by_wallet: EMPTY_WALLETS,
+        });
+
+      for (const type of ['income', 'expense']) {
+        expectEmpty((await get({ ...MONTH, transaction_type: type })).body, type);
+      }
+
+      const categories = await api(member).get(`${url}/categories`).expect(200);
+      const [salary] = categories.body.incomes;
+      const wallet = await api(member)
+        .post(`${url}/wallets`)
+        .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
+        .expect(201);
+      const add = (amount: string, timestamp: string) =>
+        api(member)
+          .post(`${url}/transactions`)
+          .send({
+            wallet_id: wallet.body.wallet.id,
+            category_id: salary.id,
+            transaction_type: 'income',
+            amount,
+            timestamp,
+          })
+          .expect(201);
+
+      // sums a float would get wrong
+      for (const amount of ['0.10', '0.20', '99999999.99', '99999999.99', '99999999.99']) {
+        await add(amount, '2026-09-10T09:00:00.000Z');
+      }
+      // after as_of, inside September
+      await add('7', '2026-09-29T07:00:00.000Z');
+      // 00:30 on October 1 in Moscow, still September 30 in UTC
+      await add('5', '2026-09-30T21:30:00.000Z');
+
+      const income = { ...MONTH, transaction_type: 'income' };
+      const current = await get(income);
+      const summary = await api(member).get(`${url}/statistics/summary`).query(MONTH).expect(200);
+
+      expect(current.body.total).toEqual({ amount: '300000000.27', count: 5 });
+      expect(current.body.total).toEqual(summary.body.income);
+      expect(current.body.by_category.primary_items).toEqual([
+        expect.objectContaining({ id: salary.id, amount: '300000000.27', percent: 100 }),
+      ]);
+      expect(current.body.by_category.other).toBeNull();
+      expect(current.body.by_wallet).toMatchObject({ source_count: 1, deleted_wallets: null, other: null });
+      expectEmpty((await get(MONTH)).body, 'expense');
+
+      const past = { ...income, anchor_date: '2026-09-15', as_of: '2026-10-05T00:00:00.000Z' };
+      expect((await get(past)).body.total).toEqual({ amount: '300000007.27', count: 6 });
+      expect((await get({ ...past, time_zone: 'UTC' })).body.total).toEqual({ amount: '300000012.27', count: 7 });
+
+      const future = (
+        await get({
+          period: 'month',
+          time_zone: 'Europe/Moscow',
+          anchor_date: '2026-12-15',
+          transaction_type: 'income',
+        })
+      ).body;
+      expect(future.period.state).toBe('future');
+      expectEmpty(future, 'income');
+    } finally {
+      await deleteUsers(testApp.dataSource, [member.userId]);
+    }
   });
 
   it('adds money exactly, beyond the range of a single amount', async () => {
@@ -572,6 +675,10 @@ describe('Statistics blocks (e2e)', () => {
 
   it.each(BLOCKS)('%s rejects a non-member with 403', async (block) => {
     await getBlock(block, MONTH, outsider).expect(403);
+  });
+
+  it('income breakdown rejects a non-member with 403', async () => {
+    await getBlock('breakdown', { ...MONTH, transaction_type: 'income' }, outsider).expect(403);
   });
 
   it.each([
@@ -891,6 +998,9 @@ describe('Statistics blocks (e2e)', () => {
 
       expect({ block, errors }).toEqual({ block, errors: [] });
     }
+
+    const income = await getBlock('breakdown', { ...query, transaction_type: 'income' }).expect(200);
+    expect(schemaErrors(document, okResponseSchema(document, '/statistics/breakdown'), income.body)).toEqual([]);
   });
 
   it('the contract check accepts an allowed null and rejects a wrong or incomplete one', async () => {
