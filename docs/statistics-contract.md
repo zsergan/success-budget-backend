@@ -85,9 +85,9 @@ request.
    is not part of any sum or count, even inside the selected period. The
    period's actual range ends at `min(period end, as_of)`.
 8. **Zero is not empty.** `"0.00"` does not mean there were no
-   transactions: zero-amount transactions are valid, and income may equal
-   expense. Summary and Trend totals pair every sum with a `count`; "no
-   data" states are decided by counts, never by amounts. The breakdown is
+   transactions: legacy zero-amount transactions still count, and income
+   may equal expense. Summary and Trend totals pair every sum with a
+   `count`; "no data" states are decided by counts, never by amounts. The breakdown is
    the one exception: it draws shares, so it lists only groups with a
    positive sum.
 9. **Exact money.** Sums are computed in integer cents (`SUM` strings parsed
@@ -264,14 +264,15 @@ interface StatisticsSummary {
 
 Screen states come from counts and dates, never from amounts:
 
-| Condition                               | State                                                    |
-| --------------------------------------- | -------------------------------------------------------- |
-| `period.state = 'future'`               | The period has not started; checked first                |
-| `has_any_transactions = false`          | Nothing to report yet (first run)                        |
-| `transactions_count = 0`, date not null | Nothing in this period; "Your last one was on …", "Open" |
-| `transactions_count > 0`                | Data, even when every amount is `"0.00"`                 |
-| `change.x.percent = null`               | No comparison for that figure                            |
-| `by_category.source_count = 0`          | Breakdown: "No expenses" or "No income" in this period   |
+| Condition                                       | State                                                    |
+| ----------------------------------------------- | -------------------------------------------------------- |
+| `period.state = 'future'`                       | The period has not started; checked first                |
+| `has_any_transactions = false`                  | Nothing to report yet (first run)                        |
+| `transactions_count = 0`, date not null         | Nothing in this period; "Your last one was on …", "Open" |
+| `transactions_count > 0`                        | Data, even when every amount is `"0.00"`                 |
+| `change.x.percent = null`                       | No comparison for that figure                            |
+| Breakdown `total.count = 0`                     | "No expenses" or "No income" in this period              |
+| Breakdown `total.count > 0`, `source_count = 0` | Only zero-amount transactions: total of zero, no donut   |
 
 Surplus / Deficit / Balanced is the sign of `net`, decided by the client.
 
@@ -403,8 +404,9 @@ interface StatisticsBreakdown {
   category named "Other" is `kind: 'category'` with an id; the two are
   told apart by `kind`, never by name.
 - Groups come from the transactions' type, not the categories' (rule 4):
-  an expense category that also holds an income shows up in the income
-  breakdown too.
+  a legacy income on an expense category shows up in the income breakdown
+  under that category. The API rejects such new transactions
+  (`CATEGORY_TYPE_MISMATCH`); only older data holds them.
 - The client drops a response whose `transaction_type` is not the type
   selected now (a late answer to a previous switch). An empty breakdown
   never switches the type on its own.
@@ -554,11 +556,11 @@ GET /spaces/:spaceId/transactions
   `other` itself and `deleted_wallets` have `opens_history: false` and open
   nothing.
 - `transaction_type` is **always** sent, for categories too. The breakdown
-  counts by the type of the transaction, not of the category, and the API
-  does not stop an income on an expense category: a category with a $100
-  expense and a $20 income shows $100 in the expense breakdown and $20 in
-  the income one, while its history without the type filter would list
-  both.
+  counts by the type of the transaction, not of the category. New
+  transactions must match their category's type (`CATEGORY_TYPE_MISMATCH`
+  otherwise), but legacy data may not: a category with a $100 expense and a
+  legacy $20 income shows $100 in the expense breakdown and $20 in the
+  income one, while its history without the type filter would list both.
 - `kind=regular` is **always** sent. Starting balances are income on the
   system category: statistics never count them, but the history does, so
   the income history of a wallet would list its starting balance without
