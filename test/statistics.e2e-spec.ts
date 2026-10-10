@@ -607,6 +607,7 @@ describe('Statistics blocks (e2e)', () => {
 
     interface Breakdown {
       period: { from: string; actual_to: string };
+      transaction_type: 'expense' | 'income';
       by_category: { primary_items: OpenableItem[]; other: { children: OpenableItem[] } | null };
       by_wallet: { primary_items: OpenableItem[]; other: { children: OpenableItem[] } | null };
     }
@@ -616,10 +617,11 @@ describe('Statistics blocks (e2e)', () => {
       [by_category, by_wallet].flatMap((grouping) => [...grouping.primary_items, ...(grouping.other?.children ?? [])]);
 
     // the one template of docs/statistics-contract.md for both groupings
-    const drillDownQuery = ({ period }: Breakdown, item: OpenableItem) => ({
+    const drillDownQuery = ({ period, transaction_type }: Breakdown, item: OpenableItem) => ({
       from: period.from,
       to: period.actual_to,
-      transaction_type: 'expense',
+      transaction_type,
+      kind: 'regular',
       [item.kind === 'category' ? 'category_id' : 'wallet_id']: item.id,
     });
 
@@ -630,12 +632,90 @@ describe('Statistics blocks (e2e)', () => {
           .get(`${base(member)}/transactions`)
           .query(query)
           .expect(200);
+        const count = await api(member)
+          .get(`${base(member)}/transactions/count`)
+          .query(query)
+          .expect(200);
         const types = [...new Set(res.body.map((tx: { transaction_type: string }) => tx.transaction_type))];
+        const kinds = [...new Set(res.body.map((tx: { kind: string }) => tx.kind))];
         const sum = res.body.reduce((total: number, tx: { amount: string }) => total + cents(tx.amount), 0);
 
-        expect({ query, types, sum }).toEqual({ query, types: ['expense'], sum: cents(item.amount) });
+        expect({ query, types, kinds, sum, count: count.body.count }).toEqual({
+          query,
+          types: [breakdown.transaction_type],
+          kinds: ['regular'],
+          sum: cents(item.amount),
+          count: res.body.length,
+        });
       }
     };
+
+    it('leaves the starting balance of a wallet in the same period out of its income history', async () => {
+      const member = await createVerifiedMember(testApp, 'statistics-income-history');
+
+      try {
+        const url = base(member);
+        const categories = await api(member).get(`${url}/categories`).expect(200);
+        const [salary, gifts] = categories.body.incomes;
+        const [housing] = categories.body.expenses;
+        const wallet = (name: string, initialBalance: string) =>
+          api(member)
+            .post(`${url}/wallets`)
+            .send({ wallet_name: name, initial_balance: initialBalance, design: 'slate' })
+            .expect(201)
+            .then((res) => res.body.wallet.id as number);
+        const card = await wallet('Card', '500');
+        const cash = await wallet('Cash', '0');
+        const add = (walletId: number, categoryId: number, type: string, amount: string) =>
+          api(member)
+            .post(`${url}/transactions`)
+            .send({
+              wallet_id: walletId,
+              category_id: categoryId,
+              transaction_type: type,
+              amount,
+              timestamp: '2026-09-10T09:00:00.000Z',
+            })
+            .expect(201);
+
+        await add(card, salary.id, 'income', '3000');
+        await add(cash, gifts.id, 'income', '40');
+        await add(card, housing.id, 'expense', '70');
+        await testApp.dataSource.query(
+          'UPDATE transactions t JOIN categories c ON c.id = t.category_id SET t.timestamp = ? WHERE t.wallet_id = ? AND c.is_system = 1',
+          [new Date('2026-09-02T07:00:00.000Z'), card],
+        );
+
+        for (const [transaction_type, rows] of [
+          ['income', 4],
+          ['expense', 2],
+        ] as const) {
+          const { body } = await api(member)
+            .get(`${url}/statistics/breakdown`)
+            .query({ ...MONTH, transaction_type })
+            .expect(200);
+
+          expect(openableItems(body)).toHaveLength(rows);
+          await expectHistoryToMatch(member, body, openableItems(body));
+        }
+
+        const bounds = { from: '2026-08-31T21:00:00.000Z', to: AS_OF, transaction_type: 'income', wallet_id: card };
+        const amounts = async (query: Record<string, string | number>) => {
+          const res = await api(member).get(`${url}/transactions`).query(query).expect(200);
+          const count = await api(member).get(`${url}/transactions/count`).query(query).expect(200);
+
+          expect(count.body.count).toBe(res.body.length);
+          return res.body.map((tx: { amount: string }) => tx.amount).sort();
+        };
+
+        // without kind the history keeps the starting balance
+        expect(await amounts(bounds)).toEqual(['3000.00', '500.00']);
+        expect(await amounts({ ...bounds, kind: 'regular' })).toEqual(['3000.00']);
+        expect(await amounts({ ...bounds, kind: 'initial_balance' })).toEqual(['500.00']);
+      } finally {
+        await deleteUsers(testApp.dataSource, [member.userId]);
+      }
+    });
 
     it('opens every regular breakdown row with the statistics bounds and adds up to its amount', async () => {
       const { body } = await getBlock('breakdown', MONTH).expect(200);
@@ -767,13 +847,31 @@ describe('Statistics blocks (e2e)', () => {
         .query({ category_id: outsiderCategories.body.expenses[0].id })
         .expect(403);
 
-      for (const query of [{ category_id: 'other' }, { wallet_id: '0' }, { transaction_type: 'transfer' }]) {
+      for (const query of [
+        { category_id: 'other' },
+        { wallet_id: '0' },
+        { transaction_type: 'transfer' },
+        { kind: 'system' },
+        { kind: '' },
+      ]) {
         const res = await api(owner)
           .get(`${base(owner)}/transactions`)
           .query(query)
           .expect(400);
 
         expect(res.body.message).toEqual([expect.objectContaining({ field: Object.keys(query)[0] })]);
+      }
+
+      for (const path of ['transactions', 'transactions/count']) {
+        const res = await api(owner)
+          .get(`${base(owner)}/${path}?kind=regular&kind=initial_balance`)
+          .expect(400);
+
+        // field is "kind" in the tsc build; under @swc/jest the enum becomes the
+        // param metatype and the global ValidationPipe reports the array items
+        expect(res.body.message).toEqual(
+          expect.arrayContaining([expect.objectContaining({ field: expect.any(String) })]),
+        );
       }
     });
   });
