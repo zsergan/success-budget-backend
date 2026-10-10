@@ -176,6 +176,19 @@ describe('Statistics OpenAPI', () => {
     expect(new RegExp(MONEY_PATTERN).test('810.5')).toBe(false);
   });
 
+  it('takes transaction_type on breakdown only and echoes it', () => {
+    const queryNames = (block: string) =>
+      (document.paths[`/spaces/{spaceId}/statistics/${block}`].get!.parameters as { name: string; in: string }[])
+        .filter((parameter) => parameter.in === 'query')
+        .map((parameter) => parameter.name);
+
+    expect(queryNames('summary')).not.toContain('transaction_type');
+    expect(queryNames('trend')).not.toContain('transaction_type');
+    expect(queryNames('breakdown')).toContain('transaction_type');
+    expect(refName(schemas.StatisticsBreakdown.properties!.transaction_type)).toBe('TransactionType');
+    expect(schemas.TransactionType.enum).toEqual(['income', 'expense']);
+  });
+
   it('lists the enums', () => {
     expect(schemas.StatisticsPeriodType.enum).toEqual(['week', 'month', 'year', 'custom']);
     expect(schemas.StatisticsTimeState.enum).toEqual(['past', 'current', 'future']);

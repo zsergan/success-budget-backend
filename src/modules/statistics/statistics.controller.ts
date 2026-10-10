@@ -9,7 +9,7 @@ import {
 } from '@nestjs/swagger';
 
 import { StatisticsService } from './statistics.service';
-import { StatisticsQueryDto } from './dto/statistics-query.dto';
+import { StatisticsBreakdownQueryDto, StatisticsQueryDto } from './dto/statistics-query.dto';
 import { StatisticsBreakdown, StatisticsSummary, StatisticsTrend } from './dto/statistics-responses';
 import type { AuthedRequest } from '@shared/types';
 
@@ -52,15 +52,15 @@ export class StatisticsController {
   }
 
   @ApiOperation({
-    summary: 'Expenses by category and by wallet, with Other',
-    description: `Both groupings at once; Other children inline. ${CONTRACT}`,
+    summary: 'Expenses or income by category and by wallet, with Other',
+    description: `transaction_type defaults to expense. Both groupings at once; Other children inline. ${CONTRACT}`,
   })
   @ApiOkResponse({ type: StatisticsBreakdown })
   @Get('breakdown')
   async getBreakdown(
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
-    @Query() query: StatisticsQueryDto,
+    @Query() query: StatisticsBreakdownQueryDto,
   ) {
     return this.statisticsService.getBreakdown(req.user.id, spaceId, query);
   }

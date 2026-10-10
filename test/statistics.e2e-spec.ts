@@ -629,6 +629,34 @@ describe('Statistics blocks (e2e)', () => {
     );
   });
 
+  it('breakdown without transaction_type is the expense breakdown', async () => {
+    const [byDefault, expense] = await Promise.all([
+      getBlock('breakdown', MONTH).expect(200),
+      getBlock('breakdown', { ...MONTH, transaction_type: 'expense' }).expect(200),
+    ]);
+
+    expect(byDefault.body.transaction_type).toBe('expense');
+    expect(byDefault.body).toEqual(expense.body);
+  });
+
+  it.each([
+    ['transaction_type=transfer', 'an unknown'],
+    ['transaction_type=', 'an empty'],
+    ['transaction_type=income&transaction_type=expense', 'a repeated'],
+  ])('breakdown rejects %s (%s transaction_type)', async (param) => {
+    const res = await api(owner)
+      .get(`${base(owner)}/statistics/breakdown?period=month&time_zone=UTC&${param}`)
+      .expect(400);
+
+    expect(res.body.message).toEqual([expect.objectContaining({ field: 'transaction_type' })]);
+  });
+
+  it.each(['summary', 'trend'] as const)('%s does not take transaction_type', async (block) => {
+    const res = await getBlock(block, { ...MONTH, transaction_type: 'expense' }).expect(400);
+
+    expect(res.body.message).toEqual([expect.objectContaining({ field: 'transaction_type' })]);
+  });
+
   it('rejects a repeated parameter', async () => {
     const res = await api(owner)
       .get(`${base(owner)}/statistics/summary?period=month&period=week&time_zone=UTC`)

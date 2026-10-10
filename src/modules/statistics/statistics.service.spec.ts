@@ -219,7 +219,12 @@ describe('StatisticsService', () => {
   it('breakdown: the expense total of the same selection', async () => {
     const result = await service.getBreakdown(userId, spaceId, query);
 
-    expect(result).toMatchObject({ period, currency: 'EUR', total: { amount: '810.50', count: 9 } });
+    expect(result).toMatchObject({
+      period,
+      currency: 'EUR',
+      transaction_type: 'expense',
+      total: { amount: '810.50', count: 9 },
+    });
     expect(result.by_category).toMatchObject({
       total_amount: '810.50',
       source_count: 2,
