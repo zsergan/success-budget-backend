@@ -7,7 +7,7 @@ import type { StatisticsQueryDto } from './dto/statistics-query.dto';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
-import { StatisticsPeriodType } from '@shared/enums';
+import { StatisticsPeriodType, TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { withRelations } from '@shared/utils';
 import { buildCurrency, buildSpace, buildSpaceMember } from '@testing';
@@ -60,7 +60,7 @@ describe('StatisticsService', () => {
               .mockResolvedValue(SEPTEMBER),
             getStatisticsIntervalTotals: jest.fn(),
             getLastStatisticsTimestamp: jest.fn().mockResolvedValue(new Date('2026-09-27T21:30:00.000Z')),
-            getStatisticsExpenseByCategory: jest.fn().mockResolvedValue([
+            getStatisticsByCategory: jest.fn().mockResolvedValue([
               {
                 id: 10,
                 name: 'Groceries',
@@ -72,7 +72,7 @@ describe('StatisticsService', () => {
               },
               { id: 16, name: 'Fees', icon: 'receipt', color: 'slate', isArchived: false, amount: 1050n, count: 1 },
             ]),
-            getStatisticsExpenseByWallet: jest.fn().mockResolvedValue([
+            getStatisticsByWallet: jest.fn().mockResolvedValue([
               { id: 1, name: 'Card', design: 'slate', isDeleted: false, amount: 71050n, count: 7 },
               { id: 3, name: 'Old card', design: 'rose', isDeleted: true, amount: 10000n, count: 2 },
             ]),
@@ -239,20 +239,38 @@ describe('StatisticsService', () => {
       deleted_wallets: { kind: 'deleted_wallets', amount: '100.00', wallets_count: 1 },
       other: null,
     });
-    expect(transactionQueriesService.getStatisticsExpenseByCategory).toHaveBeenCalledWith(
+    expect(transactionQueriesService.getStatisticsByCategory).toHaveBeenCalledWith(
       spaceId,
+      TransactionType.EXPENSE,
       period.from,
       now,
       manager,
     );
-    expect(transactionQueriesService.getStatisticsExpenseByWallet).toHaveBeenCalledWith(
+    expect(transactionQueriesService.getStatisticsByWallet).toHaveBeenCalledWith(
       spaceId,
+      TransactionType.EXPENSE,
       period.from,
       now,
       manager,
     );
     expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
+  });
+
+  it('breakdown: the income groups of the same selection', async () => {
+    const result = await service.getBreakdown(userId, spaceId, { ...query, transaction_type: TransactionType.INCOME });
+
+    expect(result).toMatchObject({ transaction_type: 'income', total: { amount: '810.50', count: 9 } });
+    for (const method of ['getStatisticsByCategory', 'getStatisticsByWallet'] as const) {
+      expect(transactionQueriesService[method]).toHaveBeenCalledWith(
+        spaceId,
+        TransactionType.INCOME,
+        period.from,
+        now,
+        manager,
+      );
+    }
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('summary: no transactions at all', async () => {
@@ -282,6 +300,10 @@ describe('StatisticsService', () => {
     const summary = await service.getSummary(userId, spaceId, future);
     const trend = await service.getTrend(userId, spaceId, future);
     const breakdown = await service.getBreakdown(userId, spaceId, future);
+    const incomeBreakdown = await service.getBreakdown(userId, spaceId, {
+      ...future,
+      transaction_type: TransactionType.INCOME,
+    });
 
     expect(summary.period.state).toBe('future');
     expect(summary).toMatchObject({
@@ -299,7 +321,13 @@ describe('StatisticsService', () => {
       by_category: { total_amount: '0.00', source_count: 0, primary_items: [], other: null },
       by_wallet: { source_count: 0, primary_items: [], deleted_wallets: null, other: null },
     });
-    expect(transactionQueriesService.getStatisticsExpenseByCategory).not.toHaveBeenCalled();
+    expect(incomeBreakdown).toMatchObject({
+      transaction_type: 'income',
+      total: { amount: '0.00', count: 0 },
+      by_category: { source_count: 0, primary_items: [], other: null },
+    });
+    expect(transactionQueriesService.getStatisticsByCategory).not.toHaveBeenCalled();
+    expect(transactionQueriesService.getStatisticsByWallet).not.toHaveBeenCalled();
     expect(trend.totals).toEqual({ income: { amount: '0.00', count: 0 }, expense: { amount: '0.00', count: 0 } });
     expect(trend.buckets).toHaveLength(5);
     expect(trend.buckets.every((bucket) => bucket.state === 'future' && bucket.income === null)).toBe(true);

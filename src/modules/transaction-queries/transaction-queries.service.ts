@@ -30,7 +30,7 @@ const toStatisticsTotals = (row: TotalsRow | undefined): StatisticsTotals => ({
   expenseCount: Number(row?.expense_count ?? 0),
 });
 
-export interface StatisticsCategoryExpense {
+export interface StatisticsCategoryGroup {
   id: number;
   name: string;
   icon: string;
@@ -41,7 +41,7 @@ export interface StatisticsCategoryExpense {
   count: number;
 }
 
-export interface StatisticsWalletExpense {
+export interface StatisticsWalletGroup {
   id: number;
   name: string;
   design: AppColor;
@@ -255,13 +255,14 @@ export class TransactionQueriesService {
     return totals;
   }
 
-  async getStatisticsExpenseByCategory(
+  async getStatisticsByCategory(
     spaceId: number,
+    transactionType: TransactionType,
     from: Date,
     to: Date,
     manager: EntityManager,
-  ): Promise<StatisticsCategoryExpense[]> {
-    const rows = await this.statisticsExpenseScope(manager, spaceId, from, to)
+  ): Promise<StatisticsCategoryGroup[]> {
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
       .select('category.id', 'id')
       .addSelect('category.name', 'name')
       .addSelect('category.icon', 'icon')
@@ -291,13 +292,14 @@ export class TransactionQueriesService {
     }));
   }
 
-  async getStatisticsExpenseByWallet(
+  async getStatisticsByWallet(
     spaceId: number,
+    transactionType: TransactionType,
     from: Date,
     to: Date,
     manager: EntityManager,
-  ): Promise<StatisticsWalletExpense[]> {
-    const rows = await this.statisticsExpenseScope(manager, spaceId, from, to)
+  ): Promise<StatisticsWalletGroup[]> {
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
       .select('wallet.id', 'id')
       .addSelect('wallet.wallet_name', 'name')
       .addSelect('wallet.design', 'design')
@@ -367,15 +369,17 @@ export class TransactionQueriesService {
     return manager?.getRepository(Transaction) ?? this.transactionRepository;
   }
 
-  private statisticsExpenseScope(
+  private statisticsTypeScope(
     manager: EntityManager,
     spaceId: number,
+    transactionType: TransactionType,
     from: Date,
     to: Date,
   ): SelectQueryBuilder<Transaction> {
-    return this.statisticsScope(manager, spaceId, from, to).andWhere('transaction.transaction_type = :expense', {
-      expense: TransactionType.EXPENSE,
-    });
+    return this.statisticsScope(manager, spaceId, from, to).andWhere(
+      'transaction.transaction_type = :transactionType',
+      { transactionType },
+    );
   }
 
   private selectStatisticsTotals(query: SelectQueryBuilder<Transaction>): SelectQueryBuilder<Transaction> {

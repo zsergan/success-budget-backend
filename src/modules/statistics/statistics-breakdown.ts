@@ -1,8 +1,8 @@
 import { AppColor } from '@shared/enums';
 import { formatMoney, roundPercentToTenth } from '@shared/utils';
 import type {
-  StatisticsCategoryExpense,
-  StatisticsWalletExpense,
+  StatisticsCategoryGroup,
+  StatisticsWalletGroup,
 } from '@modules/transaction-queries/transaction-queries.service';
 
 export const MAX_PRIMARY_GROUPS = 6;
@@ -99,10 +99,10 @@ export const sumOf = (groups: Group[]): bigint => groups.reduce((sum, group) => 
 const otherOf = <T>(folded: Group[], children: T[], total: bigint): OtherItem<T> | null =>
   folded.length ? { ...serviceItem('other', sumOf(folded), total), children } : null;
 
-export const buildCategoryBreakdown = (categories: StatisticsCategoryExpense[]): CategoryBreakdown => {
+export const buildCategoryBreakdown = (categories: StatisticsCategoryGroup[]): CategoryBreakdown => {
   const total = sumOf(categories);
   const { primary, folded } = foldGroups(categories, total, MAX_PRIMARY_GROUPS);
-  const toItem = (category: StatisticsCategoryExpense): CategoryItem => ({
+  const toItem = (category: StatisticsCategoryGroup): CategoryItem => ({
     kind: 'category',
     key: `category:${category.id}`,
     id: category.id,
@@ -125,7 +125,7 @@ export const buildCategoryBreakdown = (categories: StatisticsCategoryExpense[]):
 
 // Deleted wallets form one service group outside the threshold and Other;
 // with it, one primary slot less keeps the donut within seven segments.
-export const buildWalletBreakdown = (wallets: StatisticsWalletExpense[]): WalletBreakdown => {
+export const buildWalletBreakdown = (wallets: StatisticsWalletGroup[]): WalletBreakdown => {
   const total = sumOf(wallets);
   const deleted = wallets.filter((wallet) => wallet.isDeleted && wallet.amount > 0n);
   const { primary, folded } = foldGroups(
@@ -133,7 +133,7 @@ export const buildWalletBreakdown = (wallets: StatisticsWalletExpense[]): Wallet
     total,
     deleted.length ? MAX_PRIMARY_GROUPS - 1 : MAX_PRIMARY_GROUPS,
   );
-  const toItem = (wallet: StatisticsWalletExpense): WalletItem => ({
+  const toItem = (wallet: StatisticsWalletGroup): WalletItem => ({
     kind: 'wallet',
     key: `wallet:${wallet.id}`,
     id: wallet.id,

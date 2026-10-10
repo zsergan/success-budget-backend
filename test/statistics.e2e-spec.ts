@@ -227,6 +227,88 @@ describe('Statistics blocks (e2e)', () => {
     });
   });
 
+  it('breakdown groups income by the same rules, without starting balances', async () => {
+    const member = await createVerifiedMember(testApp, 'statistics-income');
+
+    try {
+      const url = base(member);
+      const categories = await api(member).get(`${url}/categories`).expect(200);
+      const [salary, freelance] = categories.body.incomes;
+      const [groceries] = categories.body.expenses;
+      const zeroCategory = await api(member)
+        .post(`${url}/categories`)
+        .send({ name: 'Zero income', transaction_type: 'income', icon: 'Other', color: 'slate' })
+        .expect(201);
+      const wallet = (name: string, initialBalance: string) =>
+        api(member)
+          .post(`${url}/wallets`)
+          .send({ wallet_name: name, initial_balance: initialBalance, design: 'slate' })
+          .expect(201)
+          .then((res) => res.body.wallet.id as number);
+      const card = await wallet('Card', '500');
+      const cash = await wallet('Cash', '0');
+      const oldCard = await wallet('Old card', '0');
+      const add = (walletId: number, categoryId: number, type: string, amount: string, timestamp: string) =>
+        api(member)
+          .post(`${url}/transactions`)
+          .send({ wallet_id: walletId, category_id: categoryId, transaction_type: type, amount, timestamp })
+          .expect(201);
+      const insert = (walletId: number, categoryId: number, amount: string, timestamp: string) =>
+        testApp.dataSource.query(
+          "INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp) VALUES (UUID(), ?, ?, 'income', ?, ?)",
+          [walletId, categoryId, amount, new Date(timestamp)],
+        );
+
+      await add(card, salary.id, 'income', '3000', '2026-09-01T07:00:00.000Z');
+      await add(oldCard, freelance.id, 'income', '200', '2026-09-05T07:00:00.000Z');
+      await add(card, groceries.id, 'expense', '50', '2026-09-06T07:00:00.000Z');
+      // a refund: counted by its own type, on an expense category
+      await insert(cash, groceries.id, '20', '2026-09-07T07:00:00.000Z');
+      // a legacy zero amount: counted, but no segment
+      await insert(card, zeroCategory.body.id, '0', '2026-09-08T07:00:00.000Z');
+      // the starting balance of Card moved into the period
+      await testApp.dataSource.query(
+        'UPDATE transactions t JOIN categories c ON c.id = t.category_id SET t.timestamp = ? WHERE t.wallet_id = ? AND c.is_system = 1',
+        [new Date('2026-09-02T07:00:00.000Z'), card],
+      );
+      await api(member).delete(`${url}/categories/${freelance.id}`).expect(200);
+      await api(member).delete(`${url}/wallets/${oldCard}`).expect(200);
+
+      const get = (block: 'summary' | 'breakdown', query: Record<string, string>) =>
+        api(member).get(`${url}/statistics/${block}`).query(query).expect(200);
+      const [summary, income, expense] = await Promise.all([
+        get('summary', MONTH),
+        get('breakdown', { ...MONTH, transaction_type: 'income' }),
+        get('breakdown', MONTH),
+      ]);
+      const ids = (items: { id: number }[]) => items.map((item) => item.id);
+
+      expect(income.body.transaction_type).toBe('income');
+      expect(income.body.total).toEqual({ amount: '3220.00', count: 4 });
+      expect(income.body.total).toEqual(summary.body.income);
+      expect(expense.body.total).toEqual({ amount: '50.00', count: 1 });
+      expect(expense.body.total).toEqual(summary.body.expense);
+
+      expect(income.body.by_category).toMatchObject({ total_amount: '3220.00', source_count: 3 });
+      expect(income.body.by_category.primary_items).toEqual([
+        expect.objectContaining({ id: salary.id, amount: '3000.00', percent: 93.2, is_archived: false }),
+        expect.objectContaining({ id: freelance.id, amount: '200.00', percent: 6.2, is_archived: true }),
+      ]);
+      expect(ids(income.body.by_category.other.children)).toEqual([groceries.id]);
+
+      expect(income.body.by_wallet).toMatchObject({ total_amount: '3220.00', source_count: 3 });
+      expect(ids(income.body.by_wallet.primary_items)).toEqual([card]);
+      expect(income.body.by_wallet.primary_items[0].amount).toBe('3000.00');
+      expect(income.body.by_wallet.deleted_wallets).toMatchObject({ amount: '200.00', wallets_count: 1 });
+      expect(ids(income.body.by_wallet.other.children)).toEqual([cash]);
+
+      const document = createOpenApiDocument(testApp.app);
+      expect(schemaErrors(document, okResponseSchema(document, '/statistics/breakdown'), income.body)).toEqual([]);
+    } finally {
+      await deleteUsers(testApp.dataSource, [member.userId]);
+    }
+  });
+
   it('trend splits the month into calendar weeks up to as_of', async () => {
     const res = await getBlock('trend', MONTH).expect(200);
 

@@ -82,7 +82,7 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
     return res.body.transaction.id;
   }
 
-  function pauseBefore(method: 'getStatisticsExpenseByWallet' | 'getLastStatisticsTimestamp'): Pause {
+  function pauseBefore(method: 'getStatisticsByWallet' | 'getLastStatisticsTimestamp'): Pause {
     let reached!: () => void;
     let release!: () => void;
     const reachedPromise = new Promise<void>((resolve) => (reached = resolve));
@@ -121,7 +121,7 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
   it('breakdown: an expense added between the category and the wallet reads is in neither', async () => {
     const space = await createSpace('statistics-breakdown-race');
     await addExpense(space, '100');
-    const pause = pauseBefore('getStatisticsExpenseByWallet');
+    const pause = pauseBefore('getStatisticsByWallet');
 
     const { response } = await startHeld(space.member, 'breakdown', pause);
     await addExpense(space, '50');

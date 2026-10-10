@@ -184,17 +184,30 @@ export class StatisticsService {
     const block = await this.openBlock(userId, spaceId, query);
     const { period } = block;
     const { actual_to: to } = period;
+    const transactionType = query.transaction_type ?? TransactionType.EXPENSE;
     const [categories, wallets] =
       to === null
         ? [[], []]
         : await this.readSnapshot(async (manager) => [
-            await this.transactionQueriesService.getStatisticsExpenseByCategory(spaceId, period.from, to, manager),
-            await this.transactionQueriesService.getStatisticsExpenseByWallet(spaceId, period.from, to, manager),
+            await this.transactionQueriesService.getStatisticsByCategory(
+              spaceId,
+              transactionType,
+              period.from,
+              to,
+              manager,
+            ),
+            await this.transactionQueriesService.getStatisticsByWallet(
+              spaceId,
+              transactionType,
+              period.from,
+              to,
+              manager,
+            ),
           ]);
 
     return {
       ...block,
-      transaction_type: query.transaction_type ?? TransactionType.EXPENSE,
+      transaction_type: transactionType,
       total: {
         amount: formatMoney(sumOf(categories)),
         count: categories.reduce((sum, category) => sum + category.count, 0),
