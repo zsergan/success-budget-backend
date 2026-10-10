@@ -47,7 +47,7 @@ export class StatisticsBreakdownQueryDto extends StatisticsQueryDto {
   @ApiPropertyOptional({
     enum: TransactionType,
     enumName: 'TransactionType',
-    description: 'Which transactions the breakdown groups. Default: expense.',
+    description: 'Which transactions the breakdown groups; echoed as transaction_type. Default: expense.',
   })
   @IsOptionalNonNull()
   @IsEnum(TransactionType)

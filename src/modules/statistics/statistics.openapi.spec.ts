@@ -177,14 +177,26 @@ describe('Statistics OpenAPI', () => {
   });
 
   it('takes transaction_type on breakdown only and echoes it', () => {
-    const queryNames = (block: string) =>
-      (document.paths[`/spaces/{spaceId}/statistics/${block}`].get!.parameters as { name: string; in: string }[])
-        .filter((parameter) => parameter.in === 'query')
-        .map((parameter) => parameter.name);
+    const queryParameters = (block: string) =>
+      (
+        document.paths[`/spaces/{spaceId}/statistics/${block}`].get!.parameters as {
+          name: string;
+          in: string;
+          required?: boolean;
+          description?: string;
+          schema?: Schema;
+        }[]
+      ).filter((parameter) => parameter.in === 'query');
+    const queryNames = (block: string) => queryParameters(block).map((parameter) => parameter.name);
 
     expect(queryNames('summary')).not.toContain('transaction_type');
     expect(queryNames('trend')).not.toContain('transaction_type');
-    expect(queryNames('breakdown')).toContain('transaction_type');
+    expect(queryNames('breakdown')).toEqual(queryNames('summary').concat('transaction_type'));
+
+    const transactionType = queryParameters('breakdown').find((parameter) => parameter.name === 'transaction_type')!;
+    expect(transactionType.required).toBe(false);
+    expect(refName(transactionType.schema!)).toBe('TransactionType');
+    expect(transactionType.description).toContain('Default: expense');
     expect(refName(schemas.StatisticsBreakdown.properties!.transaction_type)).toBe('TransactionType');
     expect(schemas.TransactionType.enum).toEqual(['income', 'expense']);
   });
