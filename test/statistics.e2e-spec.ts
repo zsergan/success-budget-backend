@@ -309,6 +309,123 @@ describe('Statistics blocks (e2e)', () => {
     }
   });
 
+  it('folds income by the expense rules: six slots, 3% on cents, deleted wallets apart', async () => {
+    const member = await createVerifiedMember(testApp, 'statistics-income-other');
+
+    try {
+      const url = base(member);
+      const categories = await api(member).get(`${url}/categories`).expect(200);
+      const [salary, gifts] = categories.body.incomes;
+      const category = (name: string) =>
+        api(member)
+          .post(`${url}/categories`)
+          .send({ name, transaction_type: 'income', icon: 'Other', color: 'slate' })
+          .expect(201)
+          .then((res) => res.body.id as number);
+      const realOther = await category('Other');
+      const ids: number[] = [];
+      for (const name of ['A', 'B', 'C', 'D', 'E', 'F']) {
+        ids.push(await category(name));
+      }
+      const [catA, catB, catC, catD, catE, catF] = ids;
+      const wallets: number[] = [];
+      for (let i = 1; i <= 7; i++) {
+        const res = await api(member)
+          .post(`${url}/wallets`)
+          .send({ wallet_name: `W${i}`, initial_balance: '0', design: 'slate' })
+          .expect(201);
+        wallets.push(res.body.wallet.id);
+      }
+      const [w1, w2, w3, w4, w5, w6, w7] = wallets;
+      const add = (walletId: number, categoryId: number, amount: string) =>
+        api(member)
+          .post(`${url}/transactions`)
+          .send({
+            wallet_id: walletId,
+            category_id: categoryId,
+            transaction_type: 'income',
+            amount,
+            timestamp: '2026-09-10T09:00:00.000Z',
+          })
+          .expect(201);
+
+      // of 10000.00: 40, 20, 15, 10, 4, 4, 4, 2.96 and 0.04%
+      await add(w1, salary.id, '4000');
+      await add(w2, gifts.id, '2000');
+      await add(w3, realOther, '1500');
+      await add(w4, catA, '1000');
+      await add(w5, catB, '400');
+      await add(w6, catC, '400');
+      await add(w7, catD, '400');
+      await add(w1, catE, '296');
+      await add(w1, catF, '4');
+      await api(member).delete(`${url}/categories/${gifts.id}`).expect(200);
+      await api(member).delete(`${url}/wallets/${w7}`).expect(200);
+
+      const { body } = await api(member)
+        .get(`${url}/statistics/breakdown`)
+        .query({ ...MONTH, transaction_type: 'income' })
+        .expect(200);
+      const rows = (items: { id: number | null; amount: string; percent: number }[]) =>
+        items.map(({ id, amount, percent }) => [id, amount, percent]);
+
+      expect(body.total).toEqual({ amount: '10000.00', count: 9 });
+
+      expect(body.by_category.source_count).toBe(9);
+      expect(rows(body.by_category.primary_items)).toEqual([
+        [salary.id, '4000.00', 40],
+        [gifts.id, '2000.00', 20],
+        [realOther, '1500.00', 15],
+        [catA, '1000.00', 10],
+        [catB, '400.00', 4],
+        [catC, '400.00', 4],
+      ]);
+      expect(body.by_category.primary_items[1]).toMatchObject({ is_archived: true, opens_history: true });
+      expect(body.by_category.primary_items[2]).toMatchObject({ kind: 'category', name: 'Other', opens_history: true });
+      expect(body.by_category.other).toMatchObject({
+        kind: 'other',
+        id: null,
+        amount: '700.00',
+        percent: 7,
+        opens_history: false,
+      });
+      // E is 2.96%: shown as 3.0, folded all the same
+      expect(rows(body.by_category.other.children)).toEqual([
+        [catD, '400.00', 4],
+        [catE, '296.00', 3],
+        [catF, '4.00', 0],
+      ]);
+
+      expect(body.by_wallet.source_count).toBe(7);
+      expect(rows(body.by_wallet.primary_items)).toEqual([
+        [w1, '4300.00', 43],
+        [w2, '2000.00', 20],
+        [w3, '1500.00', 15],
+        [w4, '1000.00', 10],
+        [w5, '400.00', 4],
+      ]);
+      expect(body.by_wallet.deleted_wallets).toMatchObject({ amount: '400.00', percent: 4, wallets_count: 1 });
+      expect(rows(body.by_wallet.other.children)).toEqual([[w6, '400.00', 4]]);
+
+      for (const categoryId of [gifts.id, realOther]) {
+        const history = await api(member)
+          .get(`${url}/transactions`)
+          .query({
+            from: body.period.from,
+            to: body.period.actual_to,
+            transaction_type: 'income',
+            category_id: categoryId,
+          })
+          .expect(200);
+        const item = body.by_category.primary_items.find((row: { id: number }) => row.id === categoryId);
+
+        expect(history.body.map((tx: { amount: string }) => tx.amount)).toEqual([item.amount]);
+      }
+    } finally {
+      await deleteUsers(testApp.dataSource, [member.userId]);
+    }
+  });
+
   it('trend splits the month into calendar weeks up to as_of', async () => {
     const res = await getBlock('trend', MONTH).expect(200);
 
