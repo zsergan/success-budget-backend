@@ -31,7 +31,7 @@ recurring transactions.
 | Limits month in the client's `time_zone`                            | implemented |
 | `client_operation_id`, `GET /transactions/operations/:id`           | implemented |
 | `GET /transactions/feed`: cursor pages, search, `around_id`         | implemented |
-| `GET /transactions/feed`: `summary`, `day_totals`                   | contract    |
+| `GET /transactions/feed`: `summary`, `day_totals`                   | implemented |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
@@ -398,9 +398,17 @@ interface TransactionFeed {
 - **Order.** `timestamp` descending, then `id` descending: the order of
   `GET /transactions`. Every page, also one read with `previous_cursor` or
   `around_id`, lists its items in this order.
-- **One snapshot.** `items`, `summary` and `day_totals` of a response are
-  read in one database snapshot, so they agree with each other even while
-  other members write.
+- **One snapshot per response.** `items`, `summary` and `day_totals` of a
+  response are read in one database snapshot, so they agree with each
+  other even while other members write. The snapshot ends with the
+  response: a cursor does not pin the database for the rest of the
+  scrolling, and there is no frozen copy of the history (see below).
+- **Computed in the database.** The count and the sums are aggregated by
+  MySQL over the whole selection, never by loading its rows, and in exact
+  decimal arithmetic: a sum may exceed the maximum of one amount
+  (`"299999999.97"`). Day bounds are computed by the server in
+  `time_zone`, with its daylight-saving changes (a local day can last 23 or
+  25 hours), and do not depend on MySQL time zone tables.
 - **Money** is a string with exactly two decimals; `net` carries a `-`
   when expense exceeds income and is `"0.00"`, never `"-0.00"`, when they
   are equal.
@@ -468,13 +476,16 @@ was taken from is edited or deleted, and it does not expire.
   is not a cursor at all, is `400 VALIDATION_FAILED`, field `cursor`: the
   client then reloads the first page.
 
-Records written between two requests are not shifted into or out of the
-loaded pages. A record created or moved above the first loaded page is
+Pages are read at different moments, each from the database as it is
+then; the feed keeps no history session between requests. Records written
+between two requests are not shifted into or out of the loaded pages. A record created or moved above the first loaded page is
 reached by reloading the first page (pull to refresh). A record edited
 between two requests can be listed on both pages, or on neither if its
 timestamp moved across the loaded part. The client therefore keys records
 by `id` and keeps the copy of the latest response, and takes `summary` and
 the `day_totals` of a date from the latest response that carries them.
+After a pull to refresh, or whenever it needs figures that agree across the
+whole list, the client starts a new load from the first page.
 
 #### Opening the history at a record
 
