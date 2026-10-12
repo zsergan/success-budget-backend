@@ -215,6 +215,3 @@ export class TransactionFeed {
   })
   day_totals!: TransactionFeedDayTotal[];
 }
-
-// The page part of the feed, until the totals are added.
-export type TransactionFeedPage = Pick<TransactionFeed, 'items' | 'page_info'>;

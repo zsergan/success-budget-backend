@@ -36,6 +36,8 @@ describe('TransactionsService', () => {
       | 'getOneInSpace'
       | 'getFeedPage'
       | 'findFeedPosition'
+      | 'getFeedSummary'
+      | 'getFeedIntervalNets'
     >
   >;
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
@@ -72,6 +74,8 @@ describe('TransactionsService', () => {
       getOneInSpace: jest.fn(),
       getFeedPage: jest.fn().mockResolvedValue({ items: [], hasMore: false }),
       findFeedPosition: jest.fn(),
+      getFeedSummary: jest.fn().mockResolvedValue({ count: 0, income: 0n, expense: 0n }),
+      getFeedIntervalNets: jest.fn(async (_selection, intervals: unknown[]) => intervals.map(() => 0n)),
     };
     walletsService = { getOne: jest.fn().mockResolvedValue(buildWallet({ id: 1, space_id: spaceId })) };
     categoriesService = {
@@ -798,6 +802,42 @@ describe('TransactionsService', () => {
       expect(page.items.map((item) => item.id)).toEqual(['newer-1', 'newer-2', 'newer-3', 'target', 'older-0']);
       expect(page.page_info.previous_cursor).toEqual(expect.any(String));
       expect(page.page_info.next_cursor).toBeNull();
+    });
+
+    it('reads the totals in the snapshot of the rows, one interval per local day of the page', async () => {
+      const at = (id: string, timestamp: string) =>
+        Object.assign(loadedTransaction(id, { id: 1 }), { timestamp: new Date(timestamp) });
+      transactionQueriesService.getFeedPage.mockResolvedValue({
+        items: [
+          at('a', '2026-09-03T20:59:59.999Z'),
+          at('b', '2026-09-02T21:00:00.000Z'),
+          at('c', '2026-09-02T20:00:00.000Z'),
+        ],
+        hasMore: false,
+      });
+      transactionQueriesService.getFeedSummary.mockResolvedValue({
+        count: 40,
+        income: 1_000_000_000_00n,
+        expense: 5n,
+      });
+      transactionQueriesService.getFeedIntervalNets.mockResolvedValue([-1230n, 0n]);
+
+      const feed = await service.getFeed(userId, spaceId, query);
+
+      expect(transactionQueriesService.getFeedSummary).toHaveBeenCalledWith(expect.anything(), manager);
+      expect(transactionQueriesService.getFeedIntervalNets).toHaveBeenCalledWith(
+        expect.anything(),
+        [
+          { from: new Date('2026-09-02T21:00:00.000Z'), to: new Date('2026-09-03T20:59:59.999Z') },
+          { from: new Date('2026-09-01T21:00:00.000Z'), to: new Date('2026-09-02T20:59:59.999Z') },
+        ],
+        manager,
+      );
+      expect(feed.summary).toEqual({ count: 40, income: '1000000000.00', expense: '0.05' });
+      expect(feed.day_totals).toEqual([
+        { date: '2026-09-03', net: '-12.30' },
+        { date: '2026-09-02', net: '0.00' },
+      ]);
     });
 
     it('checks the request shape before membership', async () => {

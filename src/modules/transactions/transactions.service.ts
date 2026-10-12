@@ -11,7 +11,8 @@ import type { UpdateTransactionDto } from './dto/update-transaction.dto';
 import type { TransactionFeedQueryDto } from './dto/transaction-feed-query.dto';
 import type {
   TransactionCount,
-  TransactionFeedPage,
+  TransactionFeed,
+  TransactionFeedDayTotal,
   TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
@@ -38,6 +39,7 @@ import { ApiException } from '@shared/api.exception';
 import { TransactionOperationStatus } from '@shared/enums';
 import {
   assertFound,
+  formatMoney,
   isDuplicateKey,
   lockRows,
   moneyToNumber,
@@ -58,6 +60,7 @@ import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { IdempotencyService } from '@modules/idempotency/idempotency.service';
+import { calendarDateAt, endOfDay, formatCalendarDate, startOfDay } from '@modules/statistics/statistics-calendar';
 
 export interface WriteOptions {
   idempotencyKey?: string;
@@ -275,9 +278,10 @@ export class TransactionsService {
     return { count: await this.transactionQueriesService.countForAllWallets(spaceId, from, to, filters) };
   }
 
-  async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryDto): Promise<TransactionFeedPage> {
+  async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryDto): Promise<TransactionFeed> {
     const selection = toFeedSelection(spaceId, query);
-    const digest = selectionDigest(selection, resolveTimeZone(query.time_zone)!);
+    const timeZone = resolveTimeZone(query.time_zone)!;
+    const digest = selectionDigest(selection, timeZone);
 
     if (query.cursor !== undefined && query.around_id !== undefined) {
       throw new BadRequestException([{ field: 'cursor', error: 'cursor and around_id cannot be used together' }]);
@@ -291,11 +295,20 @@ export class TransactionsService {
       throw new ApiException('TRANSACTION_NOT_FOUND', HttpStatus.NOT_FOUND);
     }
 
-    const window = await readSnapshot(this.dataSource, (manager) =>
-      query.around_id === undefined
-        ? this.readFeedPage(selection, query.limit, cursor, manager)
-        : this.readFeedAround(selection, query.limit, query.around_id, manager),
-    );
+    // One snapshot per response, not per scroll: a later page may already
+    // see writes made after this one was read.
+    const { window, summary, dayTotals } = await readSnapshot(this.dataSource, async (manager) => {
+      const window =
+        query.around_id === undefined
+          ? await this.readFeedPage(selection, query.limit, cursor, manager)
+          : await this.readFeedAround(selection, query.limit, query.around_id, manager);
+
+      return {
+        window,
+        summary: await this.transactionQueriesService.getFeedSummary(selection, manager),
+        dayTotals: await this.readFeedDayTotals(selection, window.items, timeZone, manager),
+      };
+    });
 
     const first = window.items[0];
     const last = window.items[window.items.length - 1];
@@ -310,6 +323,12 @@ export class TransactionsService {
           ? encodeFeedCursor({ direction: 'newer', position: positionOf(first) }, digest)
           : null,
       },
+      summary: {
+        count: summary.count,
+        income: formatMoney(summary.income),
+        expense: formatMoney(summary.expense),
+      },
+      day_totals: dayTotals,
     };
   }
 
@@ -453,6 +472,33 @@ export class TransactionsService {
     return newer
       ? { items: page.items, hasOlder: beyondEdge, hasNewer: page.hasMore }
       : { items: page.items, hasOlder: page.hasMore, hasNewer: beyondEdge };
+  }
+
+  // The local days of the page, each netted over the whole selection, so a
+  // day split between pages has one total. Day bounds are computed here, in
+  // the zone with its DST changes, and passed to MySQL as instants.
+  private async readFeedDayTotals(
+    selection: TransactionSelection,
+    items: LoadedTransaction[],
+    timeZone: string,
+    manager: EntityManager,
+  ): Promise<TransactionFeedDayTotal[]> {
+    const days = [
+      ...new Map(
+        items.map((item) => {
+          const day = calendarDateAt(item.timestamp, timeZone);
+
+          return [formatCalendarDate(day), day] as const;
+        }),
+      ),
+    ];
+    const nets = await this.transactionQueriesService.getFeedIntervalNets(
+      selection,
+      days.map(([, day]) => ({ from: startOfDay(day, timeZone), to: endOfDay(day, timeZone) })),
+      manager,
+    );
+
+    return days.map(([date], i) => ({ date, net: formatMoney(nets[i]) }));
   }
 
   // The record and its neighbours, read outward from its position: up to

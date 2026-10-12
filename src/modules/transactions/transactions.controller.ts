@@ -36,7 +36,6 @@ import {
   CreateTransactionResult,
   TransactionCount,
   TransactionFeed,
-  TransactionFeedPage,
   TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
@@ -135,7 +134,7 @@ export class TransactionsController {
     @Request() req: AuthedRequest,
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Query() query: TransactionFeedQueryDto,
-  ): Promise<TransactionFeedPage> {
+  ): Promise<TransactionFeed> {
     return this.transactionsService.getFeed(req.user.id, spaceId, query);
   }
 
