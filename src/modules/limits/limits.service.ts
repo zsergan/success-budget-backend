@@ -15,6 +15,7 @@ import {
   monthPeriodAt,
   parseMoney,
   readSnapshot,
+  runWriteTransaction,
   serverTimeZone,
   withRelations,
 } from '@shared/utils';
@@ -70,9 +71,7 @@ export class LimitsService {
   }
 
   async create(userId: number, spaceId: number, createLimit: CreateLimitDto): Promise<LimitWithCategories> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+    return this.write(userId, spaceId, async (manager) => {
       await this.assertCategoriesOwnership(manager, spaceId, createLimit.category_ids);
 
       const categoryIds = createLimit.category_ids ?? [];
@@ -108,10 +107,7 @@ export class LimitsService {
     limitId: number,
     updateLimit: UpdateLimitDto,
   ): Promise<LimitWithCategories> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
-
+    return this.write(userId, spaceId, async (manager) => {
       const currentLimit = await this.getSpaceLimit(spaceId, limitId, manager);
       await this.assertCategoriesOwnership(manager, spaceId, updateLimit.category_ids);
 
@@ -163,13 +159,19 @@ export class LimitsService {
   }
 
   async remove(userId: number, spaceId: number, limitId: number): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+    await this.write(userId, spaceId, async (manager) => {
       await this.getSpaceLimit(spaceId, limitId, manager);
 
       // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
       await manager.getRepository(Limit).delete(limitId);
+    });
+  }
+
+  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return runWriteTransaction(this.dataSource, async (manager) => {
+      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      return work(manager);
     });
   }
 

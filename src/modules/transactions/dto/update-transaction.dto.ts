@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNumber, IsEnum } from 'class-validator';
+import { IsInt, Min, Max, IsEnum } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
 import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
@@ -17,7 +17,9 @@ export class UpdateTransactionDto {
     description: 'Absent or the current id keeps the wallet, even a deleted one.',
   })
   @IsOptionalNonNull()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
   wallet_id?: number;
 
   @ApiPropertyOptional({
@@ -26,7 +28,9 @@ export class UpdateTransactionDto {
     description: 'Absent or the current id keeps the category, even an archived one.',
   })
   @IsOptionalNonNull()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
   category_id?: number;
 
   @ApiPropertyOptional({ enum: TransactionType, enumName: 'TransactionType' })

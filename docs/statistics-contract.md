@@ -35,6 +35,12 @@ touch are the source of truth.
   category example must add it.
 - **Swagger.** The three responses have full OpenAPI schemas (see
   Implementation).
+- **Income breakdown.** Breakdown takes `transaction_type` (`expense` by
+  default, so an old client keeps getting expenses) and echoes it in the
+  response; Summary and Trend do not take it. The history template takes
+  the type from the response and adds `kind=regular` (see Opening a
+  breakdown item). Clients that hard-coded `transaction_type=expense` keep
+  working for expenses.
 
 ## Endpoints
 
@@ -45,14 +51,15 @@ the space; a non-member gets the usual `403 FORBIDDEN_SPACE`.
 | ------ | ------------------------------------------ | ----------------------------------------------------- |
 | `GET`  | `/spaces/:spaceId/statistics/summary`      | Income, Expense, Net, comparison with previous period |
 | `GET`  | `/spaces/:spaceId/statistics/trend`        | Income and Expense per bucket                         |
-| `GET`  | `/spaces/:spaceId/statistics/breakdown`    | Expenses by category **and** by wallet, with Other    |
+| `GET`  | `/spaces/:spaceId/statistics/breakdown`    | Expenses or income by category **and** by wallet      |
 | `GET`  | `/spaces/:spaceId/transactions` (extended) | History filtered by category or wallet                |
 
-The three blocks take the same query parameters and select transactions by
-the same rules. Each one fails on its own with an ordinary HTTP error (400,
-403, 5xx), so the screen can show a local error and retry just that block.
-Breakdown returns both groupings at once: switching the By category / By
-wallet tab never sends a request.
+The three blocks take the same period parameters and select transactions by
+the same rules; Breakdown alone also takes `transaction_type`. Each one fails
+on its own with an ordinary HTTP error (400, 403, 5xx), so the screen can
+show a local error and retry just that block. Breakdown returns both
+groupings at once: switching the By category / By wallet tab never sends a
+request.
 
 ## Calculation rules
 
@@ -78,9 +85,9 @@ wallet tab never sends a request.
    is not part of any sum or count, even inside the selected period. The
    period's actual range ends at `min(period end, as_of)`.
 8. **Zero is not empty.** `"0.00"` does not mean there were no
-   transactions: zero-amount transactions are valid, and income may equal
-   expense. Summary and Trend totals pair every sum with a `count`; "no
-   data" states are decided by counts, never by amounts. The breakdown is
+   transactions: legacy zero-amount transactions still count, and income
+   may equal expense. Summary and Trend totals pair every sum with a
+   `count`; "no data" states are decided by counts, never by amounts. The breakdown is
    the one exception: it draws shares, so it lists only groups with a
    positive sum.
 9. **Exact money.** Sums are computed in integer cents (`SUM` strings parsed
@@ -102,6 +109,15 @@ Shared by all three blocks.
 | `to_date`     | `YYYY-MM-DD`                            | with `custom`, only there | Last local day, inclusive                                               |
 | `as_of`       | ISO 8601 date-time with `Z` or offset   | no; default: server time  | Time boundary of the load cycle; echoed as `period.as_of`               |
 
+Breakdown only:
+
+| Param              | Type                  | Required             | Meaning                                         |
+| ------------------ | --------------------- | -------------------- | ----------------------------------------------- |
+| `transaction_type` | `expense` \| `income` | no; default: expense | Which transactions the breakdown groups; echoed |
+
+Summary and Trend always cover both types and reject `transaction_type` as
+an unknown parameter.
+
 Validation errors are `400` with the standard `message: [{ field, error }]`
 shape:
 
@@ -114,6 +130,7 @@ shape:
 | `from_date` after `to_date`; a custom period over **366** days (_open_: cap)                | `to_date`               |
 | `as_of` without `Z`/offset, outside the `TIMESTAMP` range, or in the future (below)         | `as_of`                 |
 | a period reaching outside the MySQL `TIMESTAMP` range (1970–2038)                           | `anchor_date`/`to_date` |
+| Breakdown `transaction_type` unknown, empty or repeated                                     | `transaction_type`      |
 | any other parameter                                                                         | its name                |
 
 `as_of` is in the future when it is more than **60 seconds** ahead of the
@@ -247,14 +264,15 @@ interface StatisticsSummary {
 
 Screen states come from counts and dates, never from amounts:
 
-| Condition                               | State                                                    |
-| --------------------------------------- | -------------------------------------------------------- |
-| `period.state = 'future'`               | The period has not started; checked first                |
-| `has_any_transactions = false`          | Nothing to report yet (first run)                        |
-| `transactions_count = 0`, date not null | Nothing in this period; "Your last one was on …", "Open" |
-| `transactions_count > 0`                | Data, even when every amount is `"0.00"`                 |
-| `change.x.percent = null`               | No comparison for that figure                            |
-| `by_category.source_count = 0`          | Breakdown shows "No expenses in this period"             |
+| Condition                                       | State                                                    |
+| ----------------------------------------------- | -------------------------------------------------------- |
+| `period.state = 'future'`                       | The period has not started; checked first                |
+| `has_any_transactions = false`                  | Nothing to report yet (first run)                        |
+| `transactions_count = 0`, date not null         | Nothing in this period; "Your last one was on …", "Open" |
+| `transactions_count > 0`                        | Data, even when every amount is `"0.00"`                 |
+| `change.x.percent = null`                       | No comparison for that figure                            |
+| Breakdown `total.count = 0`                     | "No expenses" or "No income" in this period              |
+| Breakdown `total.count > 0`, `source_count = 0` | Only zero-amount transactions: total of zero, no donut   |
 
 Surplus / Deficit / Balanced is the sign of `net`, decided by the client.
 
@@ -312,9 +330,12 @@ apart from "no transactions".
 
 ## Breakdown
 
-`GET /spaces/:spaceId/statistics/breakdown` — expenses only. Both groupings
-come in one response, ready to draw: the client repeats neither the money
-arithmetic nor the grouping.
+`GET /spaces/:spaceId/statistics/breakdown?transaction_type=expense|income`
+— the transactions of one type, `expense` when the parameter is absent. Both
+groupings come in one response, ready to draw: the client repeats neither
+the money arithmetic nor the grouping. Expense and income breakdowns follow
+the same rules (sums, Other, deleted wallets, archived categories); only
+the selected type differs.
 
 ```ts
 interface BreakdownItem {
@@ -358,7 +379,8 @@ interface WalletBreakdown {
 interface StatisticsBreakdown {
   period: StatisticsPeriod;
   currency: string;
-  // control sum, equal to Summary expense of the same cycle
+  transaction_type: 'expense' | 'income'; // the applied type
+  // control sum, equal to Summary expense or income (by transaction_type) of the same cycle
   total: MoneyCount;
   by_category: CategoryBreakdown;
   by_wallet: WalletBreakdown;
@@ -381,6 +403,13 @@ interface StatisticsBreakdown {
 - Other is not a category: it has no id and opens no history. A real
   category named "Other" is `kind: 'category'` with an id; the two are
   told apart by `kind`, never by name.
+- Groups come from the transactions' type, not the categories' (rule 4):
+  a legacy income on an expense category shows up in the income breakdown
+  under that category. The API rejects such new transactions
+  (`CATEGORY_TYPE_MISMATCH`); only older data holds them.
+- The client drops a response whose `transaction_type` is not the type
+  selected now (a late answer to a previous switch). An empty breakdown
+  never switches the type on its own.
 
 ### Other
 
@@ -443,7 +472,9 @@ refreshes.
    `has_any_transactions: false`. Trend is a single query.
 5. To detect that, the client compares the control sums with Summary, both
    `amount` and `count`: `trend.totals.income`/`expense` with
-   `summary.income`/`expense`, and `breakdown.total` with `summary.expense`.
+   `summary.income`/`expense`, and `breakdown.total` with
+   `summary[breakdown.transaction_type]` (`summary.expense` or
+   `summary.income`).
 6. On a mismatch the client starts **one** new cycle with a new `as_of`. If
    the new cycle still disagrees, it shows the new data as they are and
    does not reload again on its own; the next manual refresh or period
@@ -451,10 +482,16 @@ refreshes.
 7. If `as_of` is rejected as in the future (device clock far ahead), the
    client repeats the cycle once without `as_of` and uses the `period.as_of`
    of the first response for the blocks it has not requested yet.
+8. A cycle loads the breakdown of the selected type only. Switching the
+   type requests just Breakdown, with the cycle's parameters and `as_of`
+   and the new `transaction_type`; Summary and Trend are not reloaded, and
+   the new breakdown is checked against the same Summary. The selected
+   type and grouping survive a new cycle (period or space change, refresh,
+   return from the history) for the life of the screen.
 
 ## History filters (drill-down)
 
-`GET /spaces/:spaceId/transactions` gains three optional query parameters.
+`GET /spaces/:spaceId/transactions` gains four optional query parameters.
 This is the minimal support the Stats tab needs to let the user re-check a
 number; the History screen itself is not redesigned here.
 
@@ -463,14 +500,17 @@ number; the History screen itself is not redesigned here.
 | `transaction_type` | `income` or `expense`                                   |
 | `category_id`      | Only this category (archived allowed; system refused)   |
 | `wallet_id`        | Only this wallet (active wallets only; deleted refused) |
+| `kind`             | `regular` (no starting balances) or `initial_balance`   |
 
 - Filters combine with AND, together and with `from`/`to`. Without any of
   them the endpoint behaves exactly as before.
 - A foreign or missing category, the system category, a foreign or missing
   wallet, or a soft-deleted wallet is the existing `403`
   (`FORBIDDEN_CATEGORY` / `FORBIDDEN_WALLET`), checked after membership.
+- `kind` matches the `kind` of `TransactionView`: `initial_balance` is a
+  transaction on the system category, `regular` is every other one.
 - A malformed value (`category_id=other`, `wallet_id=0`,
-  `transaction_type=transfer`, a repeated parameter) is `400` with the
+  `transaction_type=transfer`, `kind=system`, a repeated parameter) is `400` with the
   standard `message: [{ field, error }]`.
 - There is no filter for Other or for deleted wallets: only items with
   `opens_history: true` open the history, with the template in
@@ -504,26 +544,34 @@ template, the same for both groupings:
 GET /spaces/:spaceId/transactions
     ?from={period.from}
     &to={period.actual_to}
-    &transaction_type=expense
+    &transaction_type={transaction_type}
+    &kind=regular
     &{category_id | wallet_id}={item.id}
 ```
 
 - `category_id` for `kind: "category"`, `wallet_id` for `kind: "wallet"`;
-  `period` is the one of the same Breakdown response.
+  `period` and `transaction_type` are the ones of the same Breakdown
+  response, not the current selection of the screen.
 - It applies alike to `primary_items` and to the `children` of `other`.
   `other` itself and `deleted_wallets` have `opens_history: false` and open
   nothing.
-- `transaction_type=expense` is **always** sent, for categories too. The
-  breakdown counts expenses by the type of the transaction, not of the
-  category, and the API does not stop an income on an expense category: a
-  category with a $100 expense and a $20 income shows $100 in Stats, while
-  its history without the type filter would list both.
+- `transaction_type` is **always** sent, for categories too. The breakdown
+  counts by the type of the transaction, not of the category. New
+  transactions must match their category's type (`CATEGORY_TYPE_MISMATCH`
+  otherwise), but legacy data may not: a category with a $100 expense and a
+  legacy $20 income shows $100 in the expense breakdown and $20 in the
+  income one, while its history without the type filter would list both.
+- `kind=regular` is **always** sent. Starting balances are income on the
+  system category: statistics never count them, but the history does, so
+  the income history of a wallet would list its starting balance without
+  this filter.
 
-With this template the history lists only expenses and they add up exactly
-to the item's `amount`, in the same cycle and barring concurrent edits (see
-Consistency model). The history, unlike statistics, still lists starting
-balances; the template never matches them (they are income on the system
-category).
+With this template the history lists only the transactions of the
+breakdown's type, without starting balances, and they add up exactly to the
+item's `amount` (and their number to the item's share of `total.count`), in
+the same cycle and barring concurrent edits (see Consistency model). The
+same check holds for the whole breakdown: the history with the template
+minus `category_id`/`wallet_id` adds up to `total`.
 
 ## Worked examples
 
@@ -628,7 +676,8 @@ The first bucket:
 }
 ```
 
-Breakdown: `total: { "amount": "810.50", "count": 9 }`. `by_category`
+Breakdown (no `transaction_type`, so `"transaction_type": "expense"`):
+`total: { "amount": "810.50", "count": 9 }`. `by_category`
 (`icon`/`color` omitted):
 
 ```json
@@ -729,6 +778,13 @@ left out, so `source_count` is 6, not 7.
 `source_count: 3` (Card, Cash, Old card); `deleted_wallets.wallets_count:
 1`; `other: null`. Savings (4) has no expenses and is absent.
 
+With `transaction_type=income`: `"transaction_type": "income"`, `total:
+{ "amount": "3000.00", "count": 1 }`, equal to `summary.income`. Both
+groupings have one item of 100%: category `20` Salary and wallet `1` Card;
+`other` and `deleted_wallets` are `null`. S0 (the starting balance of
+Savings) is not there, and the history of Card opened with `kind=regular`
+lists only S1.
+
 ### Example 2 — current week, zone boundary, zero comparison
 
 `period=week&time_zone=Europe/Moscow`: week 2026-09-28 … 2026-10-04,
@@ -813,7 +869,7 @@ in the size of one space's history and runs once per Summary.
 
 ## Out of scope
 
-- Income breakdown, cross-space or multi-currency statistics.
+- Cross-space or multi-currency statistics.
 - Planned or recurring transactions: the model has none; a transaction
   dated after `as_of` is simply not counted yet.
 - A database snapshot shared by the three blocks (each response is

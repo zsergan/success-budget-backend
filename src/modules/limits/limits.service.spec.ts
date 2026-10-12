@@ -22,7 +22,7 @@ describe('LimitsService', () => {
   let manager: { getRepository: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getMany'>>;
-  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockSpace'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembership' | 'lockSpace'>>;
   let transactionQueriesService: jest.Mocked<Pick<TransactionQueriesService, 'getExpensesByCategory'>>;
 
   const userId = 7;
@@ -54,6 +54,7 @@ describe('LimitsService', () => {
     };
     spaceAccessService = {
       assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })),
+      lockMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })),
       lockSpace: jest.fn().mockResolvedValue(undefined),
     };
     transactionQueriesService = { getExpensesByCategory: jest.fn().mockResolvedValue(new Map()) };
@@ -110,7 +111,7 @@ describe('LimitsService', () => {
       await run();
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(1, userId, manager);
       expect(categoriesService.getMany).toHaveBeenCalledWith(expect.any(Array), manager);
       expect(manager.getRepository).toHaveBeenCalledWith(Limit);
       expect(txRepository.createQueryBuilder).toHaveBeenCalled();
@@ -142,7 +143,7 @@ describe('LimitsService', () => {
       expect(spaceAccessService.lockSpace).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(1, manager);
       const lockOrder = spaceAccessService.lockSpace.mock.invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(spaceAccessService.assertMembership.mock.invocationCallOrder[0]);
+      expect(spaceAccessService.lockMembership.mock.invocationCallOrder[0]).toBeLessThan(lockOrder);
       expect(lockOrder).toBeLessThan(manager.getRepository.mock.invocationCallOrder[0]);
     });
 
@@ -150,7 +151,7 @@ describe('LimitsService', () => {
       await service.remove(userId, 1, 1);
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(1, userId, manager);
       expect(txRepository.delete).toHaveBeenCalledWith(1);
       expect(repository.findOne).not.toHaveBeenCalled();
       expect(repository.delete).not.toHaveBeenCalled();
@@ -321,6 +322,7 @@ describe('LimitsService', () => {
       ['remove', () => service.remove(userId, spaceId, 1)],
     ])('%s rejects a non-member before touching limits or categories', async (_, run) => {
       spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace());
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace());
 
       await expect(run()).rejects.toMatchObject(forbiddenSpace());
       expect(repository.findOne).not.toHaveBeenCalled();
@@ -402,7 +404,7 @@ describe('LimitsService', () => {
 
       await service.create(userId, spaceId, { category_ids: [5, 6, 5], name: 'Fun', amount: '10' });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledWith([5, 6, 5], manager);
     });
@@ -465,7 +467,7 @@ describe('LimitsService', () => {
 
       const result = await service.update(userId, spaceId, 1, { category_ids: [6], amount: '20' });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledWith([6], manager);
       expect(relationBuilder.remove).toHaveBeenCalledWith([5]);
       expect(relationBuilder.add).toHaveBeenCalledWith([6]);
