@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpException } from '@nestjs/common';
+import { BadRequestException, HttpException } from '@nestjs/common';
 import { DataSource, QueryFailedError, type EntityManager, type Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
@@ -29,7 +29,13 @@ describe('TransactionsService', () => {
   let transactionQueriesService: jest.Mocked<
     Pick<
       TransactionQueriesService,
-      'getBalances' | 'getForAllWallets' | 'countForAllWallets' | 'getLatest' | 'getOneInSpace'
+      | 'getBalances'
+      | 'getForAllWallets'
+      | 'countForAllWallets'
+      | 'getLatest'
+      | 'getOneInSpace'
+      | 'getFeedPage'
+      | 'findFeedPosition'
     >
   >;
   let walletsService: jest.Mocked<Pick<WalletsService, 'getOne'>>;
@@ -64,6 +70,8 @@ describe('TransactionsService', () => {
       countForAllWallets: jest.fn(),
       getLatest: jest.fn(),
       getOneInSpace: jest.fn(),
+      getFeedPage: jest.fn().mockResolvedValue({ items: [], hasMore: false }),
+      findFeedPosition: jest.fn(),
     };
     walletsService = { getOne: jest.fn().mockResolvedValue(buildWallet({ id: 1, space_id: spaceId })) };
     categoriesService = {
@@ -736,6 +744,91 @@ describe('TransactionsService', () => {
     it('rejects from after to', async () => {
       await expect(service.count(userId, spaceId, to, from)).rejects.toMatchObject({ status: 400 });
       expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getFeed', () => {
+    const query = {
+      from: '2026-09-01T00:00:00.000Z',
+      to: '2026-09-30T23:59:59.999Z',
+      time_zone: 'Europe/Moscow',
+      limit: 5,
+    };
+    const rows = (count: number, prefix: string) =>
+      Array.from({ length: count }, (_, i) => loadedTransaction(`${prefix}-${i}`, { id: 1 }));
+
+    it('reads the first page as limit + 1 rows from the top, without probing newer ones', async () => {
+      transactionQueriesService.getFeedPage.mockResolvedValue({ items: rows(5, 'a'), hasMore: true });
+
+      const page = await service.getFeed(userId, spaceId, query);
+
+      expect(transactionQueriesService.getFeedPage).toHaveBeenCalledTimes(1);
+      expect(transactionQueriesService.getFeedPage).toHaveBeenCalledWith(expect.anything(), { limit: 5 }, manager);
+      expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
+      expect(page.page_info.previous_cursor).toBeNull();
+      expect(page.page_info.next_cursor).toEqual(expect.any(String));
+    });
+
+    it('reads a window around a record outward from its position, not from the period start', async () => {
+      const target = loadedTransaction('target', { id: 1 });
+      const position = { timestamp: target.timestamp, id: target.id };
+      transactionQueriesService.getOneInSpace.mockResolvedValue(target);
+      transactionQueriesService.findFeedPosition.mockResolvedValue(position);
+      transactionQueriesService.getFeedPage
+        .mockResolvedValueOnce({ items: rows(4, 'newer'), hasMore: true })
+        .mockResolvedValueOnce({ items: rows(1, 'older'), hasMore: false });
+
+      const page = await service.getFeed(userId, spaceId, {
+        ...query,
+        around_id: '9b1d6c2e-1f0a-4c3b-8d2e-5a6b7c8d9e0f',
+      });
+
+      expect(transactionQueriesService.getFeedPage).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        { limit: 4, before: position },
+        manager,
+      );
+      expect(transactionQueriesService.getFeedPage).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        { limit: 4, after: position },
+        manager,
+      );
+      expect(page.items.map((item) => item.id)).toEqual(['newer-1', 'newer-2', 'newer-3', 'target', 'older-0']);
+      expect(page.page_info.previous_cursor).toEqual(expect.any(String));
+      expect(page.page_info.next_cursor).toBeNull();
+    });
+
+    it('checks the request shape before membership', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(forbidden());
+
+      await expect(service.getFeed(userId, spaceId, { ...query, cursor: 'bogus' })).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.getFeed(userId, spaceId, { ...query, from: query.to, to: query.from })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+    });
+
+    it('tells a record of the space outside the selection from a missing one', async () => {
+      const aroundId = '9b1d6c2e-1f0a-4c3b-8d2e-5a6b7c8d9e0f';
+      transactionQueriesService.getOneInSpace.mockResolvedValueOnce(null);
+
+      await expect(service.getFeed(userId, spaceId, { ...query, around_id: aroundId })).rejects.toMatchObject({
+        code: 'TRANSACTION_NOT_FOUND',
+      });
+
+      transactionQueriesService.getOneInSpace.mockResolvedValueOnce(loadedTransaction(aroundId, { id: 1 }));
+      transactionQueriesService.findFeedPosition.mockResolvedValueOnce(null);
+
+      await expect(service.getFeed(userId, spaceId, { ...query, around_id: aroundId })).rejects.toMatchObject({
+        code: 'TRANSACTION_NOT_IN_FEED',
+      });
+      await expect(service.getFeed(userId, spaceId, { ...query, around_id: 'nope' })).rejects.toMatchObject({
+        code: 'TRANSACTION_NOT_FOUND',
+      });
     });
   });
 

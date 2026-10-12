@@ -1,4 +1,4 @@
-import { BadRequestException, HttpStatus, Injectable, NotImplementedException } from '@nestjs/common';
+import { BadRequestException, HttpStatus, Injectable } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { DataSource, EntityManager } from 'typeorm';
 
@@ -11,12 +11,13 @@ import type { UpdateTransactionDto } from './dto/update-transaction.dto';
 import type { TransactionFeedQueryDto } from './dto/transaction-feed-query.dto';
 import type {
   TransactionCount,
-  TransactionFeed,
+  TransactionFeedPage,
   TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
 } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
+import { type FeedCursor, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
 import {
   AMOUNT_NOT_POSITIVE,
   TIMESTAMP_IN_FUTURE,
@@ -42,13 +43,16 @@ import {
   moneyToNumber,
   parseMoney,
   readSnapshot,
+  resolveTimeZone,
   runWriteTransaction,
   toDate,
 } from '@shared/utils';
 import {
   TransactionQueriesService,
+  type FeedPosition,
   type LoadedTransaction,
   type TransactionFilters,
+  type TransactionSelection,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
@@ -70,6 +74,33 @@ export interface CreateTransactionResult {
 type TransactionChanges = Partial<
   Pick<Transaction, 'wallet_id' | 'category_id' | 'transaction_type' | 'amount' | 'timestamp' | 'description'>
 >;
+
+// newest first, with whether the selection goes on past either end
+interface FeedWindow {
+  items: LoadedTransaction[];
+  hasOlder: boolean;
+  hasNewer: boolean;
+}
+
+const positionOf = (transaction: Pick<Transaction, 'timestamp' | 'id'>): FeedPosition => ({
+  timestamp: transaction.timestamp,
+  id: transaction.id,
+});
+
+function toFeedSelection(spaceId: number, query: TransactionFeedQueryDto): TransactionSelection {
+  return {
+    spaceId,
+    from: toDate(query.from),
+    to: toDate(query.to),
+    filters: {
+      transactionType: query.transaction_type,
+      kind: query.kind,
+      categoryId: query.category_id,
+      walletId: query.wallet_id,
+      search: query.q,
+    },
+  };
+}
 
 @Injectable()
 export class TransactionsService {
@@ -244,9 +275,42 @@ export class TransactionsService {
     return { count: await this.transactionQueriesService.countForAllWallets(spaceId, from, to, filters) };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryDto): Promise<TransactionFeed> {
-    throw new NotImplementedException();
+  async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryDto): Promise<TransactionFeedPage> {
+    const selection = toFeedSelection(spaceId, query);
+    const digest = selectionDigest(selection, resolveTimeZone(query.time_zone)!);
+
+    if (query.cursor !== undefined && query.around_id !== undefined) {
+      throw new BadRequestException([{ field: 'cursor', error: 'cursor and around_id cannot be used together' }]);
+    }
+
+    const cursor = query.cursor === undefined ? undefined : decodeFeedCursor(query.cursor, digest);
+
+    await this.checkHistoryQuery(userId, spaceId, selection.from, selection.to, selection.filters!);
+
+    if (query.around_id !== undefined && !isUUID(query.around_id)) {
+      throw new ApiException('TRANSACTION_NOT_FOUND', HttpStatus.NOT_FOUND);
+    }
+
+    const window = await readSnapshot(this.dataSource, (manager) =>
+      query.around_id === undefined
+        ? this.readFeedPage(selection, query.limit, cursor, manager)
+        : this.readFeedAround(selection, query.limit, query.around_id, manager),
+    );
+
+    const first = window.items[0];
+    const last = window.items[window.items.length - 1];
+
+    return {
+      items: window.items.map(toTransactionView),
+      page_info: {
+        next_cursor: window.hasOlder
+          ? encodeFeedCursor({ direction: 'older', position: positionOf(last) }, digest)
+          : null,
+        previous_cursor: window.hasNewer
+          ? encodeFeedCursor({ direction: 'newer', position: positionOf(first) }, digest)
+          : null,
+      },
+    };
   }
 
   async getLatest(userId: number, spaceId: number): Promise<TransactionView | null> {
@@ -351,6 +415,76 @@ export class TransactionsService {
     if (filters.walletId !== undefined) {
       await this.getActiveWallet(spaceId, filters.walletId);
     }
+  }
+
+  // One page from the start or from a cursor. The direction that was not
+  // read is probed with a single row, so a cursor never reads more than
+  // limit + 1 rows of its own direction.
+  private async readFeedPage(
+    selection: TransactionSelection,
+    limit: number,
+    cursor: FeedCursor | undefined,
+    manager: EntityManager,
+  ): Promise<FeedWindow> {
+    const newer = cursor?.direction === 'newer';
+    const page = await this.transactionQueriesService.getFeedPage(
+      selection,
+      { limit, ...(cursor && { [newer ? 'before' : 'after']: cursor.position }) },
+      manager,
+    );
+
+    if (page.items.length === 0) {
+      return { items: [], hasOlder: false, hasNewer: false };
+    }
+
+    if (!cursor) {
+      return { items: page.items, hasOlder: page.hasMore, hasNewer: false };
+    }
+
+    const edge = newer
+      ? { after: positionOf(page.items[page.items.length - 1]) }
+      : { before: positionOf(page.items[0]) };
+    const { hasMore: beyondEdge } = await this.transactionQueriesService.getFeedPage(
+      selection,
+      { limit: 0, ...edge },
+      manager,
+    );
+
+    return newer
+      ? { items: page.items, hasOlder: beyondEdge, hasNewer: page.hasMore }
+      : { items: page.items, hasOlder: page.hasMore, hasNewer: beyondEdge };
+  }
+
+  // The record and its neighbours, read outward from its position: up to
+  // limit - 1 rows on each side, never the rows between the period start and it.
+  private async readFeedAround(
+    selection: TransactionSelection,
+    limit: number,
+    transactionId: string,
+    manager: EntityManager,
+  ): Promise<FeedWindow> {
+    const target = await this.transactionQueriesService.getOneInSpace(selection.spaceId, transactionId, manager);
+    assertFound(target, 'TRANSACTION_NOT_FOUND');
+
+    const position = await this.transactionQueriesService.findFeedPosition(selection, transactionId, manager);
+
+    if (!position) {
+      throw new ApiException('TRANSACTION_NOT_IN_FEED', HttpStatus.NOT_FOUND);
+    }
+
+    const side = limit - 1;
+    const [newer, older] = [
+      await this.transactionQueriesService.getFeedPage(selection, { limit: side, before: position }, manager),
+      await this.transactionQueriesService.getFeedPage(selection, { limit: side, after: position }, manager),
+    ];
+    const newerCount = Math.min(newer.items.length, Math.max(Math.floor(side / 2), side - older.items.length));
+    const olderCount = Math.min(older.items.length, side - newerCount);
+
+    return {
+      items: [...newer.items.slice(newer.items.length - newerCount), target, ...older.items.slice(0, olderCount)],
+      hasNewer: newer.hasMore || newer.items.length > newerCount,
+      hasOlder: older.hasMore || older.items.length > olderCount,
+    };
   }
 
   private async assertOperationUnused(manager: EntityManager, spaceId: number, operationId: string): Promise<void> {
