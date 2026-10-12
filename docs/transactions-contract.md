@@ -5,14 +5,15 @@ space: the domain rules, the requests and responses, compatibility with
 records written under the old rules, and machine-readable errors. It is the
 source of truth for the backend implementation and the mobile integration.
 
-Everything below is implemented. What the mobile client has to change, the
+Everything below is implemented unless the
+[status table](#implementation-status) says otherwise. What the mobile client has to change, the
 deployment order and what an older client still gets are collected under
 [Migration and compatibility](#migration-and-compatibility); request and
 response walkthroughs are under [Examples](#examples).
 
 Out of scope: several currencies in one space, moving a transaction to
-another space, transfers between wallets as one operation, scheduled or
-recurring transactions, and search.
+another space, transfers between wallets as one operation, and scheduled or
+recurring transactions.
 
 ## Implementation status
 
@@ -29,6 +30,7 @@ recurring transactions, and search.
 | `GET /transactions/count`, stable history order                     | implemented |
 | Limits month in the client's `time_zone`                            | implemented |
 | `client_operation_id`, `GET /transactions/operations/:id`           | implemented |
+| `GET /transactions/feed`: cursor pages, search, server totals       | contract    |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
@@ -104,6 +106,7 @@ Checks run in this order: request shape
 | -------- | ---------------------------------------------- | -------- |
 | `POST`   | `/spaces/:spaceId/transactions`                | kept     |
 | `GET`    | `/spaces/:spaceId/transactions`                | kept     |
+| `GET`    | `/spaces/:spaceId/transactions/feed`           | new      |
 | `GET`    | `/spaces/:spaceId/transactions/latest`         | kept     |
 | `GET`    | `/spaces/:spaceId/transactions/count`          | new      |
 | `GET`    | `/spaces/:spaceId/transactions/:transactionId` | new      |
@@ -117,7 +120,7 @@ design's "PUT" label is not part of the contract; there is no `PUT`.
 transaction of another space all give `404 TRANSACTION_NOT_FOUND`, so a
 member cannot tell a foreign transaction from a missing one. A transaction
 belongs to the space of its own wallet, soft-deleted wallets included.
-`latest` and `count` are reserved path segments, never ids. A non-numeric `:spaceId`
+`feed`, `latest` and `count` are reserved path segments, never ids. A non-numeric `:spaceId`
 is `400 BAD_REQUEST`.
 
 ## Field rules
@@ -188,7 +191,7 @@ description, or a category whose type differs from the transaction type.
 
 ### Transaction view
 
-One shape for every read: the list, `latest`, `GET /:id`, and the
+One shape for every read: the list, the feed, `latest`, `GET /:id`, and the
 `transaction` of a `PATCH` result. It is built field by field
 (`toTransactionView`), so an entity column never reaches the client unless
 it is listed here.
@@ -335,6 +338,169 @@ the same query (`from`, `to`, `transaction_type`, `kind`, `category_id`,
 `wallet_id`, same defaults and errors), initial balances included when they
 fall into it and `kind` does not leave them out. It reads no rows, so the
 calendar counter does not load the list. Errors as for the list.
+
+### `GET /spaces/:spaceId/transactions/feed`
+
+One paged read for every transaction list of the app: the history of a
+period, search within it, the statistics drill-down (the same filters), the
+latest records on the home screen and the history opened at one record.
+Unlike `GET /transactions` it pages with a cursor and returns the totals of
+the whole selection, computed by the server.
+
+**Query:**
+
+| Parameter          | Required | Rule                                                                                                                                          |
+| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`, `to`       | yes      | Inclusive instants with `Z` or a UTC offset, within the MySQL `TIMESTAMP` range; `from` after `to` is an error. No defaults, no local time    |
+| `time_zone`        | yes      | IANA zone of the device (`Europe/Moscow`); groups the records into days. A fixed offset (`+03:00`) or an unknown zone is an error             |
+| `q`                | no       | Search text, see [Search](#search). Trimmed at both ends, inner whitespace kept; empty after trimming means no search. At most 255 characters |
+| `limit`            | no       | Page size, an integer `1`–`100`; default `50`                                                                                                 |
+| `cursor`           | no       | `next_cursor` or `previous_cursor` of an earlier response to the same query                                                                   |
+| `around_id`        | no       | Id of a transaction to open the history at; not with `cursor`                                                                                 |
+| `transaction_type` | no       | `income` \| `expense`                                                                                                                         |
+| `kind`             | no       | `regular` \| `initial_balance`                                                                                                                |
+| `category_id`      | no       | A category of the space, archived allowed; the system one is refused                                                                          |
+| `wallet_id`        | no       | An active wallet of the space                                                                                                                 |
+
+The four filters are those of `GET /transactions`, with the same meaning
+and errors. The **selection** is every transaction of the space with
+`from <= timestamp <= to` that matches `q` and the filters; initial
+balances are part of it unless `kind=regular` leaves them out.
+
+Every malformed parameter is `400 VALIDATION_FAILED` with the parameter as
+`field`, never corrected: a `q` of 256 characters is refused, not cut; a
+`limit` of `0`, `101` or `1.5` is refused, not clamped; a repeated
+parameter is refused. `cursor` together with `around_id` is
+`400 VALIDATION_FAILED`, field `cursor`.
+
+**Response `200`:**
+
+```ts
+interface TransactionFeed {
+  items: TransactionView[]; // at most `limit`, newest first
+  page_info: {
+    next_cursor: string | null; // older records of the selection; null when there are none
+    previous_cursor: string | null; // newer records of the selection; null when there are none
+  };
+  summary: {
+    count: number; // records in the selection, initial balances included
+    income: string; // "0.00": regular income of the selection
+    expense: string; // "0.00": regular expense of the selection
+  };
+  day_totals: Array<{
+    date: string; // YYYY-MM-DD in time_zone, a day of at least one record of items
+    net: string; // "-12.30": income minus expense of that whole day of the selection
+  }>;
+}
+```
+
+- **Order.** `timestamp` descending, then `id` descending: the order of
+  `GET /transactions`. Every page, also one read with `previous_cursor` or
+  `around_id`, lists its items in this order.
+- **One snapshot.** `items`, `summary` and `day_totals` of a response are
+  read in one database snapshot, so they agree with each other even while
+  other members write.
+- **Money** is a string with exactly two decimals; `net` carries a `-`
+  when expense exceeds income and is `"0.00"`, never `"-0.00"`, when they
+  are equal.
+- **`summary`** covers the whole selection, not the page: it is the same
+  on every page of one query, unless the data changed between the
+  requests. `count` counts initial balances; `income` and `expense` leave
+  them out, like the statistics.
+- **`day_totals`** has one entry per local day (in `time_zone`) that has
+  at least one record in `items`, in the order of `items`, newest day
+  first, no day twice. `net` is income minus expense of **all** the
+  records of that day in the selection, also those on other pages, so a
+  day split between two pages has the same total on both and it does not
+  change when the next page loads. A day is cut by `from` and `to`: the
+  part of a day outside the period is not counted. Initial balances are
+  left out of `net`; a day that only has an initial balance on the page is
+  listed with `"0.00"`.
+- **No records.** An empty selection, or a page past the end, is
+  `items: []`, both cursors `null`, `day_totals: []`. `summary` still
+  describes the selection (all zeros when it is empty).
+
+#### Search
+
+`q` keeps a record in the selection when its `description` or the name of
+its category contains `q` as a substring. The comparison ignores case and
+accents (`кофе` finds `Кофе`, `елка` finds `Ёлка`, `cafe` finds `Café`), and
+`%`, `_` and `\` are plain characters, not patterns. The wallet name and
+the amount are not searched. The system category's name is searched like
+any other: `q=Initial` finds the initial balances.
+
+The 255-character limit counts Unicode code points after trimming, as the
+description limit does. `q` combines with the period and every filter: the
+server accepts any combination, even if the app does not offer it.
+
+#### Cursors
+
+A cursor is an opaque string: the client stores and sends it back
+unchanged, never builds or parses it. It names a position in the order
+(between two records), not a record, so it stays valid when the record it
+was taken from is edited or deleted, and it does not expire.
+
+- **`next_cursor`** continues after the last item of the page: the next
+  `limit` records of the selection that are older in the order. `null` when
+  the page ends with the oldest record of the selection.
+- **`previous_cursor`** continues before the first item: the `limit`
+  records immediately newer in the order, listed newest first. `null` when
+  the page starts with the newest record of the selection (so it is always
+  `null` on the first page).
+- A cursor belongs to its query: it is accepted only with the same `from`,
+  `to`, `time_zone`, `q` (after trimming) and filters it was returned for.
+  `limit` may change between pages. A cursor of another query, or one that
+  is not a cursor at all, is `400 VALIDATION_FAILED`, field `cursor`: the
+  client then reloads the first page.
+
+Records written between two requests are not shifted into or out of the
+loaded pages. A record created or moved above the first loaded page is
+reached by reloading the first page (pull to refresh). A record edited
+between two requests can be listed on both pages, or on neither if its
+timestamp moved across the loaded part. The client therefore keys records
+by `id` and keeps the copy of the latest response, and takes `summary` and
+the `day_totals` of a date from the latest response that carries them.
+
+#### Opening the history at a record
+
+`around_id` returns the page that contains this transaction: the record
+itself, up to `⌊(limit − 1) / 2⌋` records newer than it and older records
+for the rest of the page. When one side has fewer records, the other side
+fills the page (opened at the newest record of the selection, it is the
+first page). `next_cursor` and `previous_cursor` continue from it in both
+directions as usual, and `summary` and `day_totals` follow the usual rules.
+
+| `around_id` is                                                        | Response                      |
+| --------------------------------------------------------------------- | ----------------------------- |
+| a transaction of the selection                                        | `200`, the page around it     |
+| a transaction of the space outside the period, the search or a filter | `404 TRANSACTION_NOT_IN_FEED` |
+| unknown, malformed, or a transaction of another space                 | `404 TRANSACTION_NOT_FOUND`   |
+
+On `TRANSACTION_NOT_IN_FEED` the client opens the first page of the same
+query; to open a record found elsewhere (home, statistics), it sends a
+period that contains the record's timestamp, normally the month of it in
+the device's zone.
+
+#### Screens
+
+| Screen                  | Request                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
+| History of a period     | the period's `from`/`to`, `time_zone`; then `cursor=next_cursor` while scrolling                              |
+| Search in the history   | the same plus `q`; a changed `q` starts again without a cursor                                                |
+| Statistics drill-down   | `AppliedFilter` as filters (`kind=regular`, `transaction_type`, `category_id`); no search while it is applied |
+| Home, latest records    | `limit=5`, `from=1970-01-01T00:00:01Z`, `to=2038-01-19T03:14:07Z`; only `items` are used                      |
+| History opened at a row | the record's month as `from`/`to`, `around_id`; cursors in both directions                                    |
+
+**Errors**, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
+`FORBIDDEN_CATEGORY`, `FORBIDDEN_WALLET`, then `TRANSACTION_NOT_FOUND` and
+`TRANSACTION_NOT_IN_FEED` for `around_id`.
+
+**Relation to the other reads.** Without `q`, for the same `from`, `to`
+and filters, `summary.count` equals `GET /transactions/count`, and the
+items of all the pages together are the rows of `GET /transactions` in the
+same order. `GET /transactions` and
+`GET /transactions/latest` are kept unchanged; see
+[Moving lists to the feed](#moving-lists-to-the-feed).
 
 ### `GET /spaces/:spaceId/transactions/operations/:operationId`
 
@@ -518,14 +684,14 @@ category archived by a request that committed first is seen and refused.
 **Lock order.** Every write that takes more than one of these locks takes
 them in the order above, so two writes never wait on each other crosswise:
 
-| Operation                                                  | Locks, in order                                                                                       |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Transaction `POST` / `PATCH` / `DELETE`                    | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
-| Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                |
-| Space delete                                               | member rows (X), space (X)                                                                            |
-| Member removal                                             | member row (X)                                                                                        |
-| Wallet rename, delete                                      | member (S), space (S), wallet (X)                                                                     |
-| Wallet create                                              | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
+| Operation                                                                   | Locks, in order                                                                                       |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Transaction `POST` / `PATCH` / `DELETE`                                     | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
+| Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                            |
+| Space delete                                                                | member rows (X), space (X)                                                                            |
+| Member removal                                                              | member row (X)                                                                                        |
+| Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                     |
+| Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
 
 (S = shared, X = exclusive.) Consequences:
 
@@ -695,21 +861,23 @@ in all of them, never in a balance but not in the totals.
 limit links from one snapshot. Concurrent archival cannot return an active
 category combined with the link removals of the archived state.
 
-| Figure                                          | Initial balance | Regular transactions                              |
-| ----------------------------------------------- | --------------- | ------------------------------------------------- |
-| History rows, `GET /transactions/count`         | included        | in `from`..`to`, by the filters                   |
-| Wallet `balance`, `total_balance`               | included        | all, whatever their timestamp                     |
-| Statistics Income / Expense / Net               | excluded        | up to `as_of`, by `transaction_type`              |
-| `GET /wallets` `total_income` / `total_spend`   | excluded        | in the period                                     |
-| Limits `spent`                                  | excluded        | expenses of the month in `time_zone`, by category |
-| Category `transaction_count`                    | not shown       | all, whatever their timestamp                     |
-| A day's financial total in the history (client) | excluded        | that day's income minus expense                   |
+| Figure                                        | Initial balance | Regular transactions                               |
+| --------------------------------------------- | --------------- | -------------------------------------------------- |
+| History rows, `GET /transactions/count`       | included        | in `from`..`to`, by the filters                    |
+| Feed `items`, `summary.count`                 | included        | in `from`..`to`, by `q` and the filters            |
+| Feed `summary.income` / `summary.expense`     | excluded        | in `from`..`to`, by `q` and the filters            |
+| Feed `day_totals` `net`                       | excluded        | the local day within `from`..`to`, by `q`, filters |
+| Wallet `balance`, `total_balance`             | included        | all, whatever their timestamp                      |
+| Statistics Income / Expense / Net             | excluded        | up to `as_of`, by `transaction_type`               |
+| `GET /wallets` `total_income` / `total_spend` | excluded        | in the period                                      |
+| Limits `spent`                                | excluded        | expenses of the month in `time_zone`, by category  |
+| Category `transaction_count`                  | not shown       | all, whatever their timestamp                      |
 
 Moving a transaction to another wallet moves its amount from one balance to
 the other. Changing its type, category, amount or timestamp moves it
-between Income and Expense, categories, limits and periods accordingly. The
-client computes a day's total from the listed rows and skips
-`kind: 'initial_balance'`.
+between Income and Expense, categories, limits and periods accordingly. A
+day's financial total in the history is the feed's `day_totals`, computed by
+the server; the client no longer adds up loaded rows.
 
 ### Limits period
 
@@ -784,6 +952,7 @@ English display text and may change.
 | 403    | `FORBIDDEN_CATEGORY`              | No such category in the space, or the system category                  |
 | 404    | `TRANSACTION_NOT_FOUND`           | No such transaction in the space, or a malformed id                    |
 | 404    | `TRANSACTION_OPERATION_NOT_FOUND` | No create with this `client_operation_id` committed in the space       |
+| 404    | `TRANSACTION_NOT_IN_FEED`         | The feed's `around_id` is outside the period, the search or a filter   |
 | 409    | `TRANSACTION_VERSION_CONFLICT`    | `If-Match` differs from the stored version                             |
 | 409    | `IDEMPOTENCY_KEY_REUSED`          | The `Idempotency-Key` was used for a different request                 |
 | 409    | `TRANSACTION_OPERATION_EXISTS`    | The `client_operation_id` was already used in the space                |
@@ -936,7 +1105,114 @@ GET /api/v1/spaces/1/transactions/count?from=2026-09-30T21:00:00.000Z&to=2026-10
 200 { "count": 5 }
 ```
 
+### Feed: first page, next page, search, opening at a record
+
+The October history in Moscow time, 50 per page:
+
+```http
+GET /api/v1/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow
+
+200
+{ "items": [
+    { "id": "f3a0…", "kind": "regular", "transaction_type": "expense", "amount": "12.30",
+      "timestamp": "2026-10-12T09:15:00.000Z", "version": 1, … },
+    …,
+    { "id": "07c4…", "kind": "regular", "transaction_type": "expense", "amount": "4.00",
+      "timestamp": "2026-10-03T08:00:00.000Z", "version": 1, … } ],
+  "page_info": { "next_cursor": "eyJ2IjoxLC…", "previous_cursor": null },
+  "summary": { "count": 73, "income": "2500.00", "expense": "1184.45" },
+  "day_totals": [ { "date": "2026-10-12", "net": "-12.30" },
+                  …,
+                  { "date": "2026-10-03", "net": "-31.50" } ] }
+```
+
+The page ends inside October 3: `-31.50` is the whole day, also the records
+of October 3 that are not loaded yet. Scrolling on:
+
+```http
+GET /api/v1/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&cursor=eyJ2IjoxLC…
+
+200
+{ "items": [ { "id": "05d1…", "timestamp": "2026-10-03T07:40:00.000Z", … }, …,
+             { "id": "c9e2…", "kind": "initial_balance", "transaction_type": "income",
+               "amount": "100.00", "timestamp": "2026-10-01T06:00:00.000Z", … } ],
+  "page_info": { "next_cursor": null, "previous_cursor": "eyJ2IjoxLC…" },
+  "summary": { "count": 73, "income": "2500.00", "expense": "1184.45" },
+  "day_totals": [ { "date": "2026-10-03", "net": "-31.50" }, …,
+                  { "date": "2026-10-01", "net": "0.00" } ] }
+```
+
+October 3 has the same total as on the first page. October 1 only has the
+initial balance, so its `net` is `"0.00"`; the initial balance is counted
+in `count` but not in `income`. `next_cursor: null`: the history ends here.
+
+A search with no match, `q` sent as `" coffee  "` (trimmed to `"coffee"`):
+
+```http
+GET /api/v1/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&q=%20coffee%20%20
+
+200
+{ "items": [],
+  "page_info": { "next_cursor": null, "previous_cursor": null },
+  "summary": { "count": 0, "income": "0.00", "expense": "0.00" },
+  "day_totals": [] }
+```
+
+Opening the history at a record from the home screen, 5 records per page
+to keep the example short:
+
+```http
+GET /api/v1/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&limit=5&around_id=8a61…
+
+200
+{ "items": [ { "id": "b2f7…", "timestamp": "2026-10-09T18:00:00.000Z", … },
+             { "id": "41aa…", "timestamp": "2026-10-09T12:30:00.000Z", … },
+             { "id": "8a61…", "timestamp": "2026-10-09T10:00:00.000Z", … },
+             { "id": "e05c…", "timestamp": "2026-10-08T19:20:00.000Z", … },
+             { "id": "6d13…", "timestamp": "2026-10-08T07:05:00.000Z", … } ],
+  "page_info": { "next_cursor": "eyJ2IjoxLC…", "previous_cursor": "eyJ2IjoxLC…" },
+  "summary": { "count": 73, "income": "2500.00", "expense": "1184.45" },
+  "day_totals": [ { "date": "2026-10-09", "net": "-56.00" },
+                  { "date": "2026-10-08", "net": "1450.00" } ] }
+```
+
+Two newer records, the record, two older ones. `previous_cursor` loads the
+records above it (newer), `next_cursor` the ones below. The same
+`around_id` with a period that does not contain the record:
+
+```http
+404
+{ "code": "TRANSACTION_NOT_IN_FEED",
+  "message": "The transaction does not match the period, search or filters" }
+```
+
+A cursor sent with another `q` or period:
+
+```http
+400
+{ "code": "VALIDATION_FAILED",
+  "message": [ { "field": "cursor", "error": "cursor does not belong to this query" } ] }
+```
+
 ## Migration and compatibility
+
+### Moving lists to the feed
+
+`GET /transactions/feed` is added next to the existing reads; nothing that
+an installed app calls changes.
+
+1. The backend adds `/feed`; `GET /transactions` keeps returning the plain
+   array, unchanged. Its shape is never switched to a paged object in
+   place: an older app would break on it.
+2. The mobile app moves every list (history, search, statistics
+   drill-down, home) to `/feed` and stops computing day totals and period
+   income/expense from loaded rows.
+3. `GET /transactions` is then marked deprecated in the OpenAPI document.
+   Removing it is a separate change, once older app versions are no longer
+   supported.
+
+`GET /transactions/latest`, `GET /transactions/count`, `GET /:id`,
+operations and every write stay as they are.
 
 ### Deployment order
 
@@ -1005,6 +1281,10 @@ use; the new mobile build ships before or together with this backend.
   wallet or an archived category.
 - Use `GET /transactions/count` for the calendar counter; decide "no
   history" from rows or the count, never from Income being zero.
+- Load every transaction list from `GET /transactions/feed` (see
+  [Moving lists to the feed](#moving-lists-to-the-feed)): store cursors as
+  opaque strings, key records by `id`, and show `summary` and `day_totals`
+  as the server returns them instead of adding up loaded rows.
 - Branch on `statusCode` and `code`, never on `message`.
 
 ### Changes against the previous API
@@ -1015,7 +1295,8 @@ use; the new mobile build ships before or together with this backend.
   `transaction`; `code` on every error of the API; optional
   `Idempotency-Key` on every write; optional `time_zone` and a `period` key
   on `GET /limits`; optional `client_operation_id` on `POST` and
-  `GET /transactions/operations/:operationId`.
+  `GET /transactions/operations/:operationId`; `GET /transactions/feed`
+  with cursor pages, search and server totals.
 - **`If-Match` required on `DELETE` (breaking):** a delete or undo without
   it is `428 TRANSACTION_VERSION_REQUIRED`.
 - **`POST` is stricter:** a zero amount, a timestamp more than a minute
