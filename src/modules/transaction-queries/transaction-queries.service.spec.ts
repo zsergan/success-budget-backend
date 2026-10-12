@@ -183,7 +183,18 @@ describe('TransactionQueriesService', () => {
     });
   });
 
+  const spaceWallets = () => queryBuilder.getRawMany.mockResolvedValueOnce([{ id: 3 }, { id: 4 }]);
+
   describe('getForAllWallets', () => {
+    beforeEach(spaceWallets);
+
+    it('reads nothing when the space has no wallets', async () => {
+      queryBuilder.getRawMany.mockReset().mockResolvedValue([]);
+
+      expect(await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'))).toEqual([]);
+      expect(queryBuilder.getMany).not.toHaveBeenCalled();
+    });
+
     it('filters transactions across all of a space wallets by date range', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
@@ -192,6 +203,9 @@ describe('TransactionQueriesService', () => {
       await service.getForAllWallets(9, from, to);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
+        walletIds: [3, 4],
+      });
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
 
@@ -215,7 +229,7 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :transactionType', {
         transactionType: 'expense',
       });
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.wallet_id = :walletId', { walletId: 3 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', { walletIds: [3] });
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(
         'transaction.category_id = :categoryId',
         expect.anything(),
@@ -248,6 +262,7 @@ describe('TransactionQueriesService', () => {
     });
 
     it('binds the trimmed text and compares in a fixed collation', async () => {
+      spaceWallets();
       queryBuilder.getMany.mockResolvedValue([]);
 
       await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '  latte ' });
@@ -262,6 +277,7 @@ describe('TransactionQueriesService', () => {
     });
 
     it('adds no text condition for blank text', async () => {
+      spaceWallets();
       queryBuilder.getMany.mockResolvedValue([]);
 
       await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '   ' });
@@ -272,6 +288,7 @@ describe('TransactionQueriesService', () => {
 
   describe('countForAllWallets', () => {
     it('counts with the same scope and filters as the list, without loading rows', async () => {
+      spaceWallets();
       queryBuilder.getCount.mockResolvedValue(4);
 
       await expect(
@@ -284,7 +301,9 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
-      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
+        walletIds: [3, 4],
+      });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.category_id = :categoryId', { categoryId: 5 });
       expect(queryBuilder.getMany).not.toHaveBeenCalled();
     });
