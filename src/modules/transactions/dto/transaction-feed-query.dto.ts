@@ -56,7 +56,7 @@ export class TransactionFeedQueryDto {
     maxLength: FEED_MAX_QUERY_LENGTH,
     example: 'coffee',
     description:
-      'Matches description or category name, ignoring case and accents. Trimmed; blank means no search; ' +
+      'Matches description, category or wallet name, ignoring case and accents. Trimmed; blank means no search; ' +
       `more than ${FEED_MAX_QUERY_LENGTH} characters after trimming is refused, not cut.`,
   })
   @Transform(trimSearch)

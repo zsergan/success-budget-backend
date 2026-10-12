@@ -422,12 +422,23 @@ interface TransactionFeed {
 
 #### Search
 
-`q` keeps a record in the selection when its `description` or the name of
-its category contains `q` as a substring. The comparison ignores case and
-accents (`кофе` finds `Кофе`, `елка` finds `Ёлка`, `cafe` finds `Café`), and
-`%`, `_` and `\` are plain characters, not patterns. The wallet name and
-the amount are not searched. The system category's name is searched like
-any other: `q=Initial` finds the initial balances.
+`q` keeps a record in the selection when its `description`, the name of
+its category or the name of its wallet contains `q` as a substring. A
+record that matches in several fields is listed and counted once.
+
+- **Case and accents are ignored**, Cyrillic included: `кофе` finds
+  `Кофе`, `елка` finds `Ёлка`, `cafe` finds `Café`. The server compares in
+  one fixed collation (`utf8mb4_0900_ai_ci`), whatever the collation of the
+  columns or the database default, so the result does not depend on how a
+  database was set up.
+- **No patterns:** `%`, `_` and `!` (the server's escape character) are
+  plain characters, so `100%` finds only text with `100%` in it.
+- **Archived categories and deleted wallets** are searched by their stored
+  names. A record of a deleted wallet found by the wallet's name still reads
+  `wallet: null` (the app shows "Deleted wallet"). This does not widen the
+  `wallet_id` filter, which still takes only an active wallet.
+- The system category's name is searched like any other: `q=Initial`
+  finds the initial balances. The amount is not searched.
 
 The 255-character limit counts Unicode code points after trimming, as the
 description limit does. `q` combines with the period and every filter: the
