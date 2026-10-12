@@ -22,6 +22,7 @@ import {
   ApiHeader,
   ApiNotFoundResponse,
   ApiOkResponse,
+  ApiOperation,
   ApiQuery,
   ApiResponse,
   ApiTags,
@@ -30,9 +31,11 @@ import {
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
+import { TransactionFeedQueryDto } from './dto/transaction-feed-query.dto';
 import {
   CreateTransactionResult,
   TransactionCount,
+  TransactionFeed,
   TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
@@ -106,6 +109,33 @@ export class TransactionsController {
     @RequestHeader('Idempotency-Key', ParseIdempotencyKeyPipe) idempotencyKey?: string,
   ) {
     return this.transactionsService.create(req.user.id, spaceId, createTransactionDto, { idempotencyKey });
+  }
+
+  @ApiOperation({
+    summary: 'One page of the history: cursor pages, search, totals of the whole selection',
+    description:
+      'Newest first (timestamp, then id). summary covers the whole selection; day_totals covers each day of the ' +
+      'page in full, also its records on other pages. Initial balances are listed and counted, but left out of ' +
+      'income, expense and net. See docs/transactions-contract.md.',
+  })
+  @ApiOkResponse({ type: TransactionFeed })
+  @ApiBadRequestResponse({
+    description:
+      'VALIDATION_FAILED: a malformed parameter, from after to, cursor with around_id, or a cursor of another query.',
+  })
+  @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE, FORBIDDEN_CATEGORY or FORBIDDEN_WALLET.' })
+  @ApiNotFoundResponse({
+    description:
+      'TRANSACTION_NOT_FOUND: around_id is unknown, malformed or of another space. ' +
+      'TRANSACTION_NOT_IN_FEED: around_id is outside the period, the search or a filter.',
+  })
+  @Get('feed')
+  async getFeed(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query() query: TransactionFeedQueryDto,
+  ): Promise<TransactionFeed> {
+    return this.transactionsService.getFeed(req.user.id, spaceId, query);
   }
 
   @ApiOkResponse({ type: TransactionView, description: 'Empty body when the space has no transactions.' })

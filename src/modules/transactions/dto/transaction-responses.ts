@@ -157,3 +157,61 @@ export class TransactionOperationView {
   @ApiProperty(nullableObject(TransactionView, 'The current record, as GET /:id reads it; null when deleted.'))
   transaction!: TransactionView | null;
 }
+
+export class TransactionFeedPageInfo {
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Older records of the selection; null when there are none.',
+  })
+  next_cursor!: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Newer records of the selection; null when there are none.',
+  })
+  previous_cursor!: string | null;
+}
+
+export class TransactionFeedSummary {
+  @ApiProperty({ type: 'integer', minimum: 0, description: 'Records in the selection, initial balances included.' })
+  count!: number;
+
+  @ApiProperty({ pattern: '^\\d+\\.\\d{2}$', example: '2500.00', description: 'Initial balances excluded.' })
+  income!: string;
+
+  @ApiProperty({ pattern: '^\\d+\\.\\d{2}$', example: '1184.45' })
+  expense!: string;
+}
+
+export class TransactionFeedDayTotal {
+  @ApiProperty({ format: 'date', example: '2026-10-03', description: 'Local day in time_zone.' })
+  date!: string;
+
+  @ApiProperty({
+    pattern: '^-?\\d+\\.\\d{2}$',
+    example: '-31.50',
+    description:
+      'Income minus expense of the whole day in the selection, other pages included; initial balances excluded.',
+  })
+  net!: string;
+}
+
+export class TransactionFeed {
+  @ApiProperty({ type: TransactionView, isArray: true, description: 'Newest first: timestamp, then id, descending.' })
+  items!: TransactionView[];
+
+  @ApiProperty({ type: TransactionFeedPageInfo })
+  page_info!: TransactionFeedPageInfo;
+
+  @ApiProperty({ type: TransactionFeedSummary, description: 'The whole selection: period, q and filters.' })
+  summary!: TransactionFeedSummary;
+
+  @ApiProperty({
+    type: TransactionFeedDayTotal,
+    isArray: true,
+    description: 'One entry per local day that has a record in items, in the order of items.',
+  })
+  day_totals!: TransactionFeedDayTotal[];
+}

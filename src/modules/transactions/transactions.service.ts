@@ -1,4 +1,4 @@
-import { BadRequestException, HttpStatus, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpStatus, Injectable, NotImplementedException } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { DataSource, EntityManager } from 'typeorm';
 
@@ -8,8 +8,10 @@ import { Category } from '@entities/category.entity';
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionDto } from './dto/update-transaction.dto';
+import type { TransactionFeedQueryDto } from './dto/transaction-feed-query.dto';
 import type {
   TransactionCount,
+  TransactionFeed,
   TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
@@ -240,6 +242,11 @@ export class TransactionsService {
     await this.checkHistoryQuery(userId, spaceId, from, to, filters);
 
     return { count: await this.transactionQueriesService.countForAllWallets(spaceId, from, to, filters) };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryDto): Promise<TransactionFeed> {
+    throw new NotImplementedException();
   }
 
   async getLatest(userId: number, spaceId: number): Promise<TransactionView | null> {

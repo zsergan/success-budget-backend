@@ -3,6 +3,7 @@ import { validate } from 'class-validator';
 
 import { CreateTransactionDto } from './create-transaction.dto';
 import { UpdateTransactionDto } from './update-transaction.dto';
+import { TransactionFeedQueryDto } from './transaction-feed-query.dto';
 
 const errorsOf = async <T extends object>(type: new () => T, plain: object) => {
   const dto = plainToInstance(type, plain);
@@ -128,5 +129,79 @@ describe('UpdateTransactionDto', () => {
 
   it('refuses an unknown field', async () => {
     expect(Object.keys((await errorsOf(UpdateTransactionDto, { kind: 'regular' })).errors)).toEqual(['kind']);
+  });
+});
+
+describe('TransactionFeedQueryDto', () => {
+  const valid = { from: '2026-09-30T21:00:00.000Z', to: '2026-10-31T20:59:59.999Z', time_zone: 'Europe/Moscow' };
+
+  it('accepts a minimal query with a page of 50', async () => {
+    const { dto, errors } = await errorsOf(TransactionFeedQueryDto, valid);
+
+    expect(errors).toEqual({});
+    expect(dto.limit).toBe(50);
+  });
+
+  it.each(['from', 'to', 'time_zone'])('requires %s', async (field) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, [field]: undefined })).errors)).toEqual([
+      field,
+    ]);
+  });
+
+  it.each(['2026-10-01', '2026-10-01T00:00:00'])('refuses the bound %p without Z or an offset', async (from) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, from })).errors)).toEqual(['from']);
+  });
+
+  it('refuses a fixed offset as time_zone', async () => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, time_zone: '+03:00' })).errors)).toEqual([
+      'time_zone',
+    ]);
+  });
+
+  it.each(['1', '100'])('accepts the limit %p', async (limit) => {
+    expect((await errorsOf(TransactionFeedQueryDto, { ...valid, limit })).dto.limit).toBe(Number(limit));
+  });
+
+  it.each(['0', '101', '1.5', '-1', 'ten', '', ['5', '6']])('refuses the limit %p', async (limit) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, limit })).errors)).toEqual(['limit']);
+  });
+
+  it.each<[string, string | undefined]>([
+    ['  coffee  beans ', 'coffee  beans'],
+    ['   ', undefined],
+    ['', undefined],
+  ])('trims q %p to %p', async (q, expected) => {
+    const { dto, errors } = await errorsOf(TransactionFeedQueryDto, { ...valid, q });
+
+    expect(errors).toEqual({});
+    expect(dto.q).toBe(expected);
+  });
+
+  it('counts q in code points after trimming and refuses, not cuts, a longer one', async () => {
+    expect((await errorsOf(TransactionFeedQueryDto, { ...valid, q: ` ${'🙂'.repeat(255)} ` })).errors).toEqual({});
+    expect((await errorsOf(TransactionFeedQueryDto, { ...valid, q: 'x'.repeat(256) })).errors).toEqual({
+      q: ['q must be at most 255 characters'],
+    });
+  });
+
+  it('refuses a repeated q', async () => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, q: ['a', 'b'] })).errors)).toEqual(['q']);
+  });
+
+  it('turns numeric filters into numbers', async () => {
+    const { dto, errors } = await errorsOf(TransactionFeedQueryDto, { ...valid, category_id: '12', wallet_id: '7' });
+
+    expect(errors).toEqual({});
+    expect(dto).toMatchObject({ category_id: 12, wallet_id: 7 });
+  });
+
+  it.each(['0', '2147483648', '1e3', 'abc'])('refuses the wallet_id %p', async (wallet_id) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, wallet_id })).errors)).toEqual([
+      'wallet_id',
+    ]);
+  });
+
+  it('refuses an unknown parameter', async () => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, page: '2' })).errors)).toEqual(['page']);
   });
 });
