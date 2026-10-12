@@ -842,6 +842,19 @@ describe('TransactionsService', () => {
       ]);
     });
 
+    it('reads no totals for an empty first page: the selection is empty', async () => {
+      const feed = await service.getFeed(userId, spaceId, { ...query, q: 'nothing' });
+
+      expect(transactionQueriesService.getFeedSummary).not.toHaveBeenCalled();
+      expect(transactionQueriesService.getFeedIntervalNets).not.toHaveBeenCalled();
+      expect(feed).toMatchObject({
+        items: [],
+        page_info: { next_cursor: null, previous_cursor: null },
+        summary: { count: 0, income: '0.00', expense: '0.00' },
+        day_totals: [],
+      });
+    });
+
     it('checks the request shape before membership', async () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbidden());
 

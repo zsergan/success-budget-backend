@@ -303,6 +303,12 @@ export class TransactionsService {
           ? await this.readFeedPage(selection, query.limit, cursor, manager)
           : await this.readFeedAround(selection, query.limit, query.around_id, manager);
 
+      // An empty first page is an empty selection: a search with no match
+      // is not scanned a second time for its totals.
+      if (!cursor && window.items.length === 0) {
+        return { window, summary: { count: 0, income: 0n, expense: 0n }, dayTotals: [] };
+      }
+
       return {
         window,
         summary: await this.transactionQueriesService.getFeedSummary(selection, manager),
