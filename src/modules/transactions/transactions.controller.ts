@@ -32,6 +32,8 @@ import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { TransactionFeedQueryDto } from './dto/transaction-feed-query.dto';
+import { ParseOptionalSearchPipe } from './parse-optional-search.pipe';
+import { MAX_SEARCH_LENGTH } from './transaction-rules';
 import {
   CreateTransactionResult,
   TransactionCount,
@@ -145,7 +147,17 @@ export class TransactionsController {
   }
 
   @ApiHistoryQuery()
-  @ApiOkResponse({ type: TransactionCount, description: 'The number of rows GET /transactions returns.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Counts the matches of the feed search: description, category or wallet name, ignoring case and accents. ' +
+      `Trimmed; blank means no search; at most ${MAX_SEARCH_LENGTH} characters.`,
+  })
+  @ApiOkResponse({
+    type: TransactionCount,
+    description: 'The number of rows GET /transactions returns; with q, the feed summary.count of the same query.',
+  })
   @Get('count')
   async count(
     @Request() req: AuthedRequest,
@@ -156,12 +168,15 @@ export class TransactionsController {
     @Query('kind', new ParseOptionalEnumPipe(TransactionKind)) kind?: TransactionKind,
     @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
     @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
+    // unknown: with a string type the global ValidationPipe joins a repeated q into "a,b"
+    @Query('q', ParseOptionalSearchPipe) search?: unknown,
   ) {
     return this.transactionsService.count(req.user.id, spaceId, from, to, {
       transactionType,
       kind,
       categoryId,
       walletId,
+      search: search as string | undefined,
     });
   }
 

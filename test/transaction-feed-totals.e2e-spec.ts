@@ -209,6 +209,59 @@ describe('Transactions feed totals (e2e)', () => {
     });
   });
 
+  describe('GET /transactions/count', () => {
+    const count = async (query: string) =>
+      (
+        await request(testApp.app.getHttpServer())
+          .get(`/api/v1/spaces/${owner.spaceId}/transactions/count?${query}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+      ).body;
+    const period = 'from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z';
+
+    it.each(['', 'q=initial', 'q=%20%20Card%20', 'q=nothing-like-it', 'q=card&kind=regular', 'q=%20%20%20'])(
+      'counts what the feed summary counts for %p',
+      async (query) => {
+        const feedCount = (await feed(`${period}&time_zone=UTC&${query}`)).summary.count;
+
+        expect(await count(`${period}&${query}`)).toEqual({ count: feedCount });
+      },
+    );
+
+    it('counts every record of the period without q, as before', async () => {
+      expect(await count(period)).toEqual({ count: 7 });
+    });
+
+    it('refuses a q longer than 255 characters or repeated', async () => {
+      expect(await count(`${period}&q=${'x'.repeat(256)}`)).toMatchObject({
+        statusCode: 400,
+        code: 'VALIDATION_FAILED',
+        message: [{ field: 'q', error: 'q must be at most 255 characters' }],
+      });
+      expect(await count(`${period}&q=a&q=b`)).toMatchObject({
+        statusCode: 400,
+        message: [{ field: 'q', error: 'q must be a string' }],
+      });
+    });
+
+    it('keeps the old parameter rules: date-only bounds and the month default', async () => {
+      expect(await count('from=2026-02-01&to=2026-02-28')).toEqual({ count: 7 });
+      expect(await count('')).toEqual({ count: expect.any(Number) });
+      expect(await count('from=2026-02-28T00:00:00.000Z&to=2026-02-01T00:00:00.000Z')).toMatchObject({
+        statusCode: 400,
+        message: [{ field: 'from', error: 'from must not be after to' }],
+      });
+    });
+
+    it('leaves the list without search: q is not a list parameter', async () => {
+      const res = await request(testApp.app.getHttpServer())
+        .get(`/api/v1/spaces/${owner.spaceId}/transactions?${period}&q=initial`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+
+      expect(res.body).toHaveLength(7);
+    });
+  });
+
   it('matches its OpenAPI schema', async () => {
     const document = createOpenApiDocument(testApp.app);
     const page = await feed(`${february}&limit=2`);

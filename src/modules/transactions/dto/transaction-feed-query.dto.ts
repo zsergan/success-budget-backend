@@ -7,10 +7,10 @@ import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decor
 import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
 import { IsTimeZone } from '@shared/decorators/is-local-date.decorator';
 import { FEED_CURSOR_MAX_LENGTH } from '../feed-cursor';
+import { MAX_SEARCH_LENGTH, SEARCH_TOO_LONG, isSearchWithinLimit, normalizeSearch } from '../transaction-rules';
 
 export const FEED_DEFAULT_LIMIT = 50;
 export const FEED_MAX_LIMIT = 100;
-export const FEED_MAX_QUERY_LENGTH = 255;
 
 // Only plain digits become a number; anything else stays as sent and fails @IsInt.
 const QueryInteger = () =>
@@ -18,15 +18,7 @@ const QueryInteger = () =>
     typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value,
   );
 
-const trimSearch = ({ value }: { value: unknown }) => {
-  if (typeof value !== 'string') {
-    return value;
-  }
-
-  const trimmed = value.trim();
-
-  return trimmed === '' ? undefined : trimmed;
-};
+const trimSearch = ({ value }: { value: unknown }) => (typeof value === 'string' ? normalizeSearch(value) : value);
 
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
 export class TransactionFeedQueryDto {
@@ -54,11 +46,11 @@ export class TransactionFeedQueryDto {
   time_zone!: string;
 
   @ApiPropertyOptional({
-    maxLength: FEED_MAX_QUERY_LENGTH,
+    maxLength: MAX_SEARCH_LENGTH,
     example: 'coffee',
     description:
       'Matches description, category or wallet name, ignoring case and accents. Trimmed; blank means no search; ' +
-      `more than ${FEED_MAX_QUERY_LENGTH} characters after trimming is refused, not cut.`,
+      `more than ${MAX_SEARCH_LENGTH} characters after trimming is refused, not cut.`,
   })
   @Transform(trimSearch)
   @IsOptionalNonNull()
@@ -66,8 +58,8 @@ export class TransactionFeedQueryDto {
   @ValidateBy({
     name: 'maxCodePoints',
     validator: {
-      validate: (value: unknown) => typeof value !== 'string' || [...value].length <= FEED_MAX_QUERY_LENGTH,
-      defaultMessage: () => `q must be at most ${FEED_MAX_QUERY_LENGTH} characters`,
+      validate: (value: unknown) => typeof value !== 'string' || isSearchWithinLimit(value),
+      defaultMessage: () => SEARCH_TOO_LONG,
     },
   })
   q?: string;
