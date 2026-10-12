@@ -56,7 +56,43 @@ export enum ConfirmationType {
   RESET_PASSWORD = 'reset_password',
 }
 
+// tracks the outcome of the most recent send *attempt*, separately from
+// whether a code exists - see ConfirmationCodesService.reserveSend()
+export enum ConfirmationCodeSendStatus {
+  PENDING = 'pending',
+  SENT = 'sent',
+  FAILED = 'failed',
+}
+
 export enum LimitType {
   CATEGORY = 'category',
   OTHERS = 'others',
+}
+
+export enum SpaceType {
+  PERSONAL = 'personal',
+  GROUP = 'group',
+}
+
+export enum SpaceRole {
+  OWNER = 'owner',
+  MEMBER = 'member',
+}
+
+export enum StatisticsPeriodType {
+  WEEK = 'week',
+  MONTH = 'month',
+  YEAR = 'year',
+  CUSTOM = 'custom',
+}
+
+// public replacement for Category.is_system on transactions
+export enum TransactionKind {
+  REGULAR = 'regular',
+  INITIAL_BALANCE = 'initial_balance',
+}
+
+export enum TransactionOperationStatus {
+  APPLIED = 'applied',
+  DELETED = 'deleted',
 }

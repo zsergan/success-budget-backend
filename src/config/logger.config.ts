@@ -2,6 +2,9 @@ import { randomUUID } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { ConfigService } from '@nestjs/config';
 import type { Params } from 'nestjs-pino';
+import type { Options as PinoHttpOptions } from 'pino-http';
+
+import type { EnvironmentVariables } from './env.validation';
 
 const REQUEST_ID_HEADER = 'x-request-id';
 
@@ -12,12 +15,14 @@ const REQUEST_ID_HEADER = 'x-request-id';
  * to load `pino-pretty` - a devDependency not present in a production
  * install - and crashes on the first log line instead of just logging JSON.
  */
-export const getLoggerConfig = (configService: ConfigService): Params => {
-  const isDevelopment = configService.get<string>('NODE_ENV') === 'development';
+export const getLoggerConfig = (
+  configService: ConfigService<EnvironmentVariables, true>,
+): Params & { pinoHttp: PinoHttpOptions } => {
+  const isDevelopment = configService.get('NODE_ENV', { infer: true }) === 'development';
 
   return {
     pinoHttp: {
-      level: configService.get<string>('LOG_LEVEL', 'info'),
+      level: configService.get('LOG_LEVEL', { infer: true }) ?? 'info',
       genReqId: (req: IncomingMessage, res: ServerResponse) => {
         const existingId = req.headers[REQUEST_ID_HEADER];
         const requestId = (Array.isArray(existingId) ? existingId[0] : existingId) ?? randomUUID();

@@ -1,0 +1,48 @@
+import { ValidateBy, buildMessage } from 'class-validator';
+
+import { parseIsoDate } from '@shared/utils';
+
+export const IsIsoDate = () =>
+  ValidateBy({
+    name: 'isIsoDate',
+    validator: {
+      validate: (value: unknown) => typeof value === 'string' && parseIsoDate(value) !== null,
+      defaultMessage: buildMessage((eachPrefix) => `${eachPrefix}$property must be a valid ISO 8601 date`),
+    },
+  });
+
+export const TIMESTAMP_MIN = new Date('1970-01-01T00:00:01.000Z');
+export const TIMESTAMP_MAX = new Date('2038-01-19T03:14:07.000Z');
+
+// A MySQL TIMESTAMP column rejects anything outside this range at insert time.
+export const IsInTimestampRange = () =>
+  ValidateBy({
+    name: 'isInTimestampRange',
+    validator: {
+      validate: (value: unknown) => {
+        const date = typeof value === 'string' ? parseIsoDate(value) : null;
+
+        return date === null || (date >= TIMESTAMP_MIN && date <= TIMESTAMP_MAX);
+      },
+      defaultMessage: buildMessage(
+        (eachPrefix) =>
+          `${eachPrefix}$property must be between ${TIMESTAMP_MIN.toISOString()} and ${TIMESTAMP_MAX.toISOString()}`,
+      ),
+    },
+  });
+
+const EXPLICIT_OFFSET = /[T ].*(Z|[+-]\d{2}:?\d{2})$/;
+
+// An exact instant: the zone must be explicit, since a local value would be
+// read in the server's zone.
+export const IsIsoInstant = () =>
+  ValidateBy({
+    name: 'isIsoInstant',
+    validator: {
+      validate: (value: unknown) =>
+        typeof value === 'string' && EXPLICIT_OFFSET.test(value) && parseIsoDate(value) !== null,
+      defaultMessage: buildMessage(
+        (eachPrefix) => `${eachPrefix}$property must be an ISO 8601 date-time with Z or a UTC offset`,
+      ),
+    },
+  });

@@ -17,5 +17,15 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local mail catcher for confirmation-code emails - nothing sent through
+  # it ever leaves this machine. Matches .env.example's SMTP_HOST/PORT.
+  # Web UI to view caught emails: http://localhost:1080
+  maildev:
+    image: maildev/maildev
+    restart: unless-stopped
+    ports:
+      - '1080:1080'
+      - '1025:1025'
+
 volumes:
   mysql-data:

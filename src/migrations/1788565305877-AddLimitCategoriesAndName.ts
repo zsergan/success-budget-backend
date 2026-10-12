@@ -1,5 +1,7 @@
 import { MigrationInterface, QueryRunner, Table, TableColumn, TableForeignKey } from 'typeorm';
 
+import { dropForeignKeyOn } from '../database/migration-helpers';
+
 /**
  * Limits Stage 4 redesign: a limit can now cover more than one category
  * (a named "group" limit), so the single nullable `category_id` column is
@@ -66,9 +68,7 @@ export class AddLimitCategoriesAndName1788565305877 implements MigrationInterfac
       SELECT id, category_id FROM limits WHERE category_id IS NOT NULL
     `);
 
-    const limitsTable = await queryRunner.getTable('limits');
-    const categoryForeignKey = limitsTable.foreignKeys.find((fk) => fk.columnNames.indexOf('category_id') !== -1);
-    await queryRunner.dropForeignKey('limits', categoryForeignKey);
+    await dropForeignKeyOn(queryRunner, 'limits', 'category_id');
     await queryRunner.dropColumn('limits', 'category_id');
   }
 

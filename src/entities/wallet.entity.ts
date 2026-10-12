@@ -9,51 +9,43 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { User } from './user.entity';
-import { Currency } from './currency.entity';
+import { Space } from './space.entity';
 import { AppColor } from '@shared/enums';
 
 @Entity('wallets')
 export class Wallet {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  user_id: number;
+  space_id!: number;
 
   @Column({ type: 'varchar', length: 255 })
-  wallet_name: string;
-
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
-  balance: number;
+  wallet_name!: string;
 
   @Column({ type: 'enum', enum: AppColor })
-  design: AppColor;
-
-  @Exclude()
-  @Column({ type: 'int' })
-  currency_id: number;
+  design!: AppColor;
 
   @Exclude()
   @Column({ type: 'tinyint', default: 0 })
-  is_deleted: number;
+  is_deleted!: number;
 
   @Exclude()
   @Column({ type: 'timestamp', nullable: true })
-  deleted_at: Date;
+  deleted_at!: Date | null;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_id' })
-  user: User;
-
-  @ManyToOne(() => Currency, { onDelete: 'RESTRICT' })
-  @JoinColumn({ name: 'currency_id' })
-  currency: Currency;
+  @ManyToOne(() => Space, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'space_id' })
+  space?: Space;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'timestamp' })
-  updated_at: Date;
+  updated_at!: Date;
 }
+
+// balance is derived from the wallet's transactions, not a column - only
+// responses that compute it carry it
+export type WalletWithBalance = Wallet & { balance: number };

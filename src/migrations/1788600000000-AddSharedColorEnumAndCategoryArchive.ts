@@ -18,7 +18,7 @@ export class AddSharedColorEnumAndCategoryArchive1788600000000 implements Migrat
         type: 'enum',
         enum: ['green', 'yellow', 'blue', 'red', 'pink', 'slate', 'amber', 'evergreen', 'indigo', 'clay', 'plum'],
         isNullable: false,
-        default: '"slate"',
+        default: "'slate'",
       }),
     );
     await queryRunner.query(`UPDATE wallets SET design = 'slate'`);
@@ -30,7 +30,7 @@ export class AddSharedColorEnumAndCategoryArchive1788600000000 implements Migrat
         type: 'enum',
         enum: ['slate', 'amber', 'evergreen', 'indigo', 'clay', 'plum'],
         isNullable: false,
-        default: '"slate"',
+        default: "'slate'",
       }),
     );
 
@@ -43,7 +43,7 @@ export class AddSharedColorEnumAndCategoryArchive1788600000000 implements Migrat
         type: 'enum',
         enum: ['slate', 'amber', 'evergreen', 'indigo', 'clay', 'plum'],
         isNullable: false,
-        default: '"slate"',
+        default: "'slate'",
       }),
     );
 
@@ -81,7 +81,7 @@ export class AddSharedColorEnumAndCategoryArchive1788600000000 implements Migrat
         type: 'enum',
         enum: ['green', 'yellow', 'blue', 'red', 'pink', 'slate', 'amber', 'evergreen', 'indigo', 'clay', 'plum'],
         isNullable: false,
-        default: '"green"',
+        default: "'green'",
       }),
     );
     await queryRunner.query(`UPDATE wallets SET design = 'green'`);
@@ -93,7 +93,7 @@ export class AddSharedColorEnumAndCategoryArchive1788600000000 implements Migrat
         type: 'enum',
         enum: ['green', 'yellow', 'blue', 'red', 'pink'],
         isNullable: false,
-        default: '"green"',
+        default: "'green'",
       }),
     );
   }

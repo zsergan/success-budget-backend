@@ -10,50 +10,56 @@ import {
 import { Exclude } from 'class-transformer';
 
 import { AppColor, TransactionType } from '@shared/enums';
-import { User } from './user.entity';
+import { Space } from './space.entity';
 
 @Entity('categories')
 export class Category {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
-  user_id: number;
+  space_id!: number;
 
   @Column({ type: 'varchar', length: 20 })
-  name: string;
+  name!: string;
 
   @Column({
     type: 'enum',
     enum: TransactionType,
   })
-  transaction_type: TransactionType;
+  transaction_type!: TransactionType;
 
   @Column({ type: 'varchar', length: 255 })
-  icon: string;
+  icon!: string;
 
   @Column({ type: 'enum', enum: AppColor })
-  color: AppColor;
+  color!: AppColor;
 
   @Column({ type: 'tinyint' })
-  is_active: number;
+  is_active!: number;
 
   @Exclude()
   @Column({ type: 'timestamp', nullable: true })
-  archived_at: Date | null;
+  archived_at!: Date | null;
 
   @Exclude()
   @Column({ type: 'int' })
-  sort: number;
+  sort!: number;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_id' })
-  user: User;
+  // never exposed to clients even if it somehow ended up in a view -
+  // CategoryView intentionally has no is_system field either
+  @Exclude()
+  @Column({ type: 'tinyint', default: 0 })
+  is_system!: number;
+
+  @ManyToOne(() => Space, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'space_id' })
+  space?: Space;
 
   @CreateDateColumn({ type: 'timestamp' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'timestamp' })
-  updated_at: Date;
+  updated_at!: Date;
 }

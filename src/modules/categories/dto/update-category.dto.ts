@@ -1,23 +1,25 @@
-import { IsEnum, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEnum, IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 
 import { AppColor, CategoryIcon } from '@shared/enums';
+import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 
 // transaction_type is intentionally not a field here - immutable after creation.
 export class UpdateCategoryDto {
-  @IsOptional()
+  @IsOptionalNonNull()
+  @IsNotEmpty()
   @IsString()
   @MaxLength(20)
   name?: string;
 
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsEnum(CategoryIcon)
   icon?: CategoryIcon;
 
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsEnum(AppColor)
   color?: AppColor;
 
-  @IsOptional()
+  @IsOptionalNonNull()
   @IsIn([0, 1])
   is_active?: number;
 }

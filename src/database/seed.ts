@@ -2,11 +2,7 @@ import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from '../app.module';
 import { UsersService } from '@modules/users/users.service';
-import { WalletsService } from '@modules/wallets/wallets.service';
-import { CategoriesService } from '@modules/categories/categories.service';
 import { CurrenciesService } from '@modules/currencies/currencies.service';
-import { AppColor } from '@shared/enums';
-import { DEFAULT_CATEGORIES } from '@shared/constants';
 
 // Dev-only seed data. Not real accounts, not real roles - this app has no
 // role/permission model (see src/entities/user.entity.ts), so "admin" here
@@ -28,11 +24,18 @@ const SEED_USERS: SeedUser[] = [
 ];
 
 async function bootstrap() {
+  // These are well-known emails and a well-known default password - fine
+  // for a disposable local/staging database, never fine to run against a
+  // real one, so this refuses outright rather than trusting the caller to
+  // remember not to.
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Refusing to run the dev seed script with NODE_ENV=production.');
+    process.exit(1);
+  }
+
   const app = await NestFactory.createApplicationContext(AppModule);
 
   const usersService = app.get(UsersService);
-  const walletsService = app.get(WalletsService);
-  const categoriesService = app.get(CategoriesService);
   const currenciesService = app.get(CurrenciesService);
 
   const currencies = await currenciesService.getAll();
@@ -58,14 +61,9 @@ async function bootstrap() {
     });
 
     if (seedUser.verified) {
-      await usersService.verify(user.id);
-      await walletsService.create(user.id, {
-        wallet_name: 'Cash',
-        balance: 0,
-        design: AppColor.SLATE,
-        currency_id: baseCurrency.id,
-      });
-      await categoriesService.initiateCategories(user.id, DEFAULT_CATEGORIES);
+      // goes through the same starter-data setup as a real verify-email
+      // call instead of duplicating it here - seed users have no code
+      await usersService.completeEmailVerification(user.id);
     }
 
     console.log(`created: ${seedUser.email}`);
