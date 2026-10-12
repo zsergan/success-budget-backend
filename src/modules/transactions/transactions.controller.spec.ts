@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
-import { TransactionType } from '@shared/enums';
+import { TransactionKind, TransactionType } from '@shared/enums';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionResult } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
@@ -74,6 +74,7 @@ describe('TransactionsController', () => {
 
     expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, expect.any(Date), expect.any(Date), {
       transactionType: undefined,
+      kind: undefined,
       categoryId: undefined,
       walletId: undefined,
     });
@@ -91,6 +92,7 @@ describe('TransactionsController', () => {
 
     expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to, {
       transactionType: undefined,
+      kind: undefined,
       categoryId: undefined,
       walletId: undefined,
     });
@@ -102,10 +104,11 @@ describe('TransactionsController', () => {
     const from = new Date(2026, 0, 1);
     const to = new Date(2026, 0, 31);
 
-    await controller.getAll(req, spaceId, from, to, TransactionType.EXPENSE, 5, 3);
+    await controller.getAll(req, spaceId, from, to, TransactionType.EXPENSE, TransactionKind.REGULAR, 5, 3);
 
     expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to, {
       transactionType: TransactionType.EXPENSE,
+      kind: TransactionKind.REGULAR,
       categoryId: 5,
       walletId: 3,
     });
@@ -155,10 +158,20 @@ describe('TransactionsController', () => {
     const to = new Date('2026-01-31T23:59:59.999Z');
     transactionsService.count.mockResolvedValue({ count: 3 });
 
-    const result = await controller.count(req, spaceId, from, to, TransactionType.EXPENSE, 5, 1);
+    const result = await controller.count(
+      req,
+      spaceId,
+      from,
+      to,
+      TransactionType.EXPENSE,
+      TransactionKind.REGULAR,
+      5,
+      1,
+    );
 
     expect(transactionsService.count).toHaveBeenCalledWith(1, spaceId, from, to, {
       transactionType: TransactionType.EXPENSE,
+      kind: TransactionKind.REGULAR,
       categoryId: 5,
       walletId: 1,
     });

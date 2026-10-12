@@ -57,6 +57,9 @@ export function buildDataSourceOptions(env: DatabaseEnv): MysqlDataSourceOptions
     username: env.DB_USERNAME,
     password: env.DB_PASSWORD,
     database: env.DB_DATABASE,
+    // MySQL sessions use UTC. Never encode or decode TIMESTAMP values in
+    // the Node host's local zone (which can also change with DST).
+    timezone: 'Z',
     ssl: buildSslOptions(env),
     entities: [join(__dirname, '../entities/**.entity{.ts,.js}')],
     migrations: [join(__dirname, '../migrations/**{.ts,.js}')],
