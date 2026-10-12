@@ -30,7 +30,8 @@ recurring transactions.
 | `GET /transactions/count`, stable history order                     | implemented |
 | Limits month in the client's `time_zone`                            | implemented |
 | `client_operation_id`, `GET /transactions/operations/:id`           | implemented |
-| `GET /transactions/feed`: cursor pages, search, server totals       | contract    |
+| `GET /transactions/feed`: cursor pages, search, `around_id`         | implemented |
+| `GET /transactions/feed`: `summary`, `day_totals`                   | contract    |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
@@ -458,6 +459,9 @@ was taken from is edited or deleted, and it does not expire.
   records immediately newer in the order, listed newest first. `null` when
   the page starts with the newest record of the selection (so it is always
   `null` on the first page).
+- A cursor is at most 256 characters and carries its format version; a
+  cursor of a format the server no longer reads is refused like any
+  malformed one, and the client reloads the first page.
 - A cursor belongs to its query: it is accepted only with the same `from`,
   `to`, `time_zone`, `q` (after trimming) and filters it was returned for.
   `limit` may change between pages. A cursor of another query, or one that
