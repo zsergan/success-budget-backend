@@ -75,7 +75,9 @@ describe('TransactionsService', () => {
       getFeedPage: jest.fn().mockResolvedValue({ items: [], hasMore: false }),
       findFeedPosition: jest.fn(),
       getFeedSummary: jest.fn().mockResolvedValue({ count: 0, income: 0n, expense: 0n }),
-      getFeedIntervalNets: jest.fn(async (_selection, intervals: unknown[]) => intervals.map(() => 0n)),
+      getFeedIntervalNets: jest
+        .fn()
+        .mockImplementation(async (_selection, intervals: unknown[]) => intervals.map(() => 0n)),
     };
     walletsService = { getOne: jest.fn().mockResolvedValue(buildWallet({ id: 1, space_id: spaceId })) };
     categoriesService = {
