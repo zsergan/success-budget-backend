@@ -32,6 +32,7 @@ recurring transactions.
 | `client_operation_id`, `GET /transactions/operations/:id`           | implemented |
 | `GET /transactions/feed`: cursor pages, search, `around_id`         | implemented |
 | `GET /transactions/feed`: `summary`, `day_totals`                   | implemented |
+| Optional `q` on `GET /transactions/count`                           | implemented |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
@@ -340,6 +341,14 @@ the same query (`from`, `to`, `transaction_type`, `kind`, `category_id`,
 fall into it and `kind` does not leave them out. It reads no rows, so the
 calendar counter does not load the list. Errors as for the list.
 
+Optional `q` counts the records matching that search, by the rules of the
+feed's [Search](#search): trimmed, blank means no search, at most 255
+characters (longer is `400 VALIDATION_FAILED`, field `q`, as is a repeated
+`q`). With `q`, the count equals the feed's `summary.count` for the same
+period, search and filters; without it, the counter counts every record of
+the period as before. `GET /transactions` itself takes no `q`: an unknown
+parameter is ignored there, as it always was.
+
 ### `GET /spaces/:spaceId/transactions/feed`
 
 One paged read for every transaction list of the app: the history of a
@@ -513,6 +522,7 @@ the device's zone.
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
 | History of a period     | the period's `from`/`to`, `time_zone`; then `cursor=next_cursor` while scrolling                              |
 | Search in the history   | the same plus `q`; a changed `q` starts again without a cursor                                                |
+| Period picker counter   | `GET /transactions/count` with the period; plus `q` while a search is open                                    |
 | Statistics drill-down   | `AppliedFilter` as filters (`kind=regular`, `transaction_type`, `category_id`); no search while it is applied |
 | Home, latest records    | `limit=5`, `from=1970-01-01T00:00:01Z`, `to=2038-01-19T03:14:07Z`; only `items` are used                      |
 | History opened at a row | the record's month as `from`/`to`, `around_id`; cursors in both directions                                    |
@@ -521,10 +531,10 @@ the device's zone.
 `FORBIDDEN_CATEGORY`, `FORBIDDEN_WALLET`, then `TRANSACTION_NOT_FOUND` and
 `TRANSACTION_NOT_IN_FEED` for `around_id`.
 
-**Relation to the other reads.** Without `q`, for the same `from`, `to`
-and filters, `summary.count` equals `GET /transactions/count`, and the
-items of all the pages together are the rows of `GET /transactions` in the
-same order. `GET /transactions` and
+**Relation to the other reads.** For the same `from`, `to`, `q` and
+filters, `summary.count` equals `GET /transactions/count`. Without `q`, the
+items of all the pages together are also the rows of `GET /transactions`
+in the same order. `GET /transactions` and
 `GET /transactions/latest` are kept unchanged; see
 [Moving lists to the feed](#moving-lists-to-the-feed).
 
@@ -1305,8 +1315,9 @@ use; the new mobile build ships before or together with this backend.
 - Edit with `PATCH`, sending only what changed or the whole form; leave
   `wallet_id`/`category_id` out (or send the current ids) to keep a deleted
   wallet or an archived category.
-- Use `GET /transactions/count` for the calendar counter; decide "no
-  history" from rows or the count, never from Income being zero.
+- Use `GET /transactions/count` for the calendar counter, with the open
+  search's `q` so that it counts the matches; decide "no history" from rows
+  or the count, never from Income being zero.
 - Load every transaction list from `GET /transactions/feed` (see
   [Moving lists to the feed](#moving-lists-to-the-feed)): store cursors as
   opaque strings, key records by `id`, and show `summary` and `day_totals`
@@ -1322,7 +1333,8 @@ use; the new mobile build ships before or together with this backend.
   `Idempotency-Key` on every write; optional `time_zone` and a `period` key
   on `GET /limits`; optional `client_operation_id` on `POST` and
   `GET /transactions/operations/:operationId`; `GET /transactions/feed`
-  with cursor pages, search and server totals.
+  with cursor pages, search and server totals; optional `q` on
+  `GET /transactions/count`.
 - **`If-Match` required on `DELETE` (breaking):** a delete or undo without
   it is `428 TRANSACTION_VERSION_REQUIRED`.
 - **`POST` is stricter:** a zero amount, a timestamp more than a minute
