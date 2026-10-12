@@ -1,16 +1,17 @@
 import type { DataSourceOptions } from 'typeorm';
-import { join } from 'path';
-import { ConfigService } from '@nestjs/config';
+import type { ConfigService } from '@nestjs/config';
 
-export const getOrmConfig = (configService: ConfigService): DataSourceOptions => ({
-  type: 'mysql',
-  host: configService.getOrThrow<string>('DB_HOST'),
-  port: configService.getOrThrow<number>('DB_PORT'),
-  username: configService.getOrThrow<string>('DB_USERNAME'),
-  password: configService.getOrThrow<string>('DB_PASSWORD'),
-  database: configService.getOrThrow<string>('DB_DATABASE'),
-  entities: [join(__dirname, '../entities/**.entity{.ts,.js}')],
-  migrations: [join(__dirname, '../migrations/**{.ts,.js}')],
-  synchronize: false,
-  migrationsRun: true,
-});
+import { buildDataSourceOptions } from './database.config';
+import type { EnvironmentVariables } from './env.validation';
+
+export const getOrmConfig = (configService: ConfigService<EnvironmentVariables, true>): DataSourceOptions =>
+  buildDataSourceOptions({
+    DB_HOST: configService.getOrThrow('DB_HOST', { infer: true }),
+    DB_PORT: configService.getOrThrow('DB_PORT', { infer: true }),
+    DB_USERNAME: configService.getOrThrow('DB_USERNAME', { infer: true }),
+    DB_PASSWORD: configService.getOrThrow('DB_PASSWORD', { infer: true }),
+    DB_DATABASE: configService.getOrThrow('DB_DATABASE', { infer: true }),
+    DB_SSL: configService.get('DB_SSL', { infer: true }),
+    DB_SSL_CA: configService.get('DB_SSL_CA', { infer: true }),
+    DB_SSL_REJECT_UNAUTHORIZED: configService.get('DB_SSL_REJECT_UNAUTHORIZED', { infer: true }),
+  });

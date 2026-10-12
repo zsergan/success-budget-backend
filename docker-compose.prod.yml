@@ -1,0 +1,68 @@
+# Runs the built production image end-to-end against a real MySQL and mail
+# catcher, entirely locally - separate from docker-compose.yml (the plain
+# dev workflow of `npm run start:dev` against a bare MySQL container, left
+# untouched). Usage:
+#
+#   docker compose -f docker-compose.prod.yml up --build
+#
+# `api` won't start until `migrate` has applied all migrations successfully.
+services:
+  mysql:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: success_budget
+      MYSQL_USER: success_budget
+      MYSQL_PASSWORD: change-me
+      MYSQL_ROOT_PASSWORD: change-me
+    volumes:
+      - mysql-prod-data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  maildev:
+    image: maildev/maildev
+    restart: unless-stopped
+    ports:
+      - '1080:1080'
+      - '1025:1025'
+
+  migrate:
+    build: .
+    command: ['node', './node_modules/typeorm/cli.js', 'migration:run', '-d', 'dist/config/typeorm-cli.data-source.js']
+    environment: &app-env
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: success_budget
+      DB_PASSWORD: change-me
+      DB_DATABASE: success_budget
+      JWT_SECRET: ${JWT_SECRET:-local-prod-image-test-secret}
+      SMTP_HOST: maildev
+      SMTP_PORT: 1025
+      MAIL_FROM: 'Success Budget <no-reply@success-budget.local>'
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - '3000:3000'
+    depends_on:
+      mysql:
+        condition: service_healthy
+      maildev:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  mysql-prod-data:

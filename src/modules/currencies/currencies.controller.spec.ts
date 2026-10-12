@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 import { CurrenciesController } from './currencies.controller';
 import { CurrenciesService } from './currencies.service';
+import { buildCurrency } from '@testing';
 
 describe('CurrenciesController', () => {
   let controller: CurrenciesController;
@@ -19,8 +20,8 @@ describe('CurrenciesController', () => {
 
   describe('getAll', () => {
     it('delegates to CurrenciesService', async () => {
-      const currencies = [{ id: 1, code: 'USD' }];
-      currenciesService.getAll.mockResolvedValue(currencies as any);
+      const currencies = [buildCurrency()];
+      currenciesService.getAll.mockResolvedValue(currencies);
 
       const result = await controller.getAll();
 

@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 
 import { CurrenciesService } from './currencies.service';
 import { Currency } from '@entities/currency.entity';
+import { buildCurrency } from '@testing';
 
 describe('CurrenciesService', () => {
   let service: CurrenciesService;
@@ -20,7 +21,7 @@ describe('CurrenciesService', () => {
 
   describe('getAll', () => {
     it('returns every currency', async () => {
-      const currencies = [{ id: 1, code: 'USD' }] as Currency[];
+      const currencies = [buildCurrency()];
       repository.find.mockResolvedValue(currencies);
 
       const result = await service.getAll();
