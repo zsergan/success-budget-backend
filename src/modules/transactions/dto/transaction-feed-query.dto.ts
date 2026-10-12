@@ -6,6 +6,7 @@ import { TransactionKind, TransactionType } from '@shared/enums';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
 import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
 import { IsTimeZone } from '@shared/decorators/is-local-date.decorator';
+import { FEED_CURSOR_MAX_LENGTH } from '../feed-cursor';
 
 export const FEED_DEFAULT_LIMIT = 50;
 export const FEED_MAX_LIMIT = 100;
@@ -84,7 +85,7 @@ export class TransactionFeedQueryDto {
   @IsOptionalNonNull()
   @IsString()
   @IsNotEmpty()
-  @MaxLength(1024)
+  @MaxLength(FEED_CURSOR_MAX_LENGTH)
   cursor?: string;
 
   @ApiPropertyOptional({
