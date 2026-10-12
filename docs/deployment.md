@@ -225,8 +225,9 @@ On boot the app compares the migrations compiled into its build
 | has run migrations the build does not know (a rollback)    | starts, with a warning naming them                                      |
 
 The last row is what lets a rollback to the previous image run on the newer
-schema (see "Roll back" below): migrations here only add columns and
-tables, so the previous build keeps working. A migration that breaks the
+schema (see "Roll back" below): migrations here only add columns, tables
+and indexes (or replace an index with a wider one), so the previous build
+keeps working. A migration that breaks the
 previous build has to say so in its PR, and then a rollback needs the schema
 reverted as well.
 

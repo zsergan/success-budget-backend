@@ -1259,15 +1259,20 @@ operations and every write stay as they are.
    - `1790300000000-CreateIdempotencyKeys`: the `idempotency_keys` table;
    - `1790400000000-CreateTransactionOperations`: the
      `transaction_operations` table (rows removed with their space).
+   - `1790500000000-ExtendTransactionWalletTimestampIndex`: replaces the
+     `(wallet_id, timestamp)` index with one the feed pages and totals read
+     (online, see [`feed-performance.md`](feed-performance.md#index)).
 2. Check the schema (`node dist/database/check-schema.js`).
 3. Deploy the application.
 
 The new application refuses to start until every migration of its build has
 run (see [`deployment.md`](deployment.md#schema-check)), so it is never
-released on the old schema. The migrations only add a column and tables, so
+released on the old schema. The migrations only add a column and tables and
+widen an index, so
 the application version before this contract keeps working on the migrated
 schema and starts with a warning about the migrations it does not know. Rolling back the application does not need a
-schema rollback. `migration:revert` drops the tables, then the column.
+schema rollback. `migration:revert` restores the narrower index, drops the
+tables, then the column.
 No data is rewritten: legacy zero amounts, future timestamps, `""`
 descriptions and type/category mismatches stay as they are (see
 [Compatibility with existing records](#compatibility-with-existing-records)).
