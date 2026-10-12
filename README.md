@@ -135,7 +135,12 @@ Migrations live in `src/migrations/` and are always run as their own
 explicit step, in this order: **database up → migrations → app start**. The
 app's own `TypeOrmModule` config (`src/config/ormconfig.ts`) sets
 `migrationsRun: false` unconditionally - it never touches the schema itself,
-in any environment, including production.
+in any environment, including production. It does refuse to start while a
+migration of its build has not run (`src/database/schema-check.ts`), so a
+skipped migration step fails on boot; `npm run schema:check` (`:prod`
+variant also available) runs the same check on its own. Adding a migration
+also means updating `REQUIRED_MIGRATION` there - a unit test fails until it
+names the newest migration.
 
 ```bash
 # check what's pending, without running anything
@@ -162,6 +167,12 @@ Both variants share one connection/TLS config builder
 diverge on how they connect to MySQL. Connecting to a managed MySQL that
 requires TLS is a few extra env vars (`DB_SSL`, `DB_SSL_CA`,
 `DB_SSL_REJECT_UNAUTHORIZED`) - see `.env.example`.
+
+MySQL sessions must use UTC (`time_zone = '+00:00'`, or `SYSTEM` on a UTC
+database host). The driver uses UTC independently of Node's local zone,
+so transaction dates and audit timestamps keep their exact instants.
+Changing the driver does not repair records previously written by a
+non-UTC Node process; audit those records separately before correcting data.
 
 After migrations, `npm run verify:reference-data` (`:prod` variant also
 available) checks that reference data seeded by migrations - currently just

@@ -124,9 +124,10 @@ the same email.
 
    (Substitute your platform's way of injecting env vars for `--env-file`
    if it isn't a real file on disk.) The app itself never runs migrations
-   on boot (`migrationsRun: false`, unconditionally) - if this step is
-   skipped, the app starts against a stale schema instead of failing
-   loudly, so don't skip it. Running this command again against an
+   on boot (`migrationsRun: false`, unconditionally), but it refuses to
+   start on a schema it was not built for (see "Schema check" below), so
+   skipping this step fails the deploy instead of serving requests on a
+   stale schema. Running this command again against an
    already-migrated database is safe and a no-op - it prints
    `No migrations are pending` rather than reapplying anything; CI's
    `docker` job (`.github/workflows/ci.yml`) asserts this on every push/PR
@@ -138,7 +139,18 @@ the same email.
    by hand (keep one account, remove the others with their spaces) and run
    this step again.
 
-3. **Verify reference data** landed (currencies are seeded by a migration's
+3. **Check the schema** matches the build - the same check the app makes on
+   boot, as a step of its own, so a pipeline can stop before switching
+   traffic:
+
+   ```bash
+   docker run --rm --env-file .env.production \
+     success-budget-backend:<tag> \
+     node dist/database/check-schema.js
+   # Schema OK: 25 migrations applied.
+   ```
+
+4. **Verify reference data** landed (currencies are seeded by a migration's
    own `INSERT`, not a schema change, so a partially-applied migration
    could leave the schema right and the data missing):
 
@@ -148,21 +160,21 @@ the same email.
      node dist/database/verify-reference-data.js
    ```
 
-4. **Start the app** (however your host runs containers - the important
-   part is that this happens *after* steps 2-3, not before):
+5. **Start the app** (however your host runs containers - the important
+   part is that this happens *after* steps 2-4, not before):
 
    ```bash
    docker run -d --env-file .env.production -p 3000:3000 success-budget-backend:<tag>
    ```
 
-5. **Health check**:
+6. **Health check**:
 
    ```bash
    curl -f http://<host>:3000/api/v1/health
    # {"status":"ok","info":{"database":{"status":"up"}}, ...}
    ```
 
-6. **Smoke-test registration** end to end - the one flow that touches the
+7. **Smoke-test registration** end to end - the one flow that touches the
    database, email delivery, and JWT issuance all at once. The code must
    come from the confirmation email as actually delivered (its inbox, or a
    catcher's own API/UI) - reading it out of the database instead only
@@ -180,8 +192,9 @@ the same email.
      -d '{"email":"smoke-test@example.com","code":"<code from the email>"}'
    ```
 
-   This exact sequence (build → migrate → re-migrate idempotency check →
-   verify reference data → start on a non-default `PORT` → health check →
+   This exact sequence (build → migrations-in-image check → refused start
+   before migrating → migrate → re-migrate idempotency check → schema
+   check → verify reference data → start on a non-default `PORT` → health check →
    Swagger-disabled check → this registration smoke test, reading the code
    from a real MailDev message → clean SIGTERM shutdown) runs automatically
    against a freshly built image on every push/PR, in CI's `docker` job -
@@ -193,17 +206,44 @@ the same email.
    smoke test, since `POST /register` is idempotent for a still-unverified
    account).
 
-`docker-compose.prod.yml` runs steps 1-5 locally in one command
+`docker-compose.prod.yml` runs steps 1, 2, 5 and 6 locally in one command
 (`docker compose -f docker-compose.prod.yml up --build`) against a real
 MySQL and a MailDev catcher - useful for rehearsing this whole procedure,
 or reproducing a deploy issue, without touching a real host.
+
+### Schema check
+
+On boot the app compares the migrations compiled into its build
+(`dist/migrations`) with the `migrations` table, before it listens
+(`src/database/schema-check.ts`):
+
+| State of the database                                      | Result                                                                  |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------- |
+| has run every migration of the build                       | starts                                                                  |
+| misses a migration of the build                            | exits with code 1: `The database schema is behind this build; run the migrations first. Pending: ...` |
+| the build lacks `REQUIRED_MIGRATION`, the newest migration its code needs | exits with code 1 (a broken build)                                     |
+| has run migrations the build does not know (a rollback)    | starts, with a warning naming them                                      |
+
+The last row is what lets a rollback to the previous image run on the newer
+schema (see "Roll back" below): migrations here only add columns and
+tables, so the previous build keeps working. A migration that breaks the
+previous build has to say so in its PR, and then a rollback needs the schema
+reverted as well.
+
+`REQUIRED_MIGRATION` is kept equal to the newest file in `src/migrations`
+by a unit test, so adding a migration without updating it fails CI. CI's
+`docker` job also checks that the image contains every migration of the
+source tree, that the image refuses to start on an empty database, and that
+`check-schema.js` passes after the migrations ran.
 
 ## If a deploy fails
 
 - **App won't start / crashes immediately**: check the required env vars
   above are all set - `ConfigModule`'s validation
   (`src/config/env.validation.ts`) throws on boot for anything missing or
-  malformed, and the error names the exact variable.
+  malformed, and the error names the exact variable. `The database schema
+  is behind this build` means step 2 did not run (or failed) against this
+  database: run it and start again.
 - **Health check fails**: almost always the database - check
   `DB_HOST`/`DB_SSL` and that migrations (step 2) actually completed.
 - **Registration smoke test fails at the email step**: check
@@ -309,8 +349,9 @@ plan.
 Verified by actually running it (CI on every push/PR, plus this repo's own
 scripts on demand) - not just asserted in this doc:
 
-- build → migrate → confirm migrations are idempotent → verify reference
-  data → start on a non-default `PORT` → health check → Swagger disabled
+- build → the image contains every migration → the image refuses to start
+  before migrating → migrate → confirm migrations are idempotent → check
+  the schema → verify reference data → start on a non-default `PORT` → health check → Swagger disabled
   by default in production → a full register/verify/login/protected-route
   flow through a **real, delivered** confirmation email → clean shutdown
   on SIGTERM (CI's `docker` job).

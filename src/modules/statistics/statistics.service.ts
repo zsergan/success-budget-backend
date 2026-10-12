@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 
-import type { StatisticsQueryDto } from './dto/statistics-query.dto';
+import type { StatisticsBreakdownQueryDto, StatisticsQueryDto } from './dto/statistics-query.dto';
 import {
   type CategoryBreakdown,
   type WalletBreakdown,
@@ -20,7 +20,8 @@ import {
   resolveTrendIntervals,
   trendGranularity,
 } from './statistics-period';
-import { assertFound, formatMoney, roundPercentToTenth } from '@shared/utils';
+import { TransactionType } from '@shared/enums';
+import { assertFound, formatMoney, readSnapshot, roundPercentToTenth } from '@shared/utils';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import {
@@ -74,7 +75,8 @@ export interface StatisticsTrend extends StatisticsBlock {
 }
 
 export interface StatisticsBreakdown extends StatisticsBlock {
-  // control sum: the client compares it with the summary expense of the same cycle
+  transaction_type: TransactionType;
+  // control sum: the client compares it with the summary figure of transaction_type of the same cycle
   total: MoneyCount;
   by_category: CategoryBreakdown;
   by_wallet: WalletBreakdown;
@@ -174,20 +176,38 @@ export class StatisticsService {
     };
   }
 
-  async getBreakdown(userId: number, spaceId: number, query: StatisticsQueryDto): Promise<StatisticsBreakdown> {
+  async getBreakdown(
+    userId: number,
+    spaceId: number,
+    query: StatisticsBreakdownQueryDto,
+  ): Promise<StatisticsBreakdown> {
     const block = await this.openBlock(userId, spaceId, query);
     const { period } = block;
     const { actual_to: to } = period;
+    const transactionType = query.transaction_type ?? TransactionType.EXPENSE;
     const [categories, wallets] =
       to === null
         ? [[], []]
         : await this.readSnapshot(async (manager) => [
-            await this.transactionQueriesService.getStatisticsExpenseByCategory(spaceId, period.from, to, manager),
-            await this.transactionQueriesService.getStatisticsExpenseByWallet(spaceId, period.from, to, manager),
+            await this.transactionQueriesService.getStatisticsByCategory(
+              spaceId,
+              transactionType,
+              period.from,
+              to,
+              manager,
+            ),
+            await this.transactionQueriesService.getStatisticsByWallet(
+              spaceId,
+              transactionType,
+              period.from,
+              to,
+              manager,
+            ),
           ]);
 
     return {
       ...block,
+      transaction_type: transactionType,
       total: {
         amount: formatMoney(sumOf(categories)),
         count: categories.reduce((sum, category) => sum + category.count, 0),
@@ -207,9 +227,7 @@ export class StatisticsService {
     return { period, currency: space.currency.code };
   }
 
-  // InnoDB takes the snapshot at the first read, so the later reads of a
-  // block see no commits made in between. Plain reads, no locks.
   private readSnapshot<T>(read: (manager: EntityManager) => Promise<T>): Promise<T> {
-    return this.dataSource.transaction('REPEATABLE READ', read);
+    return readSnapshot(this.dataSource, read);
   }
 }

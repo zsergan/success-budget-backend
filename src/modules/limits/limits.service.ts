@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
@@ -6,15 +6,17 @@ import { Limit } from '@entities/limit.entity';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitType } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import {
   assertBelongsToSpace,
   assertFound,
   floorPercent,
-  getEndOfMonth,
-  getStartOfMonth,
   moneyToNumber,
+  monthPeriodAt,
   parseMoney,
+  readSnapshot,
+  runWriteTransaction,
+  serverTimeZone,
   withRelations,
 } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
@@ -42,8 +44,9 @@ export class LimitsService {
     return limit && withRelations(limit, 'categories');
   }
 
-  async getAll(spaceId: number): Promise<LimitWithCategories[]> {
-    const limits = await this.limitRepository
+  async getAll(spaceId: number, manager?: EntityManager): Promise<LimitWithCategories[]> {
+    const repository = manager?.getRepository(Limit) ?? this.limitRepository;
+    const limits = await repository
       .createQueryBuilder('limit')
       .where('limit.space_id = :spaceId', { spaceId })
       .leftJoinAndSelect('limit.categories', 'categories')
@@ -52,23 +55,23 @@ export class LimitsService {
     return limits.map((limit) => withRelations(limit, 'categories'));
   }
 
-  async getSummary(userId: number, spaceId: number) {
+  // Spending of the current calendar month in the client's zone; without one,
+  // in the server's. The period tells the client which month was counted.
+  async getSummary(userId: number, spaceId: number, timeZone = serverTimeZone(), now = new Date()) {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    const limits = await this.getAll(spaceId);
-    const categoryTotals = await this.transactionQueriesService.getExpensesByCategory(
-      spaceId,
-      getStartOfMonth(new Date()),
-      getEndOfMonth(new Date()),
-    );
+    const period = monthPeriodAt(now, timeZone);
+    // the limits and the spending they are compared with come from one snapshot
+    const [limits, categoryTotals] = await readSnapshot(this.dataSource, async (manager) => [
+      await this.getAll(spaceId, manager),
+      await this.transactionQueriesService.getExpensesByCategory(spaceId, period.from, period.to, manager),
+    ]);
 
-    return this.calculateSpending(limits, categoryTotals);
+    return { period, ...this.calculateSpending(limits, categoryTotals) };
   }
 
   async create(userId: number, spaceId: number, createLimit: CreateLimitDto): Promise<LimitWithCategories> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+    return this.write(userId, spaceId, async (manager) => {
       await this.assertCategoriesOwnership(manager, spaceId, createLimit.category_ids);
 
       const categoryIds = createLimit.category_ids ?? [];
@@ -104,10 +107,7 @@ export class LimitsService {
     limitId: number,
     updateLimit: UpdateLimitDto,
   ): Promise<LimitWithCategories> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
-
+    return this.write(userId, spaceId, async (manager) => {
       const currentLimit = await this.getSpaceLimit(spaceId, limitId, manager);
       await this.assertCategoriesOwnership(manager, spaceId, updateLimit.category_ids);
 
@@ -159,13 +159,19 @@ export class LimitsService {
   }
 
   async remove(userId: number, spaceId: number, limitId: number): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      await this.spaceAccessService.lockSpace(spaceId, manager);
-      await this.spaceAccessService.assertMembership(spaceId, userId, undefined, manager);
+    await this.write(userId, spaceId, async (manager) => {
       await this.getSpaceLimit(spaceId, limitId, manager);
 
       // junction rows in limit_categories cascade automatically (onDelete: CASCADE)
       await manager.getRepository(Limit).delete(limitId);
+    });
+  }
+
+  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return runWriteTransaction(this.dataSource, async (manager) => {
+      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      return work(manager);
     });
   }
 
@@ -224,7 +230,7 @@ export class LimitsService {
 
   private async getSpaceLimit(spaceId: number, limitId: number, manager?: EntityManager): Promise<LimitWithCategories> {
     const limit = await this.getOne(limitId, manager);
-    assertBelongsToSpace(limit, spaceId, ErrorMessages.FORBIDDEN_LIMIT);
+    assertBelongsToSpace(limit, spaceId, 'FORBIDDEN_LIMIT');
 
     return limit;
   }
@@ -246,21 +252,21 @@ export class LimitsService {
 
     for (const categoryId of ids) {
       const category = categoriesById.get(categoryId);
-      assertBelongsToSpace(category, spaceId, ErrorMessages.FORBIDDEN_CATEGORY);
+      assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
 
       if (category.is_system) {
-        throw new HttpException(ErrorMessages.CATEGORY_IS_SYSTEM, HttpStatus.BAD_REQUEST);
+        throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
       }
 
       if (category.is_active === 0) {
-        throw new HttpException(ErrorMessages.CATEGORY_ARCHIVED, HttpStatus.BAD_REQUEST);
+        throw new ApiException('CATEGORY_ARCHIVED', HttpStatus.BAD_REQUEST);
       }
     }
   }
 
   private assertHasNameIfGroup(categoryIds: number[], name?: string | null): void {
     if (categoryIds.length > 1 && !name) {
-      throw new HttpException(ErrorMessages.LIMIT_NAME_REQUIRED, HttpStatus.BAD_REQUEST);
+      throw new ApiException('LIMIT_NAME_REQUIRED', HttpStatus.BAD_REQUEST);
     }
   }
 
@@ -284,7 +290,7 @@ export class LimitsService {
     const conflicting = await query.getCount();
 
     if (conflicting > 0) {
-      throw new HttpException(ErrorMessages.LIMIT_EXISTS, HttpStatus.BAD_REQUEST);
+      throw new ApiException('LIMIT_EXISTS', HttpStatus.BAD_REQUEST);
     }
   }
 
@@ -306,7 +312,7 @@ export class LimitsService {
     const existing = await query.getCount();
 
     if (existing > 0) {
-      throw new HttpException(ErrorMessages.LIMIT_EXISTS, HttpStatus.BAD_REQUEST);
+      throw new ApiException('LIMIT_EXISTS', HttpStatus.BAD_REQUEST);
     }
   }
 }

@@ -2,8 +2,8 @@ import { buildCategoryBreakdown, buildWalletBreakdown, foldGroups } from './stat
 import { AppColor } from '@shared/enums';
 import { parseMoney } from '@shared/utils';
 import type {
-  StatisticsCategoryExpense,
-  StatisticsWalletExpense,
+  StatisticsCategoryGroup,
+  StatisticsWalletGroup,
 } from '@modules/transaction-queries/transaction-queries.service';
 
 const groups = (...amounts: string[]) => amounts.map((amount, i) => ({ id: i + 1, amount: parseMoney(amount) }));
@@ -15,7 +15,7 @@ const fold = (list: { id: number; amount: bigint }[], maxPrimary = 6) => {
   return { primary: ids(primary), folded: ids(folded) };
 };
 
-const category = (id: number, name: string, amount: string, overrides: Partial<StatisticsCategoryExpense> = {}) => ({
+const category = (id: number, name: string, amount: string, overrides: Partial<StatisticsCategoryGroup> = {}) => ({
   id,
   name,
   icon: 'cart',
@@ -26,7 +26,7 @@ const category = (id: number, name: string, amount: string, overrides: Partial<S
   ...overrides,
 });
 
-const wallet = (id: number, amount: string, isDeleted = false): StatisticsWalletExpense => ({
+const wallet = (id: number, amount: string, isDeleted = false): StatisticsWalletGroup => ({
   id,
   name: `Wallet ${id}`,
   design: AppColor.SLATE,

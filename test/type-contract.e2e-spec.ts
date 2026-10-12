@@ -8,6 +8,7 @@ import { configureApp } from '../src/app.config';
 import { UsersService } from '@modules/users/users.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { moneyToNumber, parseMoney } from '@shared/utils';
+import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
 // Pins the runtime types at the HTTP/DB boundary described in
 // docs/type-contract.md.
@@ -208,14 +209,17 @@ describe('Boundary type contract (e2e)', () => {
       },
     );
 
-    it('accepts zero and the upper bound on every money field', async () => {
-      for (const [amount, stored] of [
-        ['0', '0.00'],
-        ['99999999.99', '99999999.99'],
-      ]) {
-        const transaction = await createTransaction({ amount }).expect(201);
-        expect((await readTransaction(transaction.body.transaction.id)).amount).toBe(stored);
-        await api().delete(`${base()}/transactions/${transaction.body.transaction.id}`).expect(200);
+    it('accepts the upper bound on every money field, and zero everywhere but on a transaction', async () => {
+      const transaction = await createTransaction({ amount: '99999999.99' }).expect(201);
+      expect((await readTransaction(transaction.body.transaction.id)).amount).toBe('99999999.99');
+      await api()
+        .delete(`${base()}/transactions/${transaction.body.transaction.id}`)
+        .set('If-Match', '"1"')
+        .expect(200);
+
+      for (const amount of ['0', '0.00']) {
+        const zero = await createTransaction({ amount }).expect(400);
+        expect(zero.body.message).toEqual([{ field: 'amount', error: 'amount must be greater than 0' }]);
       }
 
       const limit = await api().post(`${base()}/limits`).send({ amount: '0' }).expect(201);
@@ -254,13 +258,13 @@ describe('Boundary type contract (e2e)', () => {
           category_id: incomeCategoryId,
           transaction_type: 'income',
           amount: '0.2',
-          timestamp: '2030-01-15T12:00:00.000Z',
+          timestamp: '2026-01-15T12:00:00.000Z',
         })
         .expect(201);
       expect(income.body.previous_balance).toBe(0.1);
       expect(income.body.wallet.balance).toBe(0.3);
 
-      const period = await api().get(`${spaceBase}/wallets?from=2030-01-01&to=2030-01-31`).expect(200);
+      const period = await api().get(`${spaceBase}/wallets?from=2026-01-01&to=2026-01-31`).expect(200);
       expect(period.body).toMatchObject({ total_balance: 0.5, delta_percent: 66.7 });
       expect(period.body.wallets).toEqual([
         expect.objectContaining({
@@ -289,10 +293,10 @@ describe('Boundary type contract (e2e)', () => {
       expect(read.amount).toBe('100.50');
     });
 
-    it('echoes the request amount string on create, reads it back normalized to 2 decimals, and derives balances as numbers', async () => {
+    it('returns the created amount normalized to 2 decimals, as reads do, and derives balances as numbers', async () => {
       const created = await createTransaction({ amount: '12.3' }).expect(201);
 
-      expect(created.body.transaction.amount).toBe('12.3');
+      expect(created.body.transaction.amount).toBe('12.30');
       expect(typeof created.body.previous_balance).toBe('number');
       expect(created.body.wallet.balance).toBe(
         moneyToNumber(parseMoney(created.body.previous_balance.toFixed(2)) - 1230n),
@@ -398,7 +402,11 @@ describe('Boundary type contract (e2e)', () => {
         .send({ wallet_name: 'Period', initial_balance: '0', design: 'slate' })
         .expect(201);
       const periodWalletId = wallet.body.wallet.id;
-      const noonLocal = await createTransaction({ wallet_id: periodWalletId, timestamp: '2026-03-10T12:00:00' });
+      // local noon of the server, which offset-less query bounds are read in
+      const noonLocal = await createTransaction({
+        wallet_id: periodWalletId,
+        timestamp: new Date(2026, 2, 10, 12).toISOString(),
+      });
       const exactUtc = await createTransaction({ wallet_id: periodWalletId, timestamp: '2026-03-12T08:00:00.250Z' });
       expect(noonLocal.status).toBe(201);
       expect(exactUtc.status).toBe(201);
@@ -451,32 +459,39 @@ describe('Boundary type contract (e2e)', () => {
       expect(res.body.message).toEqual([{ field: 'to', error: 'to must be a valid ISO 8601 date' }]);
     });
 
-    it.each([null, 1700000000000, 'garbage', '2026-02-30', '2026-W03', '2099-01-01T00:00:00Z', '1969-12-31'])(
-      'rejects a transaction timestamp of %p without creating it',
-      async (timestamp) => {
-        const countTransactions = () =>
-          countRows(
-            'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
-            [spaceId],
-          );
-        const before = await countTransactions();
+    it.each([
+      null,
+      1700000000000,
+      'garbage',
+      '2026-02-30',
+      '2026-W03',
+      '2099-01-01T00:00:00Z',
+      '1969-12-31T00:00:00Z',
+      '2026-01-15',
+      '2026-01-15T10:00:00',
+    ])('rejects a transaction timestamp of %p without creating it', async (timestamp) => {
+      const countTransactions = () =>
+        countRows(
+          'SELECT COUNT(*) AS count FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
+          [spaceId],
+        );
+      const before = await countTransactions();
 
-        const res = await createTransaction({ timestamp }).expect(400);
-        expectFieldError(res, 'timestamp');
-        expect(await countTransactions()).toBe(before);
-      },
-    );
+      const res = await createTransaction({ timestamp }).expect(400);
+      expectFieldError(res, 'timestamp');
+      expect(await countTransactions()).toBe(before);
+    });
   });
 
   describe('missing values', () => {
-    it('stores description as given: absent and null become null, empty string stays empty', async () => {
+    it('reads a missing description as null: absent, null and an empty string', async () => {
       const absent = await createTransaction().expect(201);
       const explicitNull = await createTransaction({ description: null }).expect(201);
       const empty = await createTransaction({ description: '' }).expect(201);
 
       expect((await readTransaction(absent.body.transaction.id)).description).toBeNull();
       expect((await readTransaction(explicitNull.body.transaction.id)).description).toBeNull();
-      expect((await readTransaction(empty.body.transaction.id)).description).toBe('');
+      expect((await readTransaction(empty.body.transaction.id)).description).toBeNull();
     });
 
     it('treats an absent update field as "leave unchanged"', async () => {
@@ -653,7 +668,7 @@ describe('Boundary type contract (e2e)', () => {
       expect(res.body.message).toBe(message);
     }
 
-    it('reports a missing wallet, category, limit or transaction as the same 403 as a foreign one', async () => {
+    it('reports a missing wallet, category or limit as the same 403 as a foreign one', async () => {
       const wallet = 'Wallet does not exist or you do not have access to this wallet';
       const category = 'Category does not exist or you do not have access to this category';
       const limit = 'Limit does not exist or you do not have access to this limit';
@@ -662,7 +677,6 @@ describe('Boundary type contract (e2e)', () => {
       expectError(await api().delete(`${base()}/wallets/${MISSING_ID}`), 403, wallet);
       expectError(await createTransaction({ wallet_id: MISSING_ID }), 403, wallet);
       expectError(await createTransaction({ category_id: MISSING_ID }), 403, category);
-      expectError(await api().delete(`${base()}/transactions/${MISSING_ID}`), 403, wallet);
       expectError(await api().put(`${base()}/categories/${MISSING_ID}`).send({ name: 'x' }), 403, category);
       expectError(await api().delete(`${base()}/categories/${MISSING_ID}`), 403, category);
       expectError(
@@ -680,6 +694,14 @@ describe('Boundary type contract (e2e)', () => {
           .send({ amount: '1', category_ids: [MISSING_ID] }),
         403,
         category,
+      );
+    });
+
+    it('reports a missing transaction as 404, like a foreign one', async () => {
+      expectError(
+        await api().delete(`${base()}/transactions/${MISSING_ID}`).set('If-Match', '"1"'),
+        404,
+        'Transaction not found',
       );
     });
 
@@ -721,8 +743,10 @@ describe('Boundary type contract (e2e)', () => {
     const keys = (value: object): string[] => Object.keys(value).sort();
     const WALLET = ['created_at', 'design', 'id', 'updated_at', 'wallet_name'];
     const WALLET_WITH_BALANCE = [...WALLET, 'balance'].sort();
-    const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type'];
+    const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type', 'version'];
     const CATEGORY = ['color', 'created_at', 'icon', 'id', 'is_active', 'name', 'transaction_type', 'updated_at'];
+    const TRANSACTION_VIEW = [...TRANSACTION, 'category', 'kind', 'wallet'].sort();
+    const TRANSACTION_CATEGORY = [...CATEGORY, 'is_archived'].sort();
 
     it('wallet creation and overview', async () => {
       const funded = await api()
@@ -750,13 +774,45 @@ describe('Boundary type contract (e2e)', () => {
     it('transaction creation and reads', async () => {
       const created = await createTransaction({ description: 'Lunch' }).expect(201);
       expect(keys(created.body)).toEqual(['previous_balance', 'transaction', 'wallet']);
-      expect(keys(created.body.transaction)).toEqual(TRANSACTION);
+      expect(keys(created.body.transaction)).toEqual(TRANSACTION_VIEW);
       expect(keys(created.body.wallet)).toEqual(WALLET_WITH_BALANCE);
 
       const read = await readTransaction(created.body.transaction.id);
-      expect(keys(read)).toEqual([...TRANSACTION, 'category', 'wallet'].sort());
+      expect(keys(read)).toEqual(TRANSACTION_VIEW);
       expect(keys(read.wallet)).toEqual(WALLET);
-      expect(keys(read.category)).toEqual(CATEGORY);
+      expect(keys(read.category)).toEqual(TRANSACTION_CATEGORY);
+      expect(read).toEqual(expect.objectContaining({ kind: 'regular', version: 1 }));
+      expect(read.category.is_archived).toBe(false);
+
+      const document = createOpenApiDocument(app);
+      const list = await api().get(`${base()}/transactions?from=2000-01-01&to=2100-01-01`).expect(200);
+      expect(schemaErrors(document, okResponseSchema(document, '/transactions'), list.body)).toEqual([]);
+      const latest = await api().get(`${base()}/transactions/latest`).expect(200);
+      expect(schemaErrors(document, okResponseSchema(document, '/transactions/latest'), latest.body)).toEqual([]);
+    });
+
+    it('marks the initial balance by kind, not by the category name', async () => {
+      const funded = await api()
+        .post(`${base()}/wallets`)
+        .send({ wallet_name: 'Kind', initial_balance: '5', design: 'slate' })
+        .expect(201);
+      await dataSource.query('UPDATE categories SET name = ? WHERE space_id = ? AND is_system = 1', [
+        'Renamed',
+        spaceId,
+      ]);
+
+      try {
+        const read = await readTransaction(funded.body.transaction.id);
+
+        expect(read.kind).toBe('initial_balance');
+        expect(read.category.name).toBe('Renamed');
+        expect(keys(read.category)).toEqual(TRANSACTION_CATEGORY);
+      } finally {
+        await dataSource.query('UPDATE categories SET name = ? WHERE space_id = ? AND is_system = 1', [
+          'Initial balance',
+          spaceId,
+        ]);
+      }
     });
 
     it('nulls the wallet of a soft-deleted wallet in transaction reads, keeping the key', async () => {
@@ -765,28 +821,27 @@ describe('Boundary type contract (e2e)', () => {
         .send({ wallet_name: 'Doomed', initial_balance: '0', design: 'slate' })
         .expect(201);
       const doomedId = wallet.body.wallet.id;
-      const created = await createTransaction({ wallet_id: doomedId, timestamp: '2037-12-31T00:00:00.000Z' }).expect(
-        201,
-      );
+      const at = new Date().toISOString();
+      const created = await createTransaction({ wallet_id: doomedId, timestamp: at }).expect(201);
       await api().delete(`${base()}/wallets/${doomedId}`).expect(200);
 
-      const res = await api().get(`${base()}/transactions?from=2037-12-30&to=2038-01-01`).expect(200);
+      const res = await api().get(`${base()}/transactions?from=${at}&to=${at}`).expect(200);
       expect(res.body).toHaveLength(1);
-      expect(keys(res.body[0])).toEqual([...TRANSACTION, 'category', 'wallet'].sort());
+      expect(keys(res.body[0])).toEqual(TRANSACTION_VIEW);
       expect(res.body[0].wallet).toBeNull();
 
       const latest = await api().get(`${base()}/transactions/latest`).expect(200);
       expect(latest.body.id).toBe(created.body.transaction.id);
       expect(latest.body.wallet).toBeNull();
-      expect(keys(latest.body.category)).toEqual(CATEGORY);
+      expect(keys(latest.body.category)).toEqual(TRANSACTION_CATEGORY);
 
       const overview = await api().get(`${base()}/wallets`).expect(200);
       expect(overview.body.wallets.map((summary: { wallet: { id: number } }) => summary.wallet.id)).not.toContain(
         doomedId,
       );
 
-      await createTransaction({ wallet_id: doomedId }).expect(403);
-      await api().delete(`${base()}/transactions/${created.body.transaction.id}`).expect(200);
+      await createTransaction({ wallet_id: doomedId }).expect(400);
+      await api().delete(`${base()}/transactions/${created.body.transaction.id}`).set('If-Match', '"1"').expect(200);
     });
 
     it('limits and categories', async () => {
@@ -814,7 +869,8 @@ describe('Boundary type contract (e2e)', () => {
       expect(keys(limit.body.categories[0])).toEqual(CATEGORY);
 
       const summary = await api().get(`${base()}/limits`).expect(200);
-      expect(keys(summary.body)).toEqual(['categories', 'over_allocation', 'total']);
+      expect(keys(summary.body)).toEqual(['categories', 'over_allocation', 'period', 'total']);
+      expect(keys(summary.body.period)).toEqual(['end_date', 'from', 'start_date', 'time_zone', 'to']);
       const view = summary.body.categories.find((item: { id: number }) => item.id === limit.body.id);
       expect(keys(view)).toEqual(['amount', 'categories', 'id', 'in_percent', 'name', 'spent']);
       expect(keys(view.categories[0])).toEqual(['color', 'icon', 'id', 'name']);

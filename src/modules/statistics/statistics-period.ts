@@ -21,12 +21,12 @@ import {
 import { StatisticsPeriodType } from '@shared/enums';
 import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 import { resolveTimeZone } from '@shared/utils';
+import { CLOCK_SKEW_MS } from '@shared/constants';
 
 export const MAX_CUSTOM_PERIOD_DAYS = 366;
 export const MAX_DAILY_CUSTOM_DAYS = 14;
 export const MAX_WEEKLY_CUSTOM_DAYS = 92;
-// device clocks drift; a slightly early server must not reject the client's now
-export const AS_OF_CLOCK_SKEW_MS = 60_000;
+export const AS_OF_CLOCK_SKEW_MS = CLOCK_SKEW_MS;
 
 export type TrendGranularity = 'day' | 'week' | 'month';
 

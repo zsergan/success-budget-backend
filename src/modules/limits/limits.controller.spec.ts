@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
 import type { AuthedRequest } from '@shared/types';
+import { monthPeriodAt } from '@shared/utils';
 import { withRelations } from '@shared/utils';
 import { buildCategory, buildLimit } from '@testing';
 
@@ -28,13 +29,18 @@ describe('LimitsController', () => {
   const req: AuthedRequest = { user: { id: 1 } };
   const spaceId = 10;
 
-  it('getAll delegates to LimitsService.getSummary', async () => {
-    const summary = { total: null, categories: [], over_allocation: null };
+  it('getAll delegates to LimitsService.getSummary with the time zone', async () => {
+    const summary = {
+      period: monthPeriodAt(new Date('2026-09-15T00:00:00.000Z'), 'UTC'),
+      total: null,
+      categories: [],
+      over_allocation: null,
+    };
     limitsService.getSummary.mockResolvedValue(summary);
 
-    const result = await controller.getAll(req, spaceId);
+    const result = await controller.getAll(req, spaceId, 'Europe/Moscow');
 
-    expect(limitsService.getSummary).toHaveBeenCalledWith(1, spaceId);
+    expect(limitsService.getSummary).toHaveBeenCalledWith(1, spaceId, 'Europe/Moscow');
     expect(result).toBe(summary);
   });
 

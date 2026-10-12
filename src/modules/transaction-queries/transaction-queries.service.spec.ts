@@ -4,7 +4,7 @@ import type { EntityManager } from 'typeorm';
 
 import { TransactionQueriesService } from './transaction-queries.service';
 import { Transaction } from '@entities/transaction.entity';
-import { TransactionType } from '@shared/enums';
+import { TransactionKind, TransactionType } from '@shared/enums';
 
 describe('TransactionQueriesService', () => {
   let service: TransactionQueriesService;
@@ -28,6 +28,7 @@ describe('TransactionQueriesService', () => {
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
       getOne: jest.fn(),
+      getCount: jest.fn(),
       getRawMany: jest.fn().mockResolvedValue([]),
       getRawOne: jest.fn(),
     };
@@ -99,6 +100,13 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getPeriodTotals', () => {
+    it('leaves initial balances out of income', async () => {
+      await service.getPeriodTotals([1], new Date(), new Date());
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
+    });
+
     it('returns an all-zero map without querying when there are no wallets', async () => {
       const result = await service.getPeriodTotals([], new Date(), new Date());
 
@@ -130,8 +138,8 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
         walletIds: [1, 2, 3],
       });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(1, 'transaction.timestamp >= :from', { from });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp <= :to', { to });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp >= :from', { from });
+      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(3, 'transaction.timestamp <= :to', { to });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
       expect(result).toEqual(
         new Map([
@@ -187,6 +195,15 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
 
+    it('orders newest first, then by id, so equal timestamps keep one order', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'));
+
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
+    });
+
     it('adds only the filters that are set', async () => {
       queryBuilder.getMany.mockResolvedValue([]);
 
@@ -203,17 +220,61 @@ describe('TransactionQueriesService', () => {
         'transaction.category_id = :categoryId',
         expect.anything(),
       );
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('is_system'));
+    });
+
+    it.each([
+      [TransactionKind.REGULAR, 'category.is_system = 0'],
+      [TransactionKind.INITIAL_BALANCE, 'category.is_system = 1'],
+    ])('filters kind %s by the system flag of the category', async (kind, condition) => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { kind });
+
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(condition);
     });
   });
 
-  describe('getOneWithWallet', () => {
-    it('loads a transaction with its wallet relation', async () => {
+  describe('countForAllWallets', () => {
+    it('counts with the same scope and filters as the list, without loading rows', async () => {
+      queryBuilder.getCount.mockResolvedValue(4);
+
+      await expect(
+        service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), {
+          categoryId: 5,
+          kind: TransactionKind.REGULAR,
+        }),
+      ).resolves.toBe(4);
+
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
+      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.category_id = :categoryId', { categoryId: 5 });
+      expect(queryBuilder.getMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getOneInSpace', () => {
+    it('loads the transaction with both relations, scoped by its wallet space', async () => {
       queryBuilder.getOne.mockResolvedValue(null);
 
-      await service.getOneWithWallet('tx-1');
+      expect(await service.getOneInSpace(9, 'tx-1')).toBeNull();
 
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+    });
+
+    it('reads through the given manager', async () => {
+      const getRepository = jest.fn().mockReturnValue(transactionRepository);
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      await service.getOneInSpace(9, 'tx-1', { getRepository } as unknown as EntityManager);
+
+      expect(getRepository).toHaveBeenCalledWith(Transaction);
     });
   });
 
@@ -309,36 +370,40 @@ describe('TransactionQueriesService', () => {
     });
   });
 
-  describe('statistics expense groups', () => {
+  describe('statistics groups', () => {
     const from = new Date('2026-08-31T21:00:00.000Z');
     const to = new Date('2026-09-28T12:00:00.000Z');
 
-    it('sums expenses per category in SQL', async () => {
+    it('sums the transactions of the type per category in SQL', async () => {
       queryBuilder.getRawMany.mockResolvedValue([
         { id: 14, name: 'Gifts', icon: 'gift', color: 'rose', is_active: 0, amount: '80.00', count: '1' },
       ]);
 
-      const result = await service.getStatisticsExpenseByCategory(7, from, to, manager);
+      const result = await service.getStatisticsByCategory(7, TransactionType.EXPENSE, from, to, manager);
 
       expect(result).toEqual([
         { id: 14, name: 'Gifts', icon: 'gift', color: 'rose', isArchived: true, amount: 8000n, count: 1 },
       ]);
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :expense', {
-        expense: 'expense',
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :transactionType', {
+        transactionType: 'expense',
       });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('category.id');
     });
 
-    it('sums expenses per wallet, deleted ones included', async () => {
+    it('sums the transactions of the type per wallet, deleted ones included', async () => {
       queryBuilder.getRawMany.mockResolvedValue([
         { id: '3', name: 'Old card', design: 'slate', is_deleted: '1', amount: '105.50', count: '2' },
       ]);
 
-      const result = await service.getStatisticsExpenseByWallet(7, from, to, manager);
+      const result = await service.getStatisticsByWallet(7, TransactionType.INCOME, from, to, manager);
 
       expect(result).toEqual([{ id: 3, name: 'Old card', design: 'slate', isDeleted: true, amount: 10550n, count: 2 }]);
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('wallet.id');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :transactionType', {
+        transactionType: 'income',
+      });
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('is_deleted'));
     });
   });

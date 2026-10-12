@@ -1,12 +1,10 @@
-import { HttpException, HttpStatus } from '@nestjs/common';
+import { HttpStatus } from '@nestjs/common';
 
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
+import type { ErrorCode } from '@shared/error-messages';
 
-export function assertFound<T>(
-  resource: T | null | undefined,
-  errorMessage: string = ErrorMessages.NOT_FOUND,
-): asserts resource is T {
+export function assertFound<T>(resource: T | null | undefined, code: ErrorCode = 'NOT_FOUND'): asserts resource is T {
   if (resource === null || resource === undefined) {
-    throw new HttpException(errorMessage, HttpStatus.NOT_FOUND);
+    throw new ApiException(code, HttpStatus.NOT_FOUND);
   }
 }

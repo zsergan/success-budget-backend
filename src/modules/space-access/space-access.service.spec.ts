@@ -78,8 +78,40 @@ describe('SpaceAccessService', () => {
     });
   });
 
+  describe('lockMembership', () => {
+    const managerWith = (member: SpaceMember | null) => {
+      const queryBuilder = {
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(member),
+      };
+      const manager = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) } as unknown as EntityManager;
+
+      return { manager, queryBuilder };
+    };
+
+    it('takes a shared lock on the member row and returns it', async () => {
+      const member = buildSpaceMember();
+      const { manager, queryBuilder } = managerWith(member);
+
+      await expect(service.lockMembership(10, 1, manager)).resolves.toBe(member);
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(SpaceMember, 'member');
+      expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_read');
+      expect(queryBuilder.where).toHaveBeenCalledWith('member.space_id = :spaceId AND member.user_id = :userId', {
+        spaceId: 10,
+        userId: 1,
+      });
+    });
+
+    it('rejects an outsider', async () => {
+      const { manager } = managerWith(null);
+
+      await expect(service.lockMembership(10, 1, manager)).rejects.toMatchObject(forbidden);
+    });
+  });
+
   describe('lockSpace', () => {
-    it('takes a write lock on the space row through the given entity manager', async () => {
+    const managerLocking = () => {
       const queryBuilder = {
         setLock: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
@@ -87,12 +119,26 @@ describe('SpaceAccessService', () => {
       };
       const manager = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) } as unknown as EntityManager;
 
+      return { manager, queryBuilder };
+    };
+
+    it('takes a write lock on the space row through the given entity manager', async () => {
+      const { manager, queryBuilder } = managerLocking();
+
       await service.lockSpace(10, manager);
 
       expect(manager.createQueryBuilder).toHaveBeenCalledWith(Space, 'space');
       expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
       expect(queryBuilder.where).toHaveBeenCalledWith('space.id = :spaceId', { spaceId: 10 });
       expect(queryBuilder.getOne).toHaveBeenCalled();
+    });
+
+    it('takes a shared lock when asked to', async () => {
+      const { manager, queryBuilder } = managerLocking();
+
+      await service.lockSpace(10, manager, 'shared');
+
+      expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_read');
     });
   });
 });
