@@ -1,35 +1,74 @@
-import { TransactionType } from './enums';
+import { AppColor, CategoryIcon, TransactionType } from './enums';
 import { CreateCategoryDto } from '@modules/categories/dto/create-category.dto';
 
 export const MAX_CONFIRMATION_CODE_ATTEMPTS = 5;
 
-const DEFAULT_ICON_COLOR = '#222831';
+// Minimum time between confirmation-code emails for the same code, counted
+// from the last send *attempt* (successful or not) - this also throttles
+// retries against a struggling SMTP server, not just deliberate resends.
+export const CONFIRMATION_CODE_RESEND_COOLDOWN_MS = 1000 * 60; // 1 minute
+
+export const CONFIRMATION_CODE_TTL_MS = 1000 * 60 * 10; // 10 minutes
+
+// temporary defaults, not a considered business limit - revisit later
+export const SPACE_LIMITS = {
+  MAX_MEMBERS_PER_SPACE: 20,
+  MAX_PENDING_INVITES_PER_SPACE: 10,
+};
+
+export const SPACE_INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+
+// device clocks drift; a slightly early server must not reject the client's now
+export const CLOCK_SKEW_MS = 60_000;
+
+export const IDEMPOTENCY_KEY_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
+
+export const IDEMPOTENCY_KEY_PURGE_INTERVAL_MS = 1000 * 60 * 10; // 10 minutes
 
 export const DEFAULT_CATEGORIES: CreateCategoryDto[] = [
-  { name: 'Salary', transaction_type: TransactionType.INCOME, icon: 'paid', color: DEFAULT_ICON_COLOR },
-  { name: 'Gift', transaction_type: TransactionType.INCOME, icon: 'card-giftcard', color: DEFAULT_ICON_COLOR },
-  { name: 'Housing', transaction_type: TransactionType.EXPENSE, icon: 'home', color: DEFAULT_ICON_COLOR },
+  { name: 'Salary', transaction_type: TransactionType.INCOME, icon: CategoryIcon.SALARY, color: AppColor.EVERGREEN },
+  { name: 'Gifts', transaction_type: TransactionType.INCOME, icon: CategoryIcon.GIFTS, color: AppColor.CLAY },
+  { name: 'Housing', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.HOUSING, color: AppColor.SLATE },
   {
-    name: 'Transportation',
+    name: 'Transport',
     transaction_type: TransactionType.EXPENSE,
-    icon: 'directions-bus',
-    color: DEFAULT_ICON_COLOR,
+    icon: CategoryIcon.TRANSPORT,
+    color: AppColor.INDIGO,
   },
-  { name: 'Groceries', transaction_type: TransactionType.EXPENSE, icon: 'shopping-basket', color: DEFAULT_ICON_COLOR },
-  { name: 'Restaurants', transaction_type: TransactionType.EXPENSE, icon: 'fastfood', color: DEFAULT_ICON_COLOR },
-  { name: 'Car', transaction_type: TransactionType.EXPENSE, icon: 'directions-car', color: DEFAULT_ICON_COLOR },
-  { name: 'Clothing', transaction_type: TransactionType.EXPENSE, icon: 'checkroom', color: DEFAULT_ICON_COLOR },
-  { name: 'Health', transaction_type: TransactionType.EXPENSE, icon: 'healing', color: DEFAULT_ICON_COLOR },
+  { name: 'Grocery', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.GROCERY, color: AppColor.EVERGREEN },
+  {
+    name: 'Restaurant',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.RESTAURANT,
+    color: AppColor.CLAY,
+  },
+  { name: 'Car', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.CAR, color: AppColor.INDIGO },
+  { name: 'Clothes', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.CLOTHES, color: AppColor.PLUM },
+  { name: 'Health', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.HEALTH, color: AppColor.CLAY },
   {
     name: 'Entertainment',
     transaction_type: TransactionType.EXPENSE,
-    icon: 'sports-esports',
-    color: DEFAULT_ICON_COLOR,
+    icon: CategoryIcon.ENTERTAINMENT,
+    color: AppColor.AMBER,
   },
-  { name: 'Education', transaction_type: TransactionType.EXPENSE, icon: 'school', color: DEFAULT_ICON_COLOR },
-  { name: 'Rent', transaction_type: TransactionType.EXPENSE, icon: 'money', color: DEFAULT_ICON_COLOR },
-  { name: 'Travel', transaction_type: TransactionType.EXPENSE, icon: 'flight', color: DEFAULT_ICON_COLOR },
-  { name: 'Pets', transaction_type: TransactionType.EXPENSE, icon: 'pets', color: DEFAULT_ICON_COLOR },
-  { name: 'Electronics', transaction_type: TransactionType.EXPENSE, icon: 'cable', color: DEFAULT_ICON_COLOR },
-  { name: 'Utilities', transaction_type: TransactionType.EXPENSE, icon: 'water-drop', color: DEFAULT_ICON_COLOR },
+  { name: 'Education', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.EDUCATION, color: AppColor.SLATE },
+  { name: 'Travel', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.TRAVEL, color: AppColor.INDIGO },
+  { name: 'Pets', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.PETS, color: AppColor.CLAY },
+  {
+    name: 'Electronics',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.ELECTRONICS,
+    color: AppColor.SLATE,
+  },
+  { name: 'Utilities', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.UTILITIES, color: AppColor.SLATE },
 ];
+
+// separate from DEFAULT_CATEGORIES (typed CreateCategoryDto[], which has
+// no is_system field) - seeded once per space, never client-creatable
+export const INITIAL_BALANCE_CATEGORY = {
+  name: 'Initial balance',
+  transaction_type: TransactionType.INCOME,
+  icon: CategoryIcon.SAVINGS,
+  color: AppColor.SLATE,
+  is_system: 1,
+};

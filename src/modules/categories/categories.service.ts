@@ -1,88 +1,271 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 
 import { Category } from '@entities/category.entity';
+import { Transaction } from '@entities/transaction.entity';
+import { Limit } from '@entities/limit.entity';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { TransactionType } from '@shared/enums';
+import { ApiException } from '@shared/api.exception';
+import { assertBelongsToSpace, readSnapshot, runWriteTransaction } from '@shared/utils';
+import { SpaceAccessService } from '@modules/space-access/space-access.service';
+
+export interface CategoryView {
+  id: number;
+  name: string;
+  transaction_type: TransactionType;
+  icon: string;
+  color: Category['color'];
+  is_active: number;
+  transaction_count: number;
+  limit: { id: number; name: string | null } | null;
+  archived_at: Date | null;
+}
 
 @Injectable()
 export class CategoriesService {
   constructor(
     @InjectRepository(Category)
     private readonly categoryRepository: Repository<Category>,
+    private readonly dataSource: DataSource,
+    private readonly spaceAccessService: SpaceAccessService,
   ) {}
 
-  async getOne(categoryId: number): Promise<Category> {
-    return this.categoryRepository.findOne({ where: { id: categoryId } });
+  async getOne(categoryId: number, manager?: EntityManager): Promise<Category | null> {
+    const repository = manager?.getRepository(Category) ?? this.categoryRepository;
+
+    return repository.findOne({ where: { id: categoryId } });
   }
 
-  async getAll(userId: number): Promise<Category[]> {
-    return this.categoryRepository
-      .createQueryBuilder('category')
-      .where('category.user_id = :userId', { userId })
-      .orderBy('category.sort', 'ASC')
-      .getMany();
+  async getMany(categoryIds: number[], manager?: EntityManager): Promise<Category[]> {
+    // dedup is safe here - this is a read, and the caller's original id
+    // list (order, duplicates) is never touched, only what we query with
+    const uniqueIds = [...new Set(categoryIds)];
+
+    if (uniqueIds.length === 0) {
+      return [];
+    }
+
+    const repository = manager?.getRepository(Category) ?? this.categoryRepository;
+
+    return repository.find({ where: { id: In(uniqueIds) } });
   }
 
-  async initiateCategories(userId: number, categories: CreateCategoryDto[]) {
-    const userCategories = categories.map((category) => ({
-      ...category,
-      user_id: userId,
-    }));
+  async getAll(
+    userId: number,
+    spaceId: number,
+  ): Promise<{ incomes: CategoryView[]; expenses: CategoryView[]; archived: CategoryView[] }> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
 
-    return this.categoryRepository.save(userCategories);
+    return readSnapshot(this.dataSource, async (manager) => {
+      const categories = await manager
+        .getRepository(Category)
+        .createQueryBuilder('category')
+        .where('category.space_id = :spaceId', { spaceId })
+        .andWhere('category.is_system = 0')
+        .orderBy('category.sort', 'ASC')
+        .getMany();
+
+      const categoryIds = categories.map((category) => category.id);
+      const [counts, limitMembership] = await Promise.all([
+        this.getTransactionCounts(categoryIds, manager),
+        this.getLimitMembership(spaceId, manager),
+      ]);
+
+      const views = categories.map((category) => this.buildCategoryView(category, counts, limitMembership));
+
+      return {
+        incomes: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.INCOME),
+        expenses: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.EXPENSE),
+        archived: views.filter((view) => view.is_active === 0),
+      };
+    });
   }
 
-  async update(categoryId: number, updateCategory: UpdateCategoryDto) {
-    const category = await this.getOne(categoryId);
-    return await this.categoryRepository.save({ ...category, ...updateCategory });
-  }
+  async update(
+    userId: number,
+    spaceId: number,
+    categoryId: number,
+    updateCategory: UpdateCategoryDto,
+  ): Promise<Category> {
+    return this.write(userId, spaceId, async (manager) => {
+      const category = await this.getEditableCategory(spaceId, categoryId, manager);
+      const activeChanged = updateCategory.is_active !== undefined && updateCategory.is_active !== category.is_active;
 
-  async create(userId: number, category: CreateCategoryDto): Promise<Category> {
-    return this.categoryRepository.save({ ...category, user_id: userId });
-  }
+      // mutate in place, not a spread copy - a copy loses @Exclude() on serialize
+      Object.assign(category, updateCategory);
 
-  async save(categories: Category[]): Promise<Category | Category[]> {
-    return this.categoryRepository.save(categories);
-  }
-
-  separateCategories(categories: Category[]): [incomes: Category[], expenses: Category[]] {
-    return categories.reduce(
-      (acc, category) => {
-        if (category.transaction_type === TransactionType.INCOME) {
-          acc[0].push(category);
+      if (activeChanged) {
+        if (updateCategory.is_active === 0) {
+          await this.unlinkFromLimit(categoryId, manager);
+          category.archived_at = new Date();
         } else {
-          acc[1].push(category);
+          category.archived_at = null;
         }
+      }
 
-        return acc;
-      },
-      [[], []] as [Category[], Category[]],
-    );
+      return manager.getRepository(Category).save(category);
+    });
   }
 
-  async moveToFront(userId: number, category: Category): Promise<void> {
-    const categories = await this.getAll(userId);
-    const [incomes, expenses] = this.separateCategories(categories);
-
-    const movedCategories =
-      category.transaction_type === TransactionType.INCOME
-        ? this.sortCategories(incomes, category.id, 100)
-        : this.sortCategories(expenses, category.id, 200);
-
-    await this.save(movedCategories);
+  async create(userId: number, spaceId: number, category: CreateCategoryDto): Promise<Category> {
+    return this.write(userId, spaceId, async (manager) => {
+      const repository = manager.getRepository(Category);
+      return repository.save(repository.create({ ...category, space_id: spaceId }));
+    });
   }
 
-  private sortCategories(categories: Category[], movedCategoryId: number, prefix: number) {
-    const movedCategory = categories.find((category) => category.id === movedCategoryId);
-    const otherCategories = categories.filter((category) => category.id !== movedCategoryId);
-    const otherCategoriesWithNewSort = otherCategories.map((category, index) => ({
-      ...category,
-      sort: prefix + index + 1,
-    }));
+  async deleteOrArchive(userId: number, spaceId: number, categoryId: number): Promise<{ archived: boolean }> {
+    return this.write(userId, spaceId, async (manager) => {
+      await this.getEditableCategory(spaceId, categoryId, manager);
 
-    return [{ ...movedCategory, sort: prefix }, ...otherCategoriesWithNewSort];
+      const counts = await this.getTransactionCounts([categoryId], manager);
+      const count = counts.get(categoryId) ?? 0;
+      const categoryRepository = manager.getRepository(Category);
+
+      await this.unlinkFromLimit(categoryId, manager);
+
+      if (count === 0) {
+        await categoryRepository.delete(categoryId);
+        return { archived: false };
+      }
+
+      await categoryRepository.update(categoryId, { is_active: 0, archived_at: new Date() });
+
+      return { archived: true };
+    });
+  }
+
+  async reorder(userId: number, spaceId: number, categoryIds: number[]): Promise<void> {
+    return this.write(userId, spaceId, async (manager) => {
+      const repository = manager.getRepository(Category);
+
+      if (categoryIds.length === 0) {
+        return;
+      }
+
+      const categories = await repository.find({ where: { id: In(categoryIds) } });
+
+      if (categories.length !== categoryIds.length) {
+        throw new ApiException('FORBIDDEN_CATEGORY', HttpStatus.FORBIDDEN);
+      }
+
+      for (const category of categories) {
+        assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
+
+        if (category.is_system) {
+          throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
+        }
+      }
+
+      const types = new Set(categories.map((category) => category.transaction_type));
+      const hasArchived = categories.some((category) => category.is_active === 0);
+
+      if (types.size > 1 || hasArchived) {
+        throw new ApiException('INVALID_REORDER', HttpStatus.BAD_REQUEST);
+      }
+
+      // 100/200 partition income vs expense sort ranges so they never collide
+      const prefix = categories[0].transaction_type === TransactionType.INCOME ? 100 : 200;
+      const reordered = categoryIds.map((id, index) => ({ id, sort: prefix + index + 1 }));
+
+      await repository.save(reordered);
+    });
+  }
+
+  private write<T>(userId: number, spaceId: number, work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return runWriteTransaction(this.dataSource, async (manager) => {
+      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      return work(manager);
+    });
+  }
+
+  private async getEditableCategory(spaceId: number, categoryId: number, manager: EntityManager): Promise<Category> {
+    const category = await this.getOne(categoryId, manager);
+    assertBelongsToSpace(category, spaceId, 'FORBIDDEN_CATEGORY');
+
+    if (category.is_system) {
+      throw new ApiException('CATEGORY_IS_SYSTEM', HttpStatus.BAD_REQUEST);
+    }
+
+    return category;
+  }
+
+  private async getTransactionCounts(categoryIds: number[], manager: EntityManager): Promise<Map<number, number>> {
+    if (categoryIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('transaction.category_id', 'category_id')
+      .addSelect('COUNT(*)', 'count')
+      .where('transaction.category_id IN (:...categoryIds)', { categoryIds })
+      .groupBy('transaction.category_id')
+      .getRawMany<{ category_id: number; count: string }>();
+
+    return new Map(rows.map((row) => [Number(row.category_id), Number(row.count)]));
+  }
+
+  private async getLimitMembership(
+    spaceId: number,
+    manager: EntityManager,
+  ): Promise<Map<number, { id: number; name: string | null }>> {
+    const rows = await manager
+      .getRepository(Limit)
+      .createQueryBuilder('limit')
+      .innerJoin('limit.categories', 'category')
+      .where('limit.space_id = :spaceId', { spaceId })
+      .select('limit.id', 'limit_id')
+      .addSelect('limit.name', 'limit_name')
+      .addSelect('category.id', 'category_id')
+      .getRawMany<{ limit_id: number; limit_name: string | null; category_id: number }>();
+
+    return new Map(rows.map((row) => [row.category_id, { id: row.limit_id, name: row.limit_name }]));
+  }
+
+  private async unlinkFromLimit(categoryId: number, manager: EntityManager): Promise<void> {
+    const limitRepository = manager.getRepository(Limit);
+    const limit = await limitRepository
+      .createQueryBuilder('limit')
+      .innerJoin('limit.categories', 'category')
+      .where('category.id = :categoryId', { categoryId })
+      .select('limit.id')
+      .getOne();
+
+    if (!limit) {
+      return;
+    }
+
+    const relation = limitRepository.createQueryBuilder().relation('categories').of(limit.id);
+    await relation.remove([categoryId]);
+
+    // a category-type limit can't have zero categories - delete it with its last one
+    const remaining = await relation.loadMany<Category>();
+    if (remaining.length === 0) {
+      await limitRepository.delete(limit.id);
+    }
+  }
+
+  private buildCategoryView(
+    category: Category,
+    counts: Map<number, number>,
+    limitMembership: Map<number, { id: number; name: string | null }>,
+  ): CategoryView {
+    return {
+      id: category.id,
+      name: category.name,
+      transaction_type: category.transaction_type,
+      icon: category.icon,
+      color: category.color,
+      is_active: category.is_active,
+      transaction_count: counts.get(category.id) ?? 0,
+      limit: limitMembership.get(category.id) ?? null,
+      archived_at: category.archived_at,
+    };
   }
 }

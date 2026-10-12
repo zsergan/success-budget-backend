@@ -1,17 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpException } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
-import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmation-codes.service';
-import { ErrorMessages } from '@shared/error-messages';
-import { ConfirmationType } from '@shared/enums';
+import type { CreateUserDto } from './dto/create-user.dto';
+import type { VerifyUserDto } from './dto/verify-user.dto';
+import { buildUser } from '@testing';
 
 describe('UsersController', () => {
   let controller: UsersController;
   let usersService: jest.Mocked<UsersService>;
-  let confirmationCodesService: jest.Mocked<ConfirmationCodesService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -20,15 +18,11 @@ describe('UsersController', () => {
         {
           provide: UsersService,
           useValue: {
-            registerOrRefresh: jest.fn(),
+            registerAndSendConfirmation: jest.fn(),
             verifyEmail: jest.fn(),
             login: jest.fn(),
-            findById: jest.fn(),
+            getProfile: jest.fn(),
           },
-        },
-        {
-          provide: ConfirmationCodesService,
-          useValue: { ensureCode: jest.fn() },
         },
       ],
     })
@@ -38,72 +32,37 @@ describe('UsersController', () => {
 
     controller = module.get(UsersController);
     usersService = module.get(UsersService);
-    confirmationCodesService = module.get(ConfirmationCodesService);
   });
 
-  describe('register', () => {
-    it('delegates to UsersService and ensures a confirmation code exists', async () => {
-      const dto = { email: 'a@b.com', name: 'A', password: 'pw', base_currency_id: 1 } as any;
-      const user = { id: 2, email: 'a@b.com' } as any;
-      usersService.registerOrRefresh.mockResolvedValue(user);
+  it('register delegates to UsersService.registerAndSendConfirmation', async () => {
+    const dto: CreateUserDto = { email: 'a@b.com', name: 'A', password: 'StrongPass#1', base_currency_id: 1 };
+    const user = buildUser({ id: 2, email: 'a@b.com', email_verified: 0 });
+    usersService.registerAndSendConfirmation.mockResolvedValue(user);
 
-      const result = await controller.register(dto);
-
-      expect(usersService.registerOrRefresh).toHaveBeenCalledWith(dto);
-      expect(confirmationCodesService.ensureCode).toHaveBeenCalledWith(2, ConfirmationType.EMAIL);
-      expect(result).toBe(user);
-    });
-
-    it('propagates a rejection from the service (e.g. email already verified)', async () => {
-      usersService.registerOrRefresh.mockRejectedValue(new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400));
-
-      await expect(controller.register({ email: 'a@b.com' } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, 400),
-      );
-      expect(confirmationCodesService.ensureCode).not.toHaveBeenCalled();
-    });
+    await expect(controller.register(dto)).resolves.toBe(user);
+    expect(usersService.registerAndSendConfirmation).toHaveBeenCalledWith(dto);
   });
 
-  describe('verifyEmail', () => {
-    it('delegates to UsersService.verifyEmail', async () => {
-      const dto = { email: 'x@x.com', code: '1234' } as any;
-      usersService.verifyEmail.mockResolvedValue('access-token');
+  it('verifyEmail delegates to UsersService.verifyEmail', async () => {
+    const dto: VerifyUserDto = { email: 'x@x.com', code: '123456' };
+    usersService.verifyEmail.mockResolvedValue('access-token');
 
-      const result = await controller.verifyEmail(dto);
-
-      expect(usersService.verifyEmail).toHaveBeenCalledWith(dto);
-      expect(result).toBe('access-token');
-    });
-
-    it('propagates a rejection from the service (e.g. invalid code)', async () => {
-      usersService.verifyEmail.mockRejectedValue(new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400));
-
-      await expect(controller.verifyEmail({ email: 'x@x.com', code: '1234' } as any)).rejects.toMatchObject(
-        new HttpException(ErrorMessages.INVALID_CREDENTIALS, 400),
-      );
-    });
+    await expect(controller.verifyEmail(dto)).resolves.toBe('access-token');
+    expect(usersService.verifyEmail).toHaveBeenCalledWith(dto);
   });
 
-  describe('login', () => {
-    it('delegates to UsersService.login', async () => {
-      usersService.login.mockResolvedValue('token');
+  it('login delegates to UsersService.login', async () => {
+    usersService.login.mockResolvedValue('token');
 
-      const result = await controller.login({ email: 'a@b.com', password: 'pw' } as any);
-
-      expect(usersService.login).toHaveBeenCalledWith({ email: 'a@b.com', password: 'pw' });
-      expect(result).toBe('token');
-    });
+    await expect(controller.login({ email: 'a@b.com', password: 'pw' })).resolves.toBe('token');
+    expect(usersService.login).toHaveBeenCalledWith({ email: 'a@b.com', password: 'pw' });
   });
 
-  describe('getProfile', () => {
-    it('returns the authenticated user by id from the request', async () => {
-      const user = { id: 1, email: 'a@b.com' } as any;
-      usersService.findById.mockResolvedValue(user);
+  it('getProfile returns the authenticated user by id from the request', async () => {
+    const user = buildUser({ id: 1, email: 'a@b.com' });
+    usersService.getProfile.mockResolvedValue(user);
 
-      const result = await controller.getProfile({ user: { id: 1 } } as any);
-
-      expect(usersService.findById).toHaveBeenCalledWith(1);
-      expect(result).toBe(user);
-    });
+    await expect(controller.getProfile({ user: { id: 1 } })).resolves.toBe(user);
+    expect(usersService.getProfile).toHaveBeenCalledWith(1);
   });
 });

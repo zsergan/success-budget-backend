@@ -2,74 +2,74 @@ import {
   Body,
   ClassSerializerInterceptor,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
   Post,
   Put,
+  Query,
   Request,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import type { AuthedRequest } from '@shared/types';
 import { LimitsService } from './limits.service';
-import { TransactionsService } from '@modules/transactions/transactions.service';
-import { CategoriesService } from '@modules/categories/categories.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
-import { getEndOfMonth, getStartOfMonth, assertOwnership } from '@shared/utils';
-import { ErrorMessages } from '@shared/error-messages';
+import { ParseOptionalTimeZonePipe } from '@shared/pipes/parse-optional-time-zone.pipe';
 
 @ApiTags('limits')
 @ApiBearerAuth()
-@Controller('limits')
+@Controller('spaces/:spaceId/limits')
 export class LimitsController {
-  constructor(
-    private readonly limitsService: LimitsService,
-    private readonly transactionsService: TransactionsService,
-    private readonly categoriesService: CategoriesService,
-  ) {}
+  constructor(private readonly limitsService: LimitsService) {}
 
+  @ApiQuery({
+    name: 'time_zone',
+    required: false,
+    description: "IANA zone of the device, e.g. Europe/Moscow; the month is counted in it. Default: the server's.",
+  })
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
-  async getAll(@Request() req: AuthedRequest) {
-    const limits = await this.limitsService.getAll(req.user.id);
-    const transactions = await this.transactionsService.getForAllWallets(
-      req.user.id,
-      getStartOfMonth(new Date()),
-      getEndOfMonth(new Date()),
-    );
-
-    return this.limitsService.calculateSpending(limits, transactions);
+  async getAll(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query('time_zone', ParseOptionalTimeZonePipe) timeZone?: string,
+  ) {
+    return this.limitsService.getSummary(req.user.id, spaceId, timeZone);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
-  async create(@Request() req: AuthedRequest, @Body() createLimitDto: CreateLimitDto) {
-    if (createLimitDto.category_id) {
-      const category = await this.categoriesService.getOne(createLimitDto.category_id);
-      assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
-    }
-
-    return this.limitsService.create(req.user.id, createLimitDto);
+  async create(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Body() createLimitDto: CreateLimitDto,
+  ) {
+    return this.limitsService.create(req.user.id, spaceId, createLimitDto);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
   @Put(':limitId')
   async update(
     @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
     @Param('limitId', ParseIntPipe) limitId: number,
     @Body() updateLimitDto: UpdateLimitDto,
   ) {
-    const limit = await this.limitsService.getOne(limitId);
-    assertOwnership(limit, req.user.id, ErrorMessages.FORBIDDEN_LIMIT);
+    return this.limitsService.update(req.user.id, spaceId, limitId, updateLimitDto);
+  }
 
-    if (updateLimitDto.category_id) {
-      const category = await this.categoriesService.getOne(updateLimitDto.category_id);
-      assertOwnership(category, req.user.id, ErrorMessages.FORBIDDEN_CATEGORY);
-    }
+  @Delete(':limitId')
+  async remove(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Param('limitId', ParseIntPipe) limitId: number,
+  ): Promise<boolean> {
+    await this.limitsService.remove(req.user.id, spaceId, limitId);
 
-    return this.limitsService.update(limitId, req.user.id, limit.category_id, updateLimitDto);
+    return true;
   }
 }
