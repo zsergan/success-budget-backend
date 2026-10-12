@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import type { EntityManager } from 'typeorm';
 
-import { TransactionQueriesService } from './transaction-queries.service';
+import { TransactionQueriesService, toSearchPattern } from './transaction-queries.service';
 import { Transaction } from '@entities/transaction.entity';
 import { TransactionKind, TransactionType } from '@shared/enums';
 
@@ -233,6 +233,40 @@ describe('TransactionQueriesService', () => {
 
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(condition);
+    });
+  });
+
+  describe('search', () => {
+    it.each([
+      ['coffee', '%coffee%'],
+      ['100%', '%100!%%'],
+      ['a_b', '%a!_b%'],
+      ['wow!', '%wow!!%'],
+      ['back\\slash', '%back\\slash%'],
+    ])('escapes %p as %p', (search, pattern) => {
+      expect(toSearchPattern(search)).toBe(pattern);
+    });
+
+    it('binds the trimmed text and compares in a fixed collation', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '  latte ' });
+
+      const [condition, parameters] = queryBuilder.andWhere.mock.calls.find(([sql]) => String(sql).includes('LIKE'));
+      expect(parameters).toEqual({ searchPattern: '%latte%' });
+      expect(condition).toContain('transaction.description');
+      expect(condition).toContain('category.name');
+      expect(condition).toContain('wallet.wallet_name');
+      expect(condition.match(/COLLATE utf8mb4_0900_ai_ci/g)).toHaveLength(6);
+      expect(condition).not.toContain('latte');
+    });
+
+    it('adds no text condition for blank text', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+
+      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '   ' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
   });
 
