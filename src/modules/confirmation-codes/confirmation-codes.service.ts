@@ -1,11 +1,11 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { ConfirmationCode } from '@entities/confirmation-codes.entity';
 import { User } from '@entities/user.entity';
 import { ConfirmationType, ConfirmationCodeSendStatus } from '@shared/enums';
-import { ErrorMessages } from '@shared/error-messages';
+import { ApiException } from '@shared/api.exception';
 import { RetryAfterException } from '@shared/retry-after.exception';
 import { CONFIRMATION_CODE_RESEND_COOLDOWN_MS, CONFIRMATION_CODE_TTL_MS } from '@shared/constants';
 import { assertFound, generateRandomNumberString } from '@shared/utils';
@@ -93,7 +93,7 @@ export class ConfirmationCodesService {
       // same answer registration gives for a verified account - a
       // verification may have committed since the caller's own check
       if (confirmationType === ConfirmationType.EMAIL && user.email_verified) {
-        throw new HttpException(ErrorMessages.EMAIL_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+        throw new ApiException('EMAIL_ALREADY_EXISTS', HttpStatus.BAD_REQUEST);
       }
 
       const existing = await this.lockActive(userId, confirmationType, manager);
@@ -127,7 +127,7 @@ export class ConfirmationCodesService {
       const decision = decideSendAction(existing, now.getTime(), CONFIRMATION_CODE_RESEND_COOLDOWN_MS);
 
       if (decision.action === 'deny') {
-        throw new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, decision.retryAfterSeconds);
+        throw new RetryAfterException('CONFIRMATION_EMAIL_RATE_LIMITED', decision.retryAfterSeconds);
       }
 
       if (decision.action === 'skip') {

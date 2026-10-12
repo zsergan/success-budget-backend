@@ -78,3 +78,21 @@ export enum SpaceRole {
   OWNER = 'owner',
   MEMBER = 'member',
 }
+
+export enum StatisticsPeriodType {
+  WEEK = 'week',
+  MONTH = 'month',
+  YEAR = 'year',
+  CUSTOM = 'custom',
+}
+
+// public replacement for Category.is_system on transactions
+export enum TransactionKind {
+  REGULAR = 'regular',
+  INITIAL_BALANCE = 'initial_balance',
+}
+
+export enum TransactionOperationStatus {
+  APPLIED = 'applied',
+  DELETED = 'deleted',
+}

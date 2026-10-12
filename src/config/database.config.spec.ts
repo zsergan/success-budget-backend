@@ -23,6 +23,7 @@ describe('buildDataSourceOptions', () => {
       username: 'user',
       password: 'pass',
       database: 'success_budget',
+      timezone: 'Z',
       synchronize: false,
       migrationsRun: false,
     });

@@ -226,7 +226,7 @@ describe('UsersService', () => {
     it('propagates a 429 with a retry delay when a send attempt is still in its cooldown', async () => {
       jest.spyOn(service, 'registerOrRefresh').mockResolvedValue(buildUser({ id: 2, email: 'a@b.com' }));
       confirmationCodesService.reserveSend.mockRejectedValue(
-        new RetryAfterException(ErrorMessages.CONFIRMATION_EMAIL_RATE_LIMITED, 42),
+        new RetryAfterException('CONFIRMATION_EMAIL_RATE_LIMITED', 42),
       );
 
       await expect(service.registerAndSendConfirmation(dto)).rejects.toBeInstanceOf(RetryAfterException);

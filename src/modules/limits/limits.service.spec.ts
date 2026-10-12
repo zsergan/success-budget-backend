@@ -22,7 +22,7 @@ describe('LimitsService', () => {
   let manager: { getRepository: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let categoriesService: jest.Mocked<Pick<CategoriesService, 'getMany'>>;
-  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockSpace'>>;
+  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembership' | 'lockSpace'>>;
   let transactionQueriesService: jest.Mocked<Pick<TransactionQueriesService, 'getExpensesByCategory'>>;
 
   const userId = 7;
@@ -54,6 +54,7 @@ describe('LimitsService', () => {
     };
     spaceAccessService = {
       assertMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })),
+      lockMembership: jest.fn().mockResolvedValue(buildSpaceMember({ user_id: userId })),
       lockSpace: jest.fn().mockResolvedValue(undefined),
     };
     transactionQueriesService = { getExpensesByCategory: jest.fn().mockResolvedValue(new Map()) };
@@ -83,7 +84,9 @@ describe('LimitsService', () => {
     repository = module.get(getRepositoryToken(Limit));
     manager = { getRepository: jest.fn().mockReturnValue(repository) };
     dataSource = module.get(DataSource);
-    dataSource.transaction.mockImplementation((callback: (m: typeof manager) => unknown) => callback(manager));
+    dataSource.transaction.mockImplementation((...args: unknown[]) =>
+      (args[args.length - 1] as (m: typeof manager) => unknown)(manager),
+    );
   });
 
   describe('transaction boundary', () => {
@@ -108,7 +111,7 @@ describe('LimitsService', () => {
       await run();
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(1, userId, manager);
       expect(categoriesService.getMany).toHaveBeenCalledWith(expect.any(Array), manager);
       expect(manager.getRepository).toHaveBeenCalledWith(Limit);
       expect(txRepository.createQueryBuilder).toHaveBeenCalled();
@@ -140,7 +143,7 @@ describe('LimitsService', () => {
       expect(spaceAccessService.lockSpace).toHaveBeenCalledTimes(1);
       expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(1, manager);
       const lockOrder = spaceAccessService.lockSpace.mock.invocationCallOrder[0];
-      expect(lockOrder).toBeLessThan(spaceAccessService.assertMembership.mock.invocationCallOrder[0]);
+      expect(spaceAccessService.lockMembership.mock.invocationCallOrder[0]).toBeLessThan(lockOrder);
       expect(lockOrder).toBeLessThan(manager.getRepository.mock.invocationCallOrder[0]);
     });
 
@@ -148,7 +151,7 @@ describe('LimitsService', () => {
       await service.remove(userId, 1, 1);
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(1, userId, undefined, manager);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(1, userId, manager);
       expect(txRepository.delete).toHaveBeenCalledWith(1);
       expect(repository.findOne).not.toHaveBeenCalled();
       expect(repository.delete).not.toHaveBeenCalled();
@@ -319,6 +322,7 @@ describe('LimitsService', () => {
       ['remove', () => service.remove(userId, spaceId, 1)],
     ])('%s rejects a non-member before touching limits or categories', async (_, run) => {
       spaceAccessService.assertMembership.mockRejectedValue(forbiddenSpace());
+      spaceAccessService.lockMembership.mockRejectedValue(forbiddenSpace());
 
       await expect(run()).rejects.toMatchObject(forbiddenSpace());
       expect(repository.findOne).not.toHaveBeenCalled();
@@ -340,8 +344,59 @@ describe('LimitsService', () => {
         spaceId,
         expect.any(Date),
         expect.any(Date),
+        manager,
       );
       expect(result.total).toMatchObject({ id: 1, spent: 30, in_percent: 30 });
+    });
+
+    it('getSummary reads the limits and their spending in one REPEATABLE READ snapshot', async () => {
+      await service.getSummary(userId, spaceId);
+
+      expect(dataSource.transaction).toHaveBeenCalledWith('REPEATABLE READ', expect.any(Function));
+      expect(manager.getRepository).toHaveBeenCalledWith(Limit);
+      expect(spaceAccessService.lockSpace).not.toHaveBeenCalled();
+    });
+
+    it('getSummary counts the current month of the given zone and reports it', async () => {
+      queryBuilder.getMany.mockResolvedValue([]);
+      transactionQueriesService.getExpensesByCategory.mockResolvedValue(new Map());
+      // 00:30 on October 1 in Moscow, still September in UTC
+      const now = new Date('2026-09-30T21:30:00.000Z');
+
+      const result = await service.getSummary(userId, spaceId, 'Europe/Moscow', now);
+
+      expect(result.period).toEqual({
+        time_zone: 'Europe/Moscow',
+        start_date: '2026-10-01',
+        end_date: '2026-10-31',
+        from: new Date('2026-09-30T21:00:00.000Z'),
+        to: new Date('2026-10-31T20:59:59.999Z'),
+      });
+      expect(transactionQueriesService.getExpensesByCategory).toHaveBeenCalledWith(
+        spaceId,
+        result.period.from,
+        result.period.to,
+        manager,
+      );
+    });
+
+    it('getSummary counts every expense in the monthly total, also of categories with their own limit', async () => {
+      const limits = [
+        limitWith({ id: 1, limit_type: LimitType.OTHERS, amount: '100.00' }),
+        limitWith({ id: 2, limit_type: LimitType.CATEGORY, amount: '10.00' }, [5]),
+      ];
+      queryBuilder.getMany.mockResolvedValue(limits);
+      transactionQueriesService.getExpensesByCategory.mockResolvedValue(
+        new Map([
+          [5, 700n],
+          [6, 300n],
+        ]),
+      );
+
+      const result = await service.getSummary(userId, spaceId, 'UTC');
+
+      expect(result.total).toMatchObject({ id: 1, spent: 10 });
+      expect(result.categories).toEqual([expect.objectContaining({ id: 2, spent: 7 })]);
     });
 
     it('create checks every category in a single batched call, passing the ids through unchanged', async () => {
@@ -349,7 +404,7 @@ describe('LimitsService', () => {
 
       await service.create(userId, spaceId, { category_ids: [5, 6, 5], name: 'Fun', amount: '10' });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledWith([5, 6, 5], manager);
     });
@@ -412,7 +467,7 @@ describe('LimitsService', () => {
 
       const result = await service.update(userId, spaceId, 1, { category_ids: [6], amount: '20' });
 
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledTimes(1);
       expect(categoriesService.getMany).toHaveBeenCalledWith([6], manager);
       expect(relationBuilder.remove).toHaveBeenCalledWith([5]);
       expect(relationBuilder.add).toHaveBeenCalledWith([6]);

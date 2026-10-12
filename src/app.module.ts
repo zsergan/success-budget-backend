@@ -17,9 +17,11 @@ import { CurrenciesModule } from '@modules/currencies/currencies.module';
 import { ConfirmationCodesModule } from '@modules/confirmation-codes/confirmation-codes.module';
 import { LimitsModule } from '@modules/limits/limits.module';
 import { SpacesModule } from '@modules/spaces/spaces.module';
+import { StatisticsModule } from '@modules/statistics/statistics.module';
 import { HealthModule } from '@modules/health/health.module';
 import { JwtStrategy } from '@shared/strategies/jwt.strategy';
 import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
+import { SchemaCheck } from './database/schema-check';
 
 @Module({
   imports: [
@@ -43,9 +45,11 @@ import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
     ConfirmationCodesModule,
     LimitsModule,
     SpacesModule,
+    StatisticsModule,
   ],
   controllers: [],
   providers: [
+    SchemaCheck,
     JwtStrategy,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },

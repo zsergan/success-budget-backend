@@ -169,15 +169,16 @@ describe('Money flow (e2e)', () => {
     expect(await space.storedAmounts(walletId)).toEqual(['50.05', '100.10', '0.29', '33.33', '0.01']);
     expect(await space.readAmounts(walletId)).toEqual(['50.05', '100.10', '0.29', '33.33', '0.01']);
 
-    // current month: net 100.11 - 33.62 = 66.49, start 116.54 - 66.49 = 50.05
+    // current month, the starting balance is not income:
+    // net 0.01 - 33.62 = -33.61, start 116.54 + 33.61 = 150.15
     expect(await space.overview()).toEqual({
       total_balance: 116.54,
       total_balance_currency: expect.any(String),
-      delta_percent: 132.8,
+      delta_percent: -22.4,
       wallets: [
         {
           wallet: expect.objectContaining({ id: walletId, balance: 116.54 }),
-          total_income: 100.11,
+          total_income: 0.01,
           total_spend: 33.62,
         },
       ],
@@ -231,7 +232,8 @@ describe('Money flow (e2e)', () => {
 
     expect(await space.overview()).toMatchObject({
       total_balance: 99999999.99,
-      wallets: [{ total_income: 199999999.98, total_spend: 99999999.99 }],
+      // the starting balance is not income
+      wallets: [{ total_income: 99999999.99, total_spend: 99999999.99 }],
     });
 
     await space.createLimit('0');

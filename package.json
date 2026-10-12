@@ -32,7 +32,9 @@
     "migration:revert:prod": "node ./node_modules/typeorm/cli.js migration:revert -d dist/config/typeorm-cli.data-source.js",
     "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
     "verify:reference-data": "ts-node -r tsconfig-paths/register src/database/verify-reference-data.ts",
-    "verify:reference-data:prod": "node dist/database/verify-reference-data.js"
+    "verify:reference-data:prod": "node dist/database/verify-reference-data.js",
+    "schema:check": "ts-node -r tsconfig-paths/register src/database/check-schema.ts",
+    "schema:check:prod": "node dist/database/check-schema.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.1",
@@ -51,6 +53,7 @@
     "helmet": "^8.3.0",
     "joi": "^18.2.5",
     "jsonwebtoken": "^9.0.2",
+    "luxon": "^3.7.2",
     "mysql2": "^3.24.2",
     "nestjs-pino": "^5.1.0",
     "nodemailer": "^10.0.10",
@@ -71,6 +74,7 @@
     "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
+    "@types/luxon": "^3.7.6",
     "@types/node": "^24.13.3",
     "@types/nodemailer": "^8.0.2",
     "@types/passport-jwt": "^4.0.1",

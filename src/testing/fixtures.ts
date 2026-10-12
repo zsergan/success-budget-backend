@@ -149,6 +149,7 @@ export function buildTransaction(overrides: Partial<Transaction> = {}): Transact
       amount: '10.00',
       timestamp: CREATED_AT,
       description: null,
+      version: 1,
     },
     overrides,
   );

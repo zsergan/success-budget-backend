@@ -25,8 +25,11 @@ e2e/CI-зрелость, раунд 2: IDOR/cascade/structured logging). **Фа�
 Stage 3, Limits Stage 4, Categories Stage 5, Home Stage 2, Spaces
 Stage 1-4 — все завершены и смёржены**, см. "Завершённые инициативы".
 
-Текущая ветка — `feat/deploy-readiness` (ещё не смёржена), см. "Deploy
-readiness" ниже.
+Текущая ветка — `fix/write-access-hardening` (ещё не смёржена), см.
+"Write access hardening" ниже. `feat/transactions-lifecycle` смёржена
+(PR #52). `feat/deploy-readiness` смёржена (PR #40),
+после неё — PR #41–#49 (statistics, atomic writes, money и др., см.
+`git log`).
 
 ## Стек
 
@@ -139,7 +142,46 @@ whitelist, когда появится фронт/мобильное прило�
 `.env.example` содержит все переменные, которые реально читает
 приложение.
 
-## Deploy readiness (в работе, ветка `feat/deploy-readiness`, не смёржена)
+## Write access hardening (в работе, ветка `fix/write-access-hardening`)
+
+Доработки после transactions lifecycle, четыре этапа:
+
+- Запись кошелька (create/rename/delete) — та же единица записи, что у
+  транзакций: member (S) → space (S) → wallet (X) → system category (S),
+  доступ проверяется под блокировкой участника.
+- `GET /wallets` и `GET /limits` читают в одном снимке (`readSnapshot`,
+  REPEATABLE READ) — как статистика.
+- `client_operation_id` в `POST /transactions` + таблица
+  `transaction_operations` (живёт, пока жив space) +
+  `GET /transactions/operations/:id`: судьба создания без 24-часового
+  лимита `Idempotency-Key`. Машина состояний клиента — в контракте.
+- Приложение не стартует, пока не применены миграции его сборки
+  (`src/database/schema-check.ts`, `REQUIRED_MIGRATION` — держать равной
+  самой новой миграции, иначе падает unit-тест); `check-schema.js` — шаг
+  деплоя. БД новее сборки — только warning (откат образа без отката схемы).
+- `test/api-contract.e2e-spec.ts` фиксирует PATCH, `If-Match`, максимум
+  суммы и правила общего лимита.
+
+## Transactions lifecycle (смёржено, PR #52)
+
+Полный жизненный цикл транзакции. Контракт и передача мобильному агенту —
+`docs/transactions-contract.md` (примеры, порядок миграций, совместимость
+старого клиента). Ключевое:
+
+- Модель чтения `TransactionView` (`kind`, `version`, компактная категория);
+  `GET/PATCH/DELETE /transactions/:id`, `GET /transactions/count`.
+- `code` в теле каждой ошибки API (`ApiException`).
+- Каждая запись транзакции — одна MySQL-транзакция READ COMMITTED с
+  фиксированным порядком блокировок (member → space → key → transaction →
+  wallets по id → categories), повтор при deadlock. `PATCH`/`DELETE`
+  требуют `If-Match` (версия записи), `Idempotency-Key` на всех записях
+  (таблица `idempotency_keys`, 24 ч).
+- Начальный баланс — системная запись: виден в истории, не редактируется,
+  не входит в доходы/расходы/лимиты. Лимиты считают месяц в `time_zone`
+  клиента и возвращают `period`.
+- Миграции: `AddTransactionVersion`, `CreateIdempotencyKeys`.
+
+## Deploy readiness (смёржено, PR #40)
 
 Делает приложение реально деплоящимся. Полный runbook:
 `docs/deployment.md`. Ключевые изменения (детали — `git log`):

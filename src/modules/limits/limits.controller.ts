@@ -8,15 +8,17 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  Query,
   Request,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import type { AuthedRequest } from '@shared/types';
 import { LimitsService } from './limits.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
+import { ParseOptionalTimeZonePipe } from '@shared/pipes/parse-optional-time-zone.pipe';
 
 @ApiTags('limits')
 @ApiBearerAuth()
@@ -24,10 +26,19 @@ import { UpdateLimitDto } from './dto/update-limit.dto';
 export class LimitsController {
   constructor(private readonly limitsService: LimitsService) {}
 
+  @ApiQuery({
+    name: 'time_zone',
+    required: false,
+    description: "IANA zone of the device, e.g. Europe/Moscow; the month is counted in it. Default: the server's.",
+  })
   @UseInterceptors(ClassSerializerInterceptor)
   @Get()
-  async getAll(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
-    return this.limitsService.getSummary(req.user.id, spaceId);
+  async getAll(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query('time_zone', ParseOptionalTimeZonePipe) timeZone?: string,
+  ) {
+    return this.limitsService.getSummary(req.user.id, spaceId, timeZone);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
