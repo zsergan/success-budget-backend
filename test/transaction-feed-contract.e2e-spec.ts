@@ -405,12 +405,26 @@ describe('Transactions feed against a control selection (e2e)', () => {
   });
 
   describe('count, latest and OpenAPI', () => {
+    // no test of this suite writes, so the selection is the same for both
     it('keeps /count and /latest, and /count agrees with the feed', async () => {
-      for (const params of [{}, { q: 'кофе' }, { kind: 'regular' }]) {
+      for (const params of [
+        {},
+        { q: 'кофе' },
+        { q: 'наличн' },
+        { kind: 'regular' },
+        { kind: 'initial_balance' },
+        { transaction_type: TransactionType.INCOME },
+        { category_id: archived.id },
+        { wallet_id: card.id, q: 'кофе' },
+        { from: '2026-03-29T12:00:00.000Z', to: '2026-03-29T12:00:00.000Z' },
+      ]) {
+        const q = { ...period, time_zone: 'UTC', ...params } as FeedQuery;
         const count = await get(owner, '/count', { ...period, ...params });
-        const page = await feed({ ...period, time_zone: 'UTC', ...params, limit: 1 });
+        const page = await feed({ ...q, limit: 1 });
 
+        expect(expected(q).length).toBeGreaterThan(0);
         expect(count.body).toEqual({ count: page.summary.count });
+        expect(page.summary.count).toBe(expected(q).length);
       }
 
       const latest = await get(owner, '/latest', {});
