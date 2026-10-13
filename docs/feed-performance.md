@@ -179,7 +179,10 @@ category_id, transaction_type, amount)`.
 - **Deployment.** Both steps are online (`ALGORITHM=INPLACE, LOCK=NONE`):
   the new index is built while writes continue, then the old one is dropped,
   so the foreign key is never without an index. About 3 s for 500,000 rows
-  here; `down()` restores the old index the same way. The previous build
+  here; `down()` restores the old index the same way. Each step commits on
+  its own, so both directions check the indexes first: run again after
+  being stopped at any point, they finish the remaining steps. If the index a direction creates already
+  exists with another definition, it stops without changing anything. The previous build
   runs on the new schema unchanged, so a rollback of the application needs
   no schema rollback. `REQUIRED_MIGRATION` names this migration.
 
