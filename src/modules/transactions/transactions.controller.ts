@@ -113,7 +113,7 @@ export class TransactionsController {
   }
 
   @ApiOperation({
-    summary: 'One page of the history: cursor pages, search, totals of the whole selection',
+    summary: 'The transaction list, one page at a time: cursor pages, search, totals of the whole selection',
     description:
       'Newest first (timestamp, then id). summary covers the whole selection; day_totals covers each day of the ' +
       'page in full, also its records on other pages. Initial balances are listed and counted, but left out of ' +
