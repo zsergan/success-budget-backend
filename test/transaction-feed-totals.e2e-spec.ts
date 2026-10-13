@@ -251,15 +251,6 @@ describe('Transactions feed totals (e2e)', () => {
         message: [{ field: 'from', error: 'from must not be after to' }],
       });
     });
-
-    it('leaves the list without search: q is not a list parameter', async () => {
-      const res = await request(testApp.app.getHttpServer())
-        .get(`/api/v1/spaces/${owner.spaceId}/transactions?${period}&q=initial`)
-        .set('Authorization', `Bearer ${owner.token}`)
-        .expect(200);
-
-      expect(res.body).toHaveLength(7);
-    });
   });
 
   it('matches its OpenAPI schema', async () => {

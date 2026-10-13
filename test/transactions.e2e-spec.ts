@@ -78,18 +78,19 @@ describe('Transactions (e2e)', () => {
   }
 
   describe('GET /transactions/:id', () => {
-    it('returns the same view as the list, as the OpenAPI schema describes', async () => {
+    it('returns the same view as the feed, as the OpenAPI schema describes', async () => {
       const { wallet } = await createWallet(owner);
       const id = await createTransaction(owner, wallet.id);
 
       const res = await api(owner)
         .get(`${base(owner)}/transactions/${id}`)
         .expect(200);
-      const list = await api(owner)
-        .get(`${base(owner)}/transactions?from=2026-09-01&to=2026-09-30`)
+      const feed = await api(owner)
+        .get(`${base(owner)}/transactions/feed`)
+        .query({ from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T23:59:59.999Z', time_zone: 'UTC' })
         .expect(200);
 
-      expect(res.body).toEqual(list.body.find((item: { id: string }) => item.id === id));
+      expect(res.body).toEqual(feed.body.items.find((item: { id: string }) => item.id === id));
       expect(res.body).toEqual({
         id,
         kind: 'regular',
@@ -786,7 +787,8 @@ describe('Transactions (e2e)', () => {
               .query({ period: 'month', time_zone: 'UTC' })
               .expect(200),
             api(member)
-              .get(`${base(member)}/transactions`)
+              .get(`${base(member)}/transactions/feed`)
+              .query({ from: '2000-01-01T00:00:00.000Z', to: '2037-12-31T23:59:59.999Z', time_zone: 'UTC' })
               .expect(200),
           ]);
           return {
@@ -797,7 +799,7 @@ describe('Transactions (e2e)', () => {
             total_balance: wallets.body.total_balance,
             spent: limits.body.total.spent,
             expense: summary.body.expense,
-            history: history.body.map((row: { id: string }) => row.id),
+            history: history.body.items.map((row: { id: string }) => row.id),
           };
         };
         const before = await snapshot();
@@ -825,7 +827,7 @@ describe('Transactions (e2e)', () => {
     });
   });
 
-  describe('history list and count', () => {
+  describe('history feed and count', () => {
     it('orders equal timestamps by id and counts the rows the list returns, initial balance included', async () => {
       const member = await createVerifiedMember(testApp, 'transactions-history');
 
@@ -850,8 +852,8 @@ describe('Transactions (e2e)', () => {
         const query = { from: new Date(Date.now() - 3_600_000).toISOString(), to: new Date().toISOString() };
 
         const list = await api(member)
-          .get(`${base(member)}/transactions`)
-          .query(query)
+          .get(`${base(member)}/transactions/feed`)
+          .query({ ...query, time_zone: 'UTC' })
           .expect(200);
         const count = await api(member)
           .get(`${base(member)}/transactions/count`)
@@ -862,12 +864,12 @@ describe('Transactions (e2e)', () => {
           .query({ ...query, transaction_type: 'expense' })
           .expect(200);
 
-        const sameInstant = list.body.filter((row: { timestamp: string }) => row.timestamp === at);
+        const sameInstant = list.body.items.filter((row: { timestamp: string }) => row.timestamp === at);
         const ids = sameInstant.map((row: { id: string }) => row.id);
         expect(ids).toEqual([...ids].sort().reverse());
-        expect(list.body.some((row: { kind: string }) => row.kind === 'initial_balance')).toBe(true);
-        expect(count.body).toEqual({ count: list.body.length });
-        expect(list.body).toHaveLength(4);
+        expect(list.body.items.some((row: { kind: string }) => row.kind === 'initial_balance')).toBe(true);
+        expect(count.body).toEqual({ count: list.body.items.length });
+        expect(list.body.items).toHaveLength(4);
         expect(expenses.body).toEqual({ count: 3 });
 
         const document = createOpenApiDocument(testApp.app);
@@ -893,9 +895,9 @@ describe('Transactions (e2e)', () => {
       }
     });
 
-    it.each(['transactions', 'transactions/count'])('rejects from after to on %s', async (path) => {
+    it('rejects from after to on the count', async () => {
       const res = await api(owner)
-        .get(`${base(owner)}/${path}`)
+        .get(`${base(owner)}/transactions/count`)
         .query({ from: '2026-09-02T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' })
         .expect(400);
 
@@ -1004,8 +1006,13 @@ describe('Transactions (e2e)', () => {
             .query({ period: 'month', time_zone: zone })
             .expect(200),
           api(member)
-            .get(`${base(member)}/transactions`)
-            .query({ from: month.from.toISOString(), to: month.to.toISOString(), transaction_type: 'expense' })
+            .get(`${base(member)}/transactions/feed`)
+            .query({
+              from: month.from.toISOString(),
+              to: month.to.toISOString(),
+              time_zone: zone,
+              transaction_type: 'expense',
+            })
             .expect(200),
           api(member)
             .get(`${base(member)}/transactions/count`)
@@ -1021,7 +1028,7 @@ describe('Transactions (e2e)', () => {
           total: limits.body.total.spent,
           firstLimit: limits.body.categories[0].spent,
           expense: summary.body.expense,
-          history: history.body.length,
+          history: history.body.items.length,
           count: count.body.count,
           counters: [counter(first.id), counter(second.id)],
           balance: wallets.body.wallets.find((entry: { wallet: { id: number } }) => entry.wallet.id === wallet.id)

@@ -384,13 +384,13 @@ describe('Transactions feed against a control selection (e2e)', () => {
     it.each([
       ['a category of another space', () => ({ category_id: foreignCategoryId }), 'FORBIDDEN_CATEGORY'],
       ['a deleted wallet', () => ({ wallet_id: cash.id }), 'FORBIDDEN_WALLET'],
-    ])('refuses %s as a filter, as the history does', async (_, params, code) => {
+    ])('refuses %s as a filter, as the count does', async (_, params, code) => {
       const feedRes = await get(owner, '/feed', { ...period, time_zone: 'UTC', ...params() });
-      const listRes = await get(owner, '', { ...period, ...params() });
+      const countRes = await get(owner, '/count', { ...period, ...params() });
 
       expect(feedRes.status).toBe(403);
       expect(feedRes.body.code).toBe(code);
-      expect(listRes.body.code).toBe(code);
+      expect(countRes.body.code).toBe(code);
     });
 
     it('checks the request shape first, then refuses a member of another space', async () => {
@@ -404,16 +404,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
     });
   });
 
-  describe('older API and OpenAPI', () => {
-    it('keeps GET /transactions a plain array of the same rows', async () => {
-      const q = { ...period, time_zone: 'UTC' };
-      const res = await get(owner, '', period);
-
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.map((row: { id: string }) => row.id)).toEqual(expected(q).map((row) => row.id));
-      expect(schemaErrors(document, okResponseSchema(document, '/transactions'), res.body)).toEqual([]);
-    });
-
+  describe('count, latest and OpenAPI', () => {
     it('keeps /count and /latest, and /count agrees with the feed', async () => {
       for (const params of [{}, { q: 'кофе' }, { kind: 'regular' }]) {
         const count = await get(owner, '/count', { ...period, ...params });
@@ -455,7 +446,6 @@ describe('Transactions feed against a control selection (e2e)', () => {
         ].sort(),
       );
       expect(names('/transactions/count')).toContain('q');
-      expect(names('/transactions')).not.toContain('q');
     });
   });
 });

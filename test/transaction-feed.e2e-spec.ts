@@ -14,7 +14,7 @@ describe('Transactions feed pages (e2e)', () => {
   let walletId: number;
   let categoryId: number;
   let foreignId: string;
-  // the history of the period, newest first, as GET /transactions lists it
+  // the records of the period, newest first, read from the table
   let history: string[];
 
   const period = 'from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z&time_zone=Europe/Moscow';
@@ -69,6 +69,17 @@ describe('Transactions feed pages (e2e)', () => {
     return { wallet: wallet.body.wallet.id as number, category: categories.body.expenses[0].id as number };
   }
 
+  async function stored(): Promise<string[]> {
+    const rows: { id: string }[] = await testApp.dataSource.query(
+      `SELECT id FROM transactions
+         WHERE wallet_id = ? AND timestamp BETWEEN ? AND ?
+         ORDER BY timestamp DESC, id DESC`,
+      [walletId, new Date('2026-09-01T00:00:00.000Z'), new Date('2026-09-30T23:59:59.999Z')],
+    );
+
+    return rows.map((row) => row.id);
+  }
+
   async function walk(query: string): Promise<string[]> {
     const seen: string[] = [];
     let page = await feed(query);
@@ -96,10 +107,7 @@ describe('Transactions feed pages (e2e)', () => {
     const foreign = await setUp(outsider);
     foreignId = await createTransaction(outsider, foreign.wallet, foreign.category, timestamps[0], 0);
 
-    const list = await get(owner, `${base(owner)}?from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z`).expect(
-      200,
-    );
-    history = list.body.map((row: { id: string }) => row.id);
+    history = await stored();
   });
 
   afterAll(async () => {
@@ -173,9 +181,7 @@ describe('Transactions feed pages (e2e)', () => {
 
       history.splice(2, 1);
       await createTransaction(owner, walletId, categoryId, boundary.body.timestamp, 99);
-      history = (
-        await get(owner, `${base(owner)}?from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z`).expect(200)
-      ).body.map((row: { id: string }) => row.id);
+      history = await stored();
     });
   });
 

@@ -162,9 +162,9 @@ describe('Boundary type contract (e2e)', () => {
   }
 
   async function readTransaction(id: string) {
-    const res = await api().get(`${base()}/transactions?from=2000-01-01&to=2100-01-01`).expect(200);
+    const res = await api().get(`${base()}/transactions/${id}`).expect(200);
 
-    return res.body.find((transaction: { id: string }) => transaction.id === id);
+    return res.body;
   }
 
   describe('money', () => {
@@ -381,12 +381,12 @@ describe('Boundary type contract (e2e)', () => {
     });
 
     it('converts query from/to to Date, and defaults absent ones to the current month', async () => {
-      const spy = jest.spyOn(transactionQueriesService, 'getForAllWallets');
+      const spy = jest.spyOn(transactionQueriesService, 'countForAllWallets');
 
-      await api().get(`${base()}/transactions?from=2026-01-01&to=2026-01-31T23:59:59.999`).expect(200);
+      await api().get(`${base()}/transactions/count?from=2026-01-01&to=2026-01-31T23:59:59.999`).expect(200);
       expect(spy).toHaveBeenLastCalledWith(spaceId, new Date(2026, 0, 1), new Date(2026, 0, 31, 23, 59, 59, 999), {});
 
-      await api().get(`${base()}/transactions`).expect(200);
+      await api().get(`${base()}/transactions/count`).expect(200);
       const now = new Date();
       expect(spy.mock.lastCall).toEqual([
         spaceId,
@@ -411,28 +411,24 @@ describe('Boundary type contract (e2e)', () => {
       expect(noonLocal.status).toBe(201);
       expect(exactUtc.status).toBe(201);
 
-      const select = async (query: string): Promise<string[]> => {
-        const res = await api().get(`${base()}/transactions?${query}`).expect(200);
+      // noon is 2026-03-10 local, exact is 2026-03-12 UTC: a count of 1 tells which one matched
+      const select = async (query: string): Promise<number> => {
+        const res = await api().get(`${base()}/transactions/count?wallet_id=${periodWalletId}&${query}`).expect(200);
 
-        return res.body
-          .filter((transaction: { wallet: { id: number } }) => transaction.wallet.id === periodWalletId)
-          .map((transaction: { id: string }) => transaction.id)
-          .sort();
+        return res.body.count;
       };
-      const noon = noonLocal.body.transaction.id;
-      const exact = exactUtc.body.transaction.id;
 
-      expect(await select('from=2026-03-10&to=2026-03-10')).toEqual([]);
-      expect(await select('from=2026-03-10&to=2026-03-11')).toEqual([noon]);
-      expect(await select('from=2026-03-10T12:00:00&to=2026-03-10T12:00:00')).toEqual([noon]);
-      expect(await select('from=2026-03-12T08:00:00.250Z&to=2026-03-12T08:00:00.250Z')).toEqual([exact]);
-      expect(await select('from=2026-03-12T08:00:00.251Z&to=2026-03-13')).toEqual([]);
+      expect(await select('from=2026-03-10&to=2026-03-10')).toBe(0);
+      expect(await select('from=2026-03-10&to=2026-03-11')).toBe(1);
+      expect(await select('from=2026-03-10T12:00:00&to=2026-03-10T12:00:00')).toBe(1);
+      expect(await select('from=2026-03-12T08:00:00.250Z&to=2026-03-12T08:00:00.250Z')).toBe(1);
+      expect(await select('from=2026-03-12T08:00:00.251Z&to=2026-03-13')).toBe(0);
       expect(
         await select(
           `from=${encodeURIComponent('2026-03-12T11:00:00.250+03:00')}&to=${encodeURIComponent('2026-03-12T11:00:00.250+03:00')}`,
         ),
-      ).toEqual([exact]);
-      expect(await select('from=2026-03-01&to=2026-03-31T23:59:59.999')).toEqual([noon, exact].sort());
+      ).toBe(1);
+      expect(await select('from=2026-03-01&to=2026-03-31T23:59:59.999')).toBe(2);
     });
 
     it('normalizes a created transaction timestamp to ISO-8601 UTC, whatever offset it was sent with', async () => {
@@ -447,7 +443,7 @@ describe('Boundary type contract (e2e)', () => {
       async (value) => {
         const query = value.includes('=') ? value : `from=${value}`;
 
-        for (const path of ['transactions', 'wallets']) {
+        for (const path of ['transactions/count', 'wallets']) {
           const res = await api().get(`${base()}/${path}?${query}`).expect(400);
           expect(res.body.message).toEqual([{ field: 'from', error: 'from must be a valid ISO 8601 date' }]);
         }
@@ -455,7 +451,7 @@ describe('Boundary type contract (e2e)', () => {
     );
 
     it('rejects a malformed to with a 400', async () => {
-      const res = await api().get(`${base()}/transactions?to=2026-01-01T25:00:00`).expect(400);
+      const res = await api().get(`${base()}/transactions/count?to=2026-01-01T25:00:00`).expect(400);
       expect(res.body.message).toEqual([{ field: 'to', error: 'to must be a valid ISO 8601 date' }]);
     });
 
@@ -785,8 +781,11 @@ describe('Boundary type contract (e2e)', () => {
       expect(read.category.is_archived).toBe(false);
 
       const document = createOpenApiDocument(app);
-      const list = await api().get(`${base()}/transactions?from=2000-01-01&to=2100-01-01`).expect(200);
-      expect(schemaErrors(document, okResponseSchema(document, '/transactions'), list.body)).toEqual([]);
+      const feed = await api()
+        .get(`${base()}/transactions/feed?from=2000-01-01T00:00:00Z&to=2037-12-31T23:59:59Z&time_zone=UTC`)
+        .expect(200);
+      expect(feed.body.items.length).toBeGreaterThan(0);
+      expect(schemaErrors(document, okResponseSchema(document, '/transactions/feed'), feed.body)).toEqual([]);
       const latest = await api().get(`${base()}/transactions/latest`).expect(200);
       expect(schemaErrors(document, okResponseSchema(document, '/transactions/latest'), latest.body)).toEqual([]);
     });
@@ -825,10 +824,10 @@ describe('Boundary type contract (e2e)', () => {
       const created = await createTransaction({ wallet_id: doomedId, timestamp: at }).expect(201);
       await api().delete(`${base()}/wallets/${doomedId}`).expect(200);
 
-      const res = await api().get(`${base()}/transactions?from=${at}&to=${at}`).expect(200);
-      expect(res.body).toHaveLength(1);
-      expect(keys(res.body[0])).toEqual(TRANSACTION_VIEW);
-      expect(res.body[0].wallet).toBeNull();
+      const res = await api().get(`${base()}/transactions/feed?from=${at}&to=${at}&time_zone=UTC`).expect(200);
+      expect(res.body.items).toHaveLength(1);
+      expect(keys(res.body.items[0])).toEqual(TRANSACTION_VIEW);
+      expect(res.body.items[0].wallet).toBeNull();
 
       const latest = await api().get(`${base()}/transactions/latest`).expect(200);
       expect(latest.body.id).toBe(created.body.transaction.id);
