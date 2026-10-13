@@ -187,7 +187,7 @@ async function bootstrap() {
     time_zone: 'UTC',
     limit: 50,
   };
-  const all = { from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.000Z' };
+  const all = { from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.999Z' };
   const year = { from: '2025-01-01T00:00:00.000Z', to: '2025-12-31T23:59:59.999Z' };
   const busyDay = { from: '2026-06-15T00:00:00.000Z', to: '2026-06-15T23:59:59.999Z' };
 

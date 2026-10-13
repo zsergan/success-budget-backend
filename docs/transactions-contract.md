@@ -392,12 +392,14 @@ The filters, the selection and its order are those of
 are required and need `Z` or an offset.
 
 `from` and `to` bound a search, not a stored value, so they may lie outside
-the MySQL `TIMESTAMP` range that transaction timestamps are kept in
-(1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z): a month that starts on
-1970-01-01T00:00:00Z, or in a zone east of UTC on the evening of
+the range that transaction timestamps are kept in, a MySQL `TIMESTAMP(3)`
+(1970-01-01T00:00:01.000Z to 2038-01-19T03:14:07.999Z): a month that starts
+on 1970-01-01T00:00:00Z, or in a zone east of UTC on the evening of
 1969-12-31, opens like any other. Only the part of the period inside that
-range can hold records; a period wholly outside it is `200` with no
-`items`, a zero `summary` and no `day_totals`. `GET /transactions/count`
+range can hold records. Reads take the last stored second in full: a record
+stamped after 2038-01-19T03:14:07.000Z, the limit of a write, is still
+listed, searched, counted, summed and paged. A period wholly outside the
+range is `200` with no `items`, a zero `summary` and no `day_totals`. `GET /transactions/count`
 selects the same records for the same bounds, so `summary.count` equals the
 count. Cursors keep the stored range: a cursor
 position is always a stored record's timestamp.
@@ -549,7 +551,7 @@ the device's zone.
 | Search in the history   | the same plus `q`; a changed `q` starts again without a cursor                                                |
 | Period picker counter   | `GET /transactions/count` with the period; plus `q` while a search is open                                    |
 | Statistics drill-down   | `AppliedFilter` as filters (`kind=regular`, `transaction_type`, `category_id`); no search while it is applied |
-| Home, latest records    | `limit=5`, `from=1970-01-01T00:00:01Z`, `to=2038-01-19T03:14:07Z`; only `items` are used                      |
+| Home, latest records    | `limit=5`, `from=1970-01-01T00:00:01Z`, `to=2038-01-19T03:14:07.999Z`; only `items` are used                  |
 | History opened at a row | the record's month as `from`/`to`, `around_id`; cursors in both directions                                    |
 
 **Errors**, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,

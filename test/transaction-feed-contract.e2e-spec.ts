@@ -428,7 +428,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
       }
 
       const latest = await get(owner, '/latest', {});
-      const newest = expected({ from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.000Z', time_zone: 'UTC' });
+      const newest = expected({ from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.999Z', time_zone: 'UTC' });
       expect(latest.body.id).toBe(newest[0].id);
     });
 
