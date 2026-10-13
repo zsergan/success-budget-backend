@@ -33,6 +33,7 @@ recurring transactions.
 | `GET /transactions/feed`: cursor pages, search, `around_id`         | implemented |
 | `GET /transactions/feed`: `summary`, `day_totals`                   | implemented |
 | Optional `q` on `GET /transactions/count`                           | implemented |
+| Unpaged `GET /transactions` removed; lists only through `/feed`     | implemented |
 
 Code: `src/modules/transactions` (view in `transaction-view.ts`, OpenAPI
 schemas in `dto/transaction-responses.ts`, the write unit in
@@ -48,7 +49,7 @@ every derived figure after each step, DST, and the OpenAPI document),
 `test/api-contract.e2e-spec.ts` (`PATCH` as the edit, required versions,
 the maximum amount on every money field, the monthly total limit) and the
 response shapes in `test/type-contract.e2e-spec.ts`; the e2e
-tests check the list, latest and details responses against their OpenAPI
+tests check the feed, latest and details responses against their OpenAPI
 schemas.
 
 ## Domain rules
@@ -107,13 +108,18 @@ Checks run in this order: request shape
 | Method   | Route                                          | Status   |
 | -------- | ---------------------------------------------- | -------- |
 | `POST`   | `/spaces/:spaceId/transactions`                | kept     |
-| `GET`    | `/spaces/:spaceId/transactions`                | kept     |
+| `GET`    | `/spaces/:spaceId/transactions`                | removed  |
 | `GET`    | `/spaces/:spaceId/transactions/feed`           | new      |
 | `GET`    | `/spaces/:spaceId/transactions/latest`         | kept     |
 | `GET`    | `/spaces/:spaceId/transactions/count`          | new      |
 | `GET`    | `/spaces/:spaceId/transactions/:transactionId` | new      |
 | `PATCH`  | `/spaces/:spaceId/transactions/:transactionId` | new      |
 | `DELETE` | `/spaces/:spaceId/transactions/:transactionId` | reworked |
+
+Transaction lists are read only through `GET .../transactions/feed`, in
+cursor pages. The unpaged `GET /spaces/:spaceId/transactions` is removed: it
+answers `404 NOT_FOUND`, while `POST` on the same path keeps creating. There
+is no other way to load the whole history at once.
 
 `PATCH` is a partial update: an absent field keeps its current value. The
 design's "PUT" label is not part of the contract; there is no `PUT`.
@@ -193,7 +199,7 @@ description, or a category whose type differs from the transaction type.
 
 ### Transaction view
 
-One shape for every read: the list, the feed, `latest`, `GET /:id`, and the
+One shape for every read: the feed, `latest`, `GET /:id`, and the
 `transaction` of a `PATCH` result. It is built field by field
 (`toTransactionView`), so an entity column never reaches the client unless
 it is listed here.
@@ -241,8 +247,7 @@ hidden), never from the category name, which is display text and can be
 renamed. A client renders an `initial_balance` record read-only and offers
 no edit or delete for it.
 
-`wallet` is `null` for a deleted wallet in every read, as the list always
-did. The edit screen therefore shows a deleted wallet without its name, and
+`wallet` is `null` for a deleted wallet in every read. The edit screen therefore shows a deleted wallet without its name, and
 keeps it by leaving `wallet_id` out of the `PATCH`.
 
 `version` is the record's concurrency token: the client keeps the value it
@@ -306,56 +311,66 @@ Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
 `WALLET_DELETED`, `FORBIDDEN_CATEGORY`, `CATEGORY_ARCHIVED`,
 `CATEGORY_TYPE_MISMATCH`.
 
-### `GET /spaces/:spaceId/transactions`, `GET .../latest`
+### History selection
 
-`TransactionView[]` and `TransactionView`, or an empty body when the space
-has no transactions. Every pre-existing field keeps its name and type;
-`kind`, `version` and `category.is_archived` are new, and a blank
-description reads as `null`.
+`/feed` and `/count` read the same **selection**: every transaction of the
+space with `from <= timestamp <= to` that matches the filters (and `q`, see
+[Search](#search)), on active and deleted wallets, in active and archived
+categories.
 
-- **Order:** newest `timestamp` first; rows with the same timestamp by `id`,
-  descending. The order is stable between requests, and `latest` is the
-  first row of the unfiltered list.
-- **Initial balance** records are listed, marked `kind: 'initial_balance'`.
-  A wallet created with a starting balance therefore has a non-empty
-  history even though its Income is zero; the client decides "no history"
-  from the rows (or the count), never from an amount.
-- **`kind` filter:** optional `kind=regular` leaves initial balances out,
-  `kind=initial_balance` lists only them; without it both are listed. It
-  is decided by the system category, never by name, and combines with the
-  other filters. The statistics drill-down always sends `kind=regular`
-  ([statistics contract](statistics-contract.md#opening-a-breakdown-item)).
-- **Query:** `from` and `to` are inclusive instants (send them with `Z` or
-  an offset: the device's day and month bounds; an offset-less value is
-  read in server local time). Defaults are the server's current month.
-  `from` after `to` is `400 VALIDATION_FAILED`, field `from`. The other
-  parameters and their errors stay as in
-  [`type-contract.md`](type-contract.md#absent-vs-null-vs-empty) and the
-  [statistics contract](statistics-contract.md).
+- **Order:** newest `timestamp` first; records with the same timestamp by
+  `id`, descending. The order is stable between requests.
+- **Initial balance** records are part of the selection, marked
+  `kind: 'initial_balance'`. A wallet created with a starting balance
+  therefore has a non-empty history even though its Income is zero; the
+  client decides "no history" from `latest` or a count, never from an
+  amount.
+- **Filters,** all optional; they combine with each other and with `q`:
+
+| Parameter          | Rule                                                                                                                    | Refused                                                                                                   |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `transaction_type` | `income` \| `expense`                                                                                                   | another value: `400 VALIDATION_FAILED`                                                                    |
+| `kind`             | `regular` leaves initial balances out, `initial_balance` keeps only them; decided by the system category, never by name | another value: `400 VALIDATION_FAILED`                                                                    |
+| `category_id`      | a category of the space, archived allowed                                                                               | malformed: `400 VALIDATION_FAILED`; missing, of another space or the system one: `403 FORBIDDEN_CATEGORY` |
+| `wallet_id`        | an active wallet of the space                                                                                           | malformed: `400 VALIDATION_FAILED`; missing, of another space or deleted: `403 FORBIDDEN_WALLET`          |
+
+An empty or repeated filter is `400 VALIDATION_FAILED` (see
+[`type-contract.md`](type-contract.md#absent-vs-null-vs-empty)). The
+statistics drill-down always sends `kind=regular`
+([statistics contract](statistics-contract.md#opening-a-breakdown-item)).
+
+### `GET /spaces/:spaceId/transactions/latest`
+
+`200 TransactionView` of the newest record of the space, the first in the
+[history order](#history-selection) over all of it, or an empty body when the
+space has no transactions. The app uses it to tell an empty history.
 
 ### `GET /spaces/:spaceId/transactions/count`
 
-`200 { count: number }`: the number of rows `GET /transactions` returns for
-the same query (`from`, `to`, `transaction_type`, `kind`, `category_id`,
-`wallet_id`, same defaults and errors), initial balances included when they
-fall into it and `kind` does not leave them out. It reads no rows, so the
-calendar counter does not load the list. Errors as for the list.
+`200 { count: number }`: the number of records in the
+[selection](#history-selection) of `from`, `to`, the filters and the optional
+`q`, initial balances included unless `kind=regular` leaves them out. It is
+the feed's `summary.count` for the same period, `q` and filters, and reads
+no rows, so the period picker counter loads nothing.
 
-Optional `q` counts the records matching that search, by the rules of the
-feed's [Search](#search): trimmed, blank means no search, at most 255
-characters (longer is `400 VALIDATION_FAILED`, field `q`, as is a repeated
-`q`). With `q`, the count equals the feed's `summary.count` for the same
-period, search and filters; without it, the counter counts every record of
-the period as before. `GET /transactions` itself takes no `q`: an unknown
-parameter is ignored there, as it always was.
+- **`from` and `to`** are optional inclusive instants. Send them with `Z` or
+  an offset, as the device's day and month bounds; an offset-less value is
+  read in server local time. Both default to the server's current month.
+  `from` after `to` is `400 VALIDATION_FAILED`, field `from`.
+- **`q`** counts the matches of the feed's [Search](#search): trimmed, blank
+  means no search, at most 255 characters (longer is
+  `400 VALIDATION_FAILED`, field `q`, as is a repeated `q`).
+
+Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
+`FORBIDDEN_CATEGORY`, `FORBIDDEN_WALLET`.
 
 ### `GET /spaces/:spaceId/transactions/feed`
 
-One paged read for every transaction list of the app: the history of a
+The one read for every transaction list of the app: the history of a
 period, search within it, the statistics drill-down (the same filters), the
-latest records on the home screen and the history opened at one record.
-Unlike `GET /transactions` it pages with a cursor and returns the totals of
-the whole selection, computed by the server.
+latest records on the home screen and the history opened at one record. It
+pages with a cursor and returns the totals of the whole selection, computed
+by the server.
 
 **Query:**
 
@@ -372,20 +387,21 @@ the whole selection, computed by the server.
 | `category_id`      | no       | A category of the space, archived allowed; the system one is refused                                                                          |
 | `wallet_id`        | no       | An active wallet of the space                                                                                                                 |
 
-The four filters are those of `GET /transactions`, with the same meaning
-and errors. The **selection** is every transaction of the space with
-`from <= timestamp <= to` that matches `q` and the filters; initial
-balances are part of it unless `kind=regular` leaves them out.
+The filters, the selection and its order are those of
+[History selection](#history-selection); unlike `/count`, `from` and `to`
+are required and need `Z` or an offset.
 
 `from` and `to` bound a search, not a stored value, so they may lie outside
-the MySQL `TIMESTAMP` range that transaction timestamps are kept in
-(1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z): a month that starts on
-1970-01-01T00:00:00Z, or in a zone east of UTC on the evening of
+the range that transaction timestamps are kept in, a MySQL `TIMESTAMP(3)`
+(1970-01-01T00:00:01.000Z to 2038-01-19T03:14:07.999Z): a month that starts
+on 1970-01-01T00:00:00Z, or in a zone east of UTC on the evening of
 1969-12-31, opens like any other. Only the part of the period inside that
-range can hold records; a period wholly outside it is `200` with no
-`items`, a zero `summary` and no `day_totals`. `GET /transactions` and
-`GET /transactions/count` select the same records for the same bounds, so
-`summary.count` equals the count. Cursors keep the stored range: a cursor
+range can hold records. Reads take the last stored second in full: a record
+stamped after 2038-01-19T03:14:07.000Z, the limit of a write, is still
+listed, searched, counted, summed and paged. A period wholly outside the
+range is `200` with no `items`, a zero `summary` and no `day_totals`. `GET /transactions/count`
+selects the same records for the same bounds, so `summary.count` equals the
+count. Cursors keep the stored range: a cursor
 position is always a stored record's timestamp.
 
 Every malformed parameter is `400 VALIDATION_FAILED` with the parameter as
@@ -415,8 +431,8 @@ interface TransactionFeed {
 }
 ```
 
-- **Order.** `timestamp` descending, then `id` descending: the order of
-  `GET /transactions`. Every page, also one read with `previous_cursor` or
+- **Order.** `timestamp` descending, then `id` descending: the
+  [history order](#history-selection). Every page, also one read with `previous_cursor` or
   `around_id`, lists its items in this order.
 - **One snapshot per response.** `items`, `summary` and `day_totals` of a
   response are read in one database snapshot, so they agree with each
@@ -535,7 +551,7 @@ the device's zone.
 | Search in the history   | the same plus `q`; a changed `q` starts again without a cursor                                                |
 | Period picker counter   | `GET /transactions/count` with the period; plus `q` while a search is open                                    |
 | Statistics drill-down   | `AppliedFilter` as filters (`kind=regular`, `transaction_type`, `category_id`); no search while it is applied |
-| Home, latest records    | `limit=5`, `from=1970-01-01T00:00:01Z`, `to=2038-01-19T03:14:07Z`; only `items` are used                      |
+| Home, latest records    | `limit=5`, `from=1970-01-01T00:00:01Z`, `to=2038-01-19T03:14:07.999Z`; only `items` are used                  |
 | History opened at a row | the record's month as `from`/`to`, `around_id`; cursors in both directions                                    |
 
 **Errors**, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
@@ -543,11 +559,10 @@ the device's zone.
 `TRANSACTION_NOT_IN_FEED` for `around_id`.
 
 **Relation to the other reads.** For the same `from`, `to`, `q` and
-filters, `summary.count` equals `GET /transactions/count`. Without `q`, the
-items of all the pages together are also the rows of `GET /transactions`
-in the same order. `GET /transactions` and
-`GET /transactions/latest` are kept unchanged; see
-[Moving lists to the feed](#moving-lists-to-the-feed).
+filters, `summary.count` equals `GET /transactions/count`, and the items of
+all the pages together are that many records, each once, in the history
+order. `GET /transactions/latest` is the first item of the feed over the
+whole stored range without filters.
 
 ### `GET /spaces/:spaceId/transactions/operations/:operationId`
 
@@ -582,7 +597,7 @@ the answer is read in one snapshot. Records created without
 
 `200 TransactionView` for any transaction of the space: regular or initial
 balance, on an active or deleted wallet, on an active or archived category.
-It is the same object the list returns for that transaction.
+It is the same object the feed returns for that transaction.
 
 Errors: `FORBIDDEN_SPACE` (checked first, so a non-member learns nothing
 about the id), `TRANSACTION_NOT_FOUND`.
@@ -910,8 +925,7 @@ category combined with the link removals of the archived state.
 
 | Figure                                        | Initial balance | Regular transactions                               |
 | --------------------------------------------- | --------------- | -------------------------------------------------- |
-| History rows, `GET /transactions/count`       | included        | in `from`..`to`, by the filters                    |
-| Feed `items`, `summary.count`                 | included        | in `from`..`to`, by `q` and the filters            |
+| Feed `items`, `summary.count`, `/count`       | included        | in `from`..`to`, by `q` and the filters            |
 | Feed `summary.income` / `summary.expense`     | excluded        | in `from`..`to`, by `q` and the filters            |
 | Feed `day_totals` `net`                       | excluded        | the local day within `from`..`to`, by `q`, filters |
 | Wallet `balance`, `total_balance`             | included        | all, whatever their timestamp                      |
@@ -1146,7 +1160,6 @@ GET /api/v1/spaces/1/limits?time_zone=Europe/Moscow
                   "to": "2026-10-31T20:59:59.999Z" },
       "total": { "id": 3, "amount": "1000.00", "spent": 20, "in_percent": 2, … }, … }
 
-GET /api/v1/spaces/1/transactions?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z
 GET /api/v1/spaces/1/transactions/count?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z
 
 200 { "count": 5 }
@@ -1245,21 +1258,20 @@ A cursor sent with another `q` or period:
 
 ### Moving lists to the feed
 
-`GET /transactions/feed` is added next to the existing reads; nothing that
-an installed app calls changes.
+Lists moved to `/feed` in two steps:
 
-1. The backend adds `/feed`; `GET /transactions` keeps returning the plain
-   array, unchanged. Its shape is never switched to a paged object in
-   place: an older app would break on it.
-2. The mobile app moves every list (history, search, statistics
-   drill-down, home) to `/feed` and stops computing day totals and period
-   income/expense from loaded rows.
-3. `GET /transactions` is then marked deprecated in the OpenAPI document.
-   Removing it is a separate change, once older app versions are no longer
-   supported.
+1. `GET /transactions/feed` was added next to the unpaged
+   `GET /transactions`, whose plain array never changed shape in place: an
+   older app would break on it. The mobile app moved every list (history,
+   search, statistics drill-down, home) to `/feed` and stopped computing day
+   totals and period income/expense from loaded rows.
+2. The unpaged `GET /transactions` was removed. It now answers
+   `404 NOT_FOUND`; there is no redirect and no other form of it.
 
 `GET /transactions/latest`, `GET /transactions/count`, `GET /:id`,
-operations and every write stay as they are.
+operations and every write stay as they are. The removal changes no schema
+and needs no database migration: the feed reads the same table and the
+index of `1790500000000-ExtendTransactionWalletTimestampIndex`.
 
 ### Deployment order
 
@@ -1294,7 +1306,8 @@ job; no external scheduler is needed.
 
 | Request of an older client                                                        | Result now                                                              |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `GET /transactions`, `/latest`                                                    | works; new fields are added, `""` description reads as `null`           |
+| `GET /transactions` (the unpaged list)                                            | **`404 NOT_FOUND`**: lists are read through `/feed`                     |
+| `GET /transactions/latest`                                                        | works; new fields are added, `""` description reads as `null`           |
 | `POST /transactions` with a valid, past, positive expense                         | works; `transaction` has more fields and a 2-decimal `amount`           |
 | `POST` with `amount: "0"`, a future timestamp, an archived or wrong-type category | `400` (was accepted)                                                    |
 | `POST` with a date-only or offset-less `timestamp`                                | `400` (was read in server local time)                                   |
@@ -1332,8 +1345,8 @@ use; the new mobile build ships before or together with this backend.
   `wallet_id`/`category_id` out (or send the current ids) to keep a deleted
   wallet or an archived category.
 - Use `GET /transactions/count` for the calendar counter, with the open
-  search's `q` so that it counts the matches; decide "no history" from rows
-  or the count, never from Income being zero.
+  search's `q` so that it counts the matches; decide "no history" from
+  `latest` or the count, never from Income being zero.
 - Load every transaction list from `GET /transactions/feed` (see
   [Moving lists to the feed](#moving-lists-to-the-feed)): store cursors as
   opaque strings, key records by `id`, and show `summary` and `day_totals`
@@ -1351,6 +1364,8 @@ use; the new mobile build ships before or together with this backend.
   `GET /transactions/operations/:operationId`; `GET /transactions/feed`
   with cursor pages, search and server totals; optional `q` on
   `GET /transactions/count`.
+- **Removed (breaking):** the unpaged `GET /transactions`; every list is
+  read through `GET /transactions/feed`.
 - **`If-Match` required on `DELETE` (breaking):** a delete or undo without
   it is `428 TRANSACTION_VERSION_REQUIRED`.
 - **`POST` is stricter:** a zero amount, a timestamp more than a minute
@@ -1367,5 +1382,5 @@ use; the new mobile build ships before or together with this backend.
   balance can no longer be deleted (`400 TRANSACTION_IS_SYSTEM`).
 - **`GET /wallets`:** `total_income` and `delta_percent` stop counting the
   initial balance, matching the statistics API.
-- **History:** rows with an equal timestamp are ordered by `id`; `from`
+- **History:** records with an equal timestamp are ordered by `id`; `from`
   after `to` is `400`.

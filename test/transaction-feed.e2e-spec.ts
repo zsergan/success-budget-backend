@@ -14,8 +14,15 @@ describe('Transactions feed pages (e2e)', () => {
   let walletId: number;
   let categoryId: number;
   let foreignId: string;
-  // the history of the period, newest first, as GET /transactions lists it
+  // the records the tests created in the period, and the order the feed must list them in
+  const records: { id: string; timestamp: string }[] = [];
   let history: string[];
+
+  // newest first: timestamp, then id, descending
+  const expectedHistory = () =>
+    [...records]
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp) || (a.id < b.id ? 1 : -1))
+      .map((record) => record.id);
 
   const period = 'from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z&time_zone=Europe/Moscow';
   const timestamps = [
@@ -90,16 +97,13 @@ describe('Transactions feed pages (e2e)', () => {
     ({ wallet: walletId, category: categoryId } = await setUp(owner));
 
     for (const [n, timestamp] of timestamps.entries()) {
-      await createTransaction(owner, walletId, categoryId, timestamp, n);
+      records.push({ id: await createTransaction(owner, walletId, categoryId, timestamp, n), timestamp });
     }
 
     const foreign = await setUp(outsider);
     foreignId = await createTransaction(outsider, foreign.wallet, foreign.category, timestamps[0], 0);
 
-    const list = await get(owner, `${base(owner)}?from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z`).expect(
-      200,
-    );
-    history = list.body.map((row: { id: string }) => row.id);
+    history = expectedHistory();
   });
 
   afterAll(async () => {
@@ -122,12 +126,16 @@ describe('Transactions feed pages (e2e)', () => {
     it('fits the history in one page of 50 by default', async () => {
       const page = await feed('');
 
+      expect(history).toHaveLength(timestamps.length);
       expect(ids(page)).toEqual(history);
       expect(page.page_info).toEqual({ next_cursor: null, previous_cursor: null });
     });
 
     it.each([1, 2, 5, 11, 12])('walks the history with pages of %p, ties and milliseconds included', async (limit) => {
-      expect(await walk(`limit=${limit}`)).toEqual(history);
+      const seen = await walk(`limit=${limit}`);
+
+      expect(new Set(seen).size).toBe(seen.length);
+      expect(seen).toEqual(history);
     });
 
     it('goes back to newer records with previous_cursor, newest first', async () => {
@@ -171,11 +179,15 @@ describe('Transactions feed pages (e2e)', () => {
 
       expect(ids(second)).toEqual(history.slice(3, 6));
 
-      history.splice(2, 1);
-      await createTransaction(owner, walletId, categoryId, boundary.body.timestamp, 99);
-      history = (
-        await get(owner, `${base(owner)}?from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z`).expect(200)
-      ).body.map((row: { id: string }) => row.id);
+      records.splice(
+        records.findIndex((record) => record.id === history[2]),
+        1,
+        {
+          id: await createTransaction(owner, walletId, categoryId, boundary.body.timestamp, 99),
+          timestamp: boundary.body.timestamp,
+        },
+      );
+      history = expectedHistory();
     });
   });
 

@@ -7,7 +7,7 @@ import { Wallet } from '@entities/wallet.entity';
 import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
-import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
+import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
@@ -119,7 +119,7 @@ export interface StatisticsTotals {
 }
 
 const clampToStored = (date: Date): Date =>
-  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), TIMESTAMP_MAX.getTime()));
+  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), STORED_TIMESTAMP_MAX.getTime()));
 
 @Injectable()
 export class TransactionQueriesService {
@@ -235,29 +235,7 @@ export class TransactionQueriesService {
     return new Map(rows.map((row) => [Number(row.category_id), parseMoney(row.spent)]));
   }
 
-  // newest first; the id breaks ties of equal timestamps so the order is stable
-  async getForAllWallets(
-    spaceId: number,
-    from: Date,
-    to: Date,
-    filters: TransactionFilters = {},
-  ): Promise<LoadedTransaction[]> {
-    const selection = { spaceId, from, to, filters };
-    const walletIds = await this.selectionWallets(selection);
-
-    if (walletIds.length === 0) {
-      return [];
-    }
-
-    const transactions = await this.selectionScope(selection, walletIds, undefined, true)
-      .orderBy('transaction.timestamp', 'DESC')
-      .addOrderBy('transaction.id', 'DESC')
-      .getMany();
-
-    return transactions.map((transaction) => withRelations(transaction, 'wallet', 'category'));
-  }
-
-  // the number of rows getForAllWallets() returns for the same arguments
+  // the number of records the feed pages through for the same selection
   async countForAllWallets(spaceId: number, from: Date, to: Date, filters: TransactionFilters = {}): Promise<number> {
     const selection = { spaceId, from, to, filters };
     const walletIds = await this.selectionWallets(selection);
@@ -582,7 +560,7 @@ export class TransactionQueriesService {
     return ids.map((id) => byId.get(id)!);
   }
 
-  // The one selection of the history, the feed and every total of it. Soft-
+  // The one selection of the feed, its count and every total of it. Soft-
   // deleted wallets are joined like active ones, so their history is listed
   // and their stored name is searched; archived categories likewise. The
   // space is applied as a list of wallet ids, not through the wallet join:
@@ -592,21 +570,17 @@ export class TransactionQueriesService {
     { from, to, filters = {} }: TransactionSelection,
     walletIds: number[],
     manager?: EntityManager,
-    load = false,
   ): SelectQueryBuilder<Transaction> {
-    const query = this.repository(manager).createQueryBuilder('transaction');
-
-    if (load) {
-      query.innerJoinAndSelect('transaction.wallet', 'wallet').innerJoinAndSelect('transaction.category', 'category');
-    } else {
-      query.innerJoin('transaction.wallet', 'wallet').innerJoin('transaction.category', 'category');
-    }
+    const query = this.repository(manager)
+      .createQueryBuilder('transaction')
+      .innerJoin('transaction.wallet', 'wallet')
+      .innerJoin('transaction.category', 'category');
 
     query.where('transaction.wallet_id IN (:...walletIds)', { walletIds });
 
     // MySQL is only given the part of the period a TIMESTAMP can hold; a
     // period wholly outside it selects nothing.
-    if (to < TIMESTAMP_MIN || from > TIMESTAMP_MAX) {
+    if (to < TIMESTAMP_MIN || from > STORED_TIMESTAMP_MAX) {
       query.andWhere('FALSE');
     } else {
       query

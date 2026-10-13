@@ -251,21 +251,7 @@ export class TransactionsService {
     });
   }
 
-  async getAll(
-    userId: number,
-    spaceId: number,
-    from: Date,
-    to: Date,
-    filters: TransactionFilters = {},
-  ): Promise<TransactionView[]> {
-    await this.checkHistoryQuery(userId, spaceId, from, to, filters);
-
-    const transactions = await this.transactionQueriesService.getForAllWallets(spaceId, from, to, filters);
-
-    return transactions.map(toTransactionView);
-  }
-
-  // the number of rows getAll() returns for the same query, initial balances included
+  // the summary.count of the feed for the same query, initial balances included
   async count(
     userId: number,
     spaceId: number,

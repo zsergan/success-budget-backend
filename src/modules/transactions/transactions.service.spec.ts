@@ -30,7 +30,6 @@ describe('TransactionsService', () => {
     Pick<
       TransactionQueriesService,
       | 'getBalances'
-      | 'getForAllWallets'
       | 'countForAllWallets'
       | 'getLatest'
       | 'getOneInSpace'
@@ -68,7 +67,6 @@ describe('TransactionsService', () => {
     };
     transactionQueriesService = {
       getBalances: jest.fn(async (ids: number[]) => new Map(ids.map((id) => [id, 0n]))),
-      getForAllWallets: jest.fn(),
       countForAllWallets: jest.fn(),
       getLatest: jest.fn(),
       getOneInSpace: jest.fn(),
@@ -646,60 +644,45 @@ describe('TransactionsService', () => {
     });
   });
 
-  describe('getAll', () => {
+  describe('count', () => {
     const from = new Date(2026, 0, 1);
     const to = new Date(2026, 0, 31);
 
     it('rejects a non-member before querying', async () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbidden());
 
-      await expect(service.getAll(userId, spaceId, from, to)).rejects.toMatchObject(forbidden());
-      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
+      await expect(service.count(userId, spaceId, from, to)).rejects.toMatchObject(forbidden());
+      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
     });
 
     it('rejects from after to, before the access check', async () => {
-      await expect(service.getAll(userId, spaceId, to, from)).rejects.toMatchObject({
+      await expect(service.count(userId, spaceId, to, from)).rejects.toMatchObject({
         status: 400,
         response: { message: [{ field: 'from', error: 'from must not be after to' }] },
       });
       expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
+      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
     });
 
     it('accepts from equal to to', async () => {
-      transactionQueriesService.getForAllWallets.mockResolvedValue([]);
+      transactionQueriesService.countForAllWallets.mockResolvedValue(0);
 
-      await expect(service.getAll(userId, spaceId, from, from)).resolves.toEqual([]);
+      await expect(service.count(userId, spaceId, from, from)).resolves.toEqual({ count: 0 });
     });
 
-    it('nulls out the wallet on transactions whose wallet was soft-deleted', async () => {
-      const active = loadedTransaction('1', { id: 1 });
-      const deleted = loadedTransaction('2', { id: 2, is_deleted: 1, deleted_at: new Date() });
-      transactionQueriesService.getForAllWallets.mockResolvedValue([active, deleted]);
-
-      const result = await service.getAll(userId, spaceId, from, to);
-
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-      expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to, {});
-      expect(walletsService.getOne).not.toHaveBeenCalled();
-      expect(categoriesService.getOne).not.toHaveBeenCalled();
-      expect(result).toEqual([toTransactionView(active), toTransactionView(deleted)]);
-      expect(result[0].wallet).toEqual(expect.objectContaining({ id: 1 }));
-      expect(result[1].wallet).toBeNull();
-    });
-
-    it('filters by an archived category of the space and by an active wallet', async () => {
+    it('counts with an archived category of the space and an active wallet as filters', async () => {
       categoriesService.getOne.mockResolvedValue(
         buildCategory({ id: 5, space_id: spaceId, is_active: 0, archived_at: new Date() }),
       );
-      transactionQueriesService.getForAllWallets.mockResolvedValue([]);
+      transactionQueriesService.countForAllWallets.mockResolvedValue(7);
       const filters = { transactionType: TransactionType.EXPENSE, categoryId: 5, walletId: 1 };
 
-      await service.getAll(userId, spaceId, from, to, filters);
-
+      await expect(service.count(userId, spaceId, from, to, filters)).resolves.toEqual({ count: 7 });
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
       expect(categoriesService.getOne).toHaveBeenCalledWith(5);
       expect(walletsService.getOne).toHaveBeenCalledWith(1);
-      expect(transactionQueriesService.getForAllWallets).toHaveBeenCalledWith(spaceId, from, to, filters);
+      expect(transactionQueriesService.countForAllWallets).toHaveBeenCalledWith(spaceId, from, to, filters);
     });
 
     it.each([
@@ -709,11 +692,11 @@ describe('TransactionsService', () => {
     ])('refuses a category filter that is %s', async (_, category) => {
       categoriesService.getOne.mockResolvedValue(category as Category | null);
 
-      await expect(service.getAll(userId, spaceId, from, to, { categoryId: 5 })).rejects.toMatchObject({
+      await expect(service.count(userId, spaceId, from, to, { categoryId: 5 })).rejects.toMatchObject({
         message: ErrorMessages.FORBIDDEN_CATEGORY,
         status: 403,
       });
-      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
+      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -723,32 +706,10 @@ describe('TransactionsService', () => {
     ])('refuses a wallet filter that is %s', async (_, wallet) => {
       walletsService.getOne.mockResolvedValue(wallet as Wallet | null);
 
-      await expect(service.getAll(userId, spaceId, from, to, { walletId: 1 })).rejects.toMatchObject({
+      await expect(service.count(userId, spaceId, from, to, { walletId: 1 })).rejects.toMatchObject({
         message: ErrorMessages.FORBIDDEN_WALLET,
         status: 403,
       });
-      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('count', () => {
-    const from = new Date(2026, 0, 1);
-    const to = new Date(2026, 0, 31);
-
-    it('counts with the checks and filters of the list', async () => {
-      transactionQueriesService.countForAllWallets.mockResolvedValue(7);
-      const filters = { transactionType: TransactionType.EXPENSE, categoryId: 5, walletId: 1 };
-
-      await expect(service.count(userId, spaceId, from, to, filters)).resolves.toEqual({ count: 7 });
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
-      expect(categoriesService.getOne).toHaveBeenCalledWith(5);
-      expect(walletsService.getOne).toHaveBeenCalledWith(1);
-      expect(transactionQueriesService.countForAllWallets).toHaveBeenCalledWith(spaceId, from, to, filters);
-      expect(transactionQueriesService.getForAllWallets).not.toHaveBeenCalled();
-    });
-
-    it('rejects from after to', async () => {
-      await expect(service.count(userId, spaceId, to, from)).rejects.toMatchObject({ status: 400 });
       expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
     });
   });

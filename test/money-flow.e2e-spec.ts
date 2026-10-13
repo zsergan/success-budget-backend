@@ -125,7 +125,12 @@ describe('Money flow (e2e)', () => {
         await dataSource.query('SELECT amount FROM transactions WHERE wallet_id = ? ORDER BY timestamp, id', [walletId])
       ).map((row: { amount: string }) => row.amount);
     const readAmounts = async (walletId: number): Promise<string[]> =>
-      (await api().get(`${base}/transactions?from=2000-01-01&to=2037-12-31`).expect(200)).body
+      (
+        await api()
+          .get(`${base}/transactions/feed`)
+          .query({ from: '2000-01-01T00:00:00.000Z', to: '2037-12-31T23:59:59.999Z', time_zone: 'UTC', limit: 100 })
+          .expect(200)
+      ).body.items
         .filter((transaction: { wallet: { id: number } | null }) => transaction.wallet?.id === walletId)
         .map((transaction: { amount: string }) => transaction.amount)
         .reverse();

@@ -72,6 +72,15 @@ describe('feed cursor', () => {
 
   const valid = { v: 1, d: 'older', t: cursor.position.timestamp.getTime(), i: cursor.position.id, s: digest };
 
+  it.each(['1970-01-01T00:00:01.000Z', '2038-01-19T03:14:07.001Z', '2038-01-19T03:14:07.999Z'])(
+    'accepts a position at %s, a record a TIMESTAMP(3) column can hold',
+    (timestamp) => {
+      const position = { timestamp: new Date(timestamp), id: cursor.position.id };
+
+      expect(decodeFeedCursor(encodeFeedCursor({ ...cursor, position }, digest), digest).position).toEqual(position);
+    },
+  );
+
   it.each<[string, string]>([
     ['empty', ''],
     ['not base64url', 'abc+/='],
@@ -80,7 +89,8 @@ describe('feed cursor', () => {
     ['another version', rawCursor({ ...valid, v: 2 })],
     ['an unknown direction', rawCursor({ ...valid, d: 'sideways' })],
     ['a fractional time', rawCursor({ ...valid, t: 1.5 })],
-    ['a time out of range', rawCursor({ ...valid, t: 0 })],
+    ['a time before the stored range', rawCursor({ ...valid, t: Date.parse('1970-01-01T00:00:00.999Z') })],
+    ['a time after the stored range', rawCursor({ ...valid, t: Date.parse('2038-01-19T03:14:08.000Z') })],
     ['a time as text', rawCursor({ ...valid, t: String(valid.t) })],
     ['an id that is not a UUID', rawCursor({ ...valid, i: '1 OR 1=1' })],
     ['a missing digest', rawCursor({ v: 1, d: 'older', t: valid.t, i: valid.i })],

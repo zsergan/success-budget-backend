@@ -79,16 +79,14 @@ describe('Transactions feed period bounds (e2e)', () => {
           { date: '1970-01-01', net: '-3.00' },
         ],
       },
-    ])('opens the month in $zone like the history and the count do', async ({ zone, from, to, days }) => {
+    ])('opens the month in $zone like the count does', async ({ zone, from, to, days }) => {
       const period = `from=${from}&to=${to}`;
-      const history = await get(`${base()}?${period}`).expect(200);
       const count = await get(`${base()}/count?${period}`).expect(200);
       const res = await get(`${base()}/feed?${period}&time_zone=${zone}`);
 
       expect(res.status).toBe(200);
       const page = res.body as FeedBody;
       expect(page.items.map((item) => item.id)).toEqual([secondDay, earliest]);
-      expect(page.items.map((item) => item.id)).toEqual(history.body.map((row: { id: string }) => row.id));
       expect(page.summary).toEqual({ count: count.body.count, income: '0.00', expense: '8.00' });
       expect(page.day_totals).toEqual(days);
       expect(page.page_info).toEqual({ next_cursor: null, previous_cursor: null });
@@ -114,15 +112,34 @@ describe('Transactions feed period bounds (e2e)', () => {
 
   describe('agreement with the count', () => {
     it.each([
-      { name: 'all of time', from: '1000-01-01T00:00:00.000Z', to: '9999-12-31T23:59:59.999Z' },
-      { name: 'up to the earliest record', from: '1969-01-01T00:00:00.000+05:00', to: '1970-01-01T00:00:01.000Z' },
-      { name: 'just before the earliest record', from: '1960-01-01T00:00:00.000Z', to: '1970-01-01T00:00:00.999Z' },
-      { name: 'from the second day on', from: '1970-01-02T00:00:00.000Z', to: '2100-01-01T00:00:00.000Z' },
-      { name: 'past the stored range', from: '2038-01-19T03:14:07.001Z', to: '2100-01-01T00:00:00.000Z' },
-    ])('counts $name like /count, page after page', async ({ from, to }) => {
+      {
+        name: 'all of time',
+        from: '1000-01-01T00:00:00.000Z',
+        to: '9999-12-31T23:59:59.999Z',
+        found: ['secondDay', 'earliest'],
+      },
+      {
+        name: 'up to the earliest record',
+        from: '1969-01-01T00:00:00.000+05:00',
+        to: '1970-01-01T00:00:01.000Z',
+        found: ['earliest'],
+      },
+      {
+        name: 'just before the earliest record',
+        from: '1960-01-01T00:00:00.000Z',
+        to: '1970-01-01T00:00:00.999Z',
+        found: [],
+      },
+      {
+        name: 'from the second day on',
+        from: '1970-01-02T00:00:00.000Z',
+        to: '2100-01-01T00:00:00.000Z',
+        found: ['secondDay'],
+      },
+      { name: 'past the stored range', from: '2038-01-19T03:14:07.001Z', to: '2100-01-01T00:00:00.000Z', found: [] },
+    ])('counts $name like /count, page after page', async ({ from, to, found }) => {
       const period = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
       const count = await get(`${base()}/count?${period}`).expect(200);
-      const history = await get(`${base()}?${period}`).expect(200);
       const seen: string[] = [];
       let page = (await get(`${base()}/feed?${period}&time_zone=UTC&limit=1`).expect(200)).body as FeedBody;
       seen.push(...page.items.map((item) => item.id));
@@ -136,7 +153,7 @@ describe('Transactions feed period bounds (e2e)', () => {
       }
 
       expect(page.summary.count).toBe(count.body.count);
-      expect(seen).toEqual(history.body.map((row: { id: string }) => row.id));
+      expect(seen).toEqual(found.map((name) => (name === 'earliest' ? earliest : secondDay)));
     });
   });
 

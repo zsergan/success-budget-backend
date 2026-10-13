@@ -40,8 +40,27 @@ describe('Transaction feed selection (e2e)', () => {
     filters: { ...extra, search },
   });
 
-  const search = async (text: string) =>
-    (await queries.getForAllWallets(member.spaceId, from, to, { search: text })).map((row) => row.description);
+  // the whole selection as one page
+  const select = async (text?: string) => {
+    const page = await queries.getFeedPage(selection(text), { limit: 100 });
+    expect(page.hasMore).toBe(false);
+
+    return page.items;
+  };
+
+  const search = async (text: string) => (await select(text)).map((row) => row.description);
+
+  // the records of the period, newest first; tree, cafe and percent share a timestamp, so their ids decide
+  const history = () => [
+    ids.quote,
+    ids.cashOnly,
+    ids.everywhere,
+    ids.salary,
+    ids.literal,
+    ...[ids.tree, ids.cafe, ids.percent].sort().reverse(),
+    ids.latte,
+    ids.initial,
+  ];
 
   beforeAll(async () => {
     testApp = await createTestApp();
@@ -132,24 +151,24 @@ describe('Transaction feed selection (e2e)', () => {
     });
 
     it('matches the stored name of a deleted wallet, which is still read as a deleted wallet', async () => {
-      const rows = await queries.getForAllWallets(member.spaceId, from, to, { search: 'наличн' });
+      const rows = await select('наличн');
 
       expect(rows.map((row) => row.id)).toEqual([ids.cashOnly]);
       expect(rows[0].wallet.is_deleted).toBe(1);
     });
 
     it('matches the system category by its name', async () => {
-      const rows = await queries.getForAllWallets(member.spaceId, from, to, { search: 'initial' });
+      const rows = await select('initial');
 
       expect(rows.map((row) => row.id)).toEqual([ids.initial]);
     });
 
     it('lists a record matching in several fields once', async () => {
-      const rows = await queries.getForAllWallets(member.spaceId, from, to, { search: 'card' });
+      const rows = await select('card');
 
       expect(rows.filter((row) => row.id === ids.everywhere)).toHaveLength(1);
       expect(await queries.countForAllWallets(member.spaceId, from, to, { search: 'кофе' })).toBe(
-        (await queries.getForAllWallets(member.spaceId, from, to, { search: 'кофе' })).length,
+        (await select('кофе')).length,
       );
     });
 
@@ -172,7 +191,7 @@ describe('Transaction feed selection (e2e)', () => {
     it('keeps inner whitespace and treats blank text as no search', async () => {
       expect(await search('на вынос')).toEqual(['ЛАТТЕ на вынос']);
       expect(await search('навынос')).toEqual([]);
-      expect((await queries.getForAllWallets(member.spaceId, from, to, { search: '   ' })).length).toBe(10);
+      expect(await select('   ')).toHaveLength(10);
     });
 
     it('combines with the period and the other filters', async () => {
@@ -226,39 +245,46 @@ describe('Transaction feed selection (e2e)', () => {
       }
     };
 
-    it.each([undefined, 'кофе', 'card'])('pages through the rows of the history, search %p', async (text) => {
-      const sel = selection(text);
-      const history = await queries.getForAllWallets(member.spaceId, from, to, { search: text });
+    it.each([
+      [undefined, () => history()],
+      // the category of every record but salary, literal and initial
+      ['кофе', () => history().filter((id) => ![ids.salary, ids.literal, ids.initial].includes(id))],
+      // the wallet of every record but cashOnly
+      ['card', () => history().filter((id) => id !== ids.cashOnly)],
+    ])('pages through the records of the history, search %p', async (text, expected) => {
+      for (const limit of [1, 2, 3, 100]) {
+        const seen = await walk(selection(text), limit);
 
-      expect(await walk(sel, 2)).toEqual(history.map((row) => row.id));
-      expect(await walk(sel, 100)).toEqual(history.map((row) => row.id));
+        expect(new Set(seen).size).toBe(seen.length);
+        expect(seen).toEqual(expected());
+      }
     });
 
     it('reads newer records before a position, newest first', async () => {
-      const history = (await queries.getForAllWallets(member.spaceId, from, to)).map((row) => row.id);
-      const middle = await transactions.findOneByOrFail({ id: history[5] });
+      const ordered = history();
+      const middle = await transactions.findOneByOrFail({ id: ordered[5] });
 
       const page = await queries.getFeedPage(selection(), {
         limit: 3,
         before: { timestamp: middle.timestamp, id: middle.id },
       });
 
-      expect(page.items.map((row) => row.id)).toEqual(history.slice(2, 5));
+      expect(page.items.map((row) => row.id)).toEqual(ordered.slice(2, 5));
       expect(page.hasMore).toBe(true);
 
       const top = await queries.getFeedPage(selection(), {
         limit: 10,
         before: { timestamp: middle.timestamp, id: middle.id },
       });
-      expect(top.items.map((row) => row.id)).toEqual(history.slice(0, 5));
+      expect(top.items.map((row) => row.id)).toEqual(ordered.slice(0, 5));
       expect(top.hasMore).toBe(false);
     });
 
     it('orders records of one timestamp by id, descending', async () => {
       const sameInstant = [ids.tree, ids.cafe, ids.percent].sort().reverse();
-      const history = (await queries.getForAllWallets(member.spaceId, from, to)).map((row) => row.id);
+      const seen = await walk(selection(), 1);
 
-      expect(history.filter((id) => sameInstant.includes(id))).toEqual(sameInstant);
+      expect(seen.filter((id) => sameInstant.includes(id))).toEqual(sameInstant);
     });
 
     it('sums the selection, leaving initial balances out of income and expense', async () => {

@@ -22,7 +22,6 @@ describe('TransactionsController', () => {
           provide: TransactionsService,
           useValue: {
             create: jest.fn(),
-            getAll: jest.fn(),
             count: jest.fn(),
             getLatest: jest.fn(),
             getById: jest.fn(),
@@ -67,50 +66,17 @@ describe('TransactionsController', () => {
     expect(result).toBe(created);
   });
 
-  it('getAll defaults the period to the current month', async () => {
-    transactionsService.getAll.mockResolvedValue([]);
+  it('count defaults the period to the current month', async () => {
+    transactionsService.count.mockResolvedValue({ count: 0 });
 
-    await controller.getAll(req, spaceId);
+    await controller.count(req, spaceId);
 
-    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, expect.any(Date), expect.any(Date), {
+    expect(transactionsService.count).toHaveBeenCalledWith(1, spaceId, expect.any(Date), expect.any(Date), {
       transactionType: undefined,
       kind: undefined,
       categoryId: undefined,
       walletId: undefined,
-    });
-  });
-
-  it('getAll passes an explicit period through', async () => {
-    const from = new Date(2026, 0, 1);
-    const to = new Date(2026, 0, 31);
-    const transactions = [buildTransaction({ wallet: buildWallet(), category: buildCategory() })].map((transaction) =>
-      toTransactionView(withRelations(transaction, 'wallet', 'category')),
-    );
-    transactionsService.getAll.mockResolvedValue(transactions);
-
-    const result = await controller.getAll(req, spaceId, from, to);
-
-    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to, {
-      transactionType: undefined,
-      kind: undefined,
-      categoryId: undefined,
-      walletId: undefined,
-    });
-    expect(result).toBe(transactions);
-  });
-
-  it('getAll passes the history filters through', async () => {
-    transactionsService.getAll.mockResolvedValue([]);
-    const from = new Date(2026, 0, 1);
-    const to = new Date(2026, 0, 31);
-
-    await controller.getAll(req, spaceId, from, to, TransactionType.EXPENSE, TransactionKind.REGULAR, 5, 3);
-
-    expect(transactionsService.getAll).toHaveBeenCalledWith(1, spaceId, from, to, {
-      transactionType: TransactionType.EXPENSE,
-      kind: TransactionKind.REGULAR,
-      categoryId: 5,
-      walletId: 3,
+      search: undefined,
     });
   });
 

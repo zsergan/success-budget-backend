@@ -384,13 +384,13 @@ describe('Transactions feed against a control selection (e2e)', () => {
     it.each([
       ['a category of another space', () => ({ category_id: foreignCategoryId }), 'FORBIDDEN_CATEGORY'],
       ['a deleted wallet', () => ({ wallet_id: cash.id }), 'FORBIDDEN_WALLET'],
-    ])('refuses %s as a filter, as the history does', async (_, params, code) => {
+    ])('refuses %s as a filter, as the count does', async (_, params, code) => {
       const feedRes = await get(owner, '/feed', { ...period, time_zone: 'UTC', ...params() });
-      const listRes = await get(owner, '', { ...period, ...params() });
+      const countRes = await get(owner, '/count', { ...period, ...params() });
 
       expect(feedRes.status).toBe(403);
       expect(feedRes.body.code).toBe(code);
-      expect(listRes.body.code).toBe(code);
+      expect(countRes.body.code).toBe(code);
     });
 
     it('checks the request shape first, then refuses a member of another space', async () => {
@@ -404,26 +404,31 @@ describe('Transactions feed against a control selection (e2e)', () => {
     });
   });
 
-  describe('older API and OpenAPI', () => {
-    it('keeps GET /transactions a plain array of the same rows', async () => {
-      const q = { ...period, time_zone: 'UTC' };
-      const res = await get(owner, '', period);
-
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.map((row: { id: string }) => row.id)).toEqual(expected(q).map((row) => row.id));
-      expect(schemaErrors(document, okResponseSchema(document, '/transactions'), res.body)).toEqual([]);
-    });
-
+  describe('count, latest and OpenAPI', () => {
+    // no test of this suite writes, so the selection is the same for both
     it('keeps /count and /latest, and /count agrees with the feed', async () => {
-      for (const params of [{}, { q: 'кофе' }, { kind: 'regular' }]) {
+      for (const params of [
+        {},
+        { q: 'кофе' },
+        { q: 'наличн' },
+        { kind: 'regular' },
+        { kind: 'initial_balance' },
+        { transaction_type: TransactionType.INCOME },
+        { category_id: archived.id },
+        { wallet_id: card.id, q: 'кофе' },
+        { from: '2026-03-29T12:00:00.000Z', to: '2026-03-29T12:00:00.000Z' },
+      ]) {
+        const q = { ...period, time_zone: 'UTC', ...params } as FeedQuery;
         const count = await get(owner, '/count', { ...period, ...params });
-        const page = await feed({ ...period, time_zone: 'UTC', ...params, limit: 1 });
+        const page = await feed({ ...q, limit: 1 });
 
+        expect(expected(q).length).toBeGreaterThan(0);
         expect(count.body).toEqual({ count: page.summary.count });
+        expect(page.summary.count).toBe(expected(q).length);
       }
 
       const latest = await get(owner, '/latest', {});
-      const newest = expected({ from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.000Z', time_zone: 'UTC' });
+      const newest = expected({ from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.999Z', time_zone: 'UTC' });
       expect(latest.body.id).toBe(newest[0].id);
     });
 
@@ -455,7 +460,6 @@ describe('Transactions feed against a control selection (e2e)', () => {
         ].sort(),
       );
       expect(names('/transactions/count')).toContain('q');
-      expect(names('/transactions')).not.toContain('q');
     });
   });
 });

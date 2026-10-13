@@ -13,6 +13,9 @@ export const IsIsoDate = () =>
 
 export const TIMESTAMP_MIN = new Date('1970-01-01T00:00:01.000Z');
 export const TIMESTAMP_MAX = new Date('2038-01-19T03:14:07.000Z');
+// The last value a TIMESTAMP(3) column holds. Writes stop at TIMESTAMP_MAX,
+// but a record stored before that rule may lie up to here, so reads do not.
+export const STORED_TIMESTAMP_MAX = new Date('2038-01-19T03:14:07.999Z');
 
 // A MySQL TIMESTAMP column rejects anything outside this range at insert time.
 export const IsInTimestampRange = () =>

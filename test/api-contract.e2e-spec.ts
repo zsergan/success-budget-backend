@@ -138,6 +138,39 @@ describe('API contract (e2e)', () => {
     );
   });
 
+  describe('transaction routes', () => {
+    it('reads the history only through the feed: the unpaged list is gone', async () => {
+      const prefix = '/api/v1/spaces/{spaceId}/transactions';
+      const routes = Object.fromEntries(
+        Object.entries(document.paths)
+          .filter(([path]) => path === prefix || path.startsWith(`${prefix}/`))
+          .map(([path, item]) => [path.slice(prefix.length), Object.keys(item).sort()]),
+      );
+
+      expect(routes).toEqual({
+        '': ['post'],
+        '/feed': ['get'],
+        '/count': ['get'],
+        '/latest': ['get'],
+        '/operations/{operationId}': ['get'],
+        '/{transactionId}': ['delete', 'get', 'patch'],
+      });
+    });
+
+    it('answers an authorized GET /transactions with 404 and still creates with POST', async () => {
+      const s = await space();
+      const created = await createTransaction(s, s.expenses[0], '10').expect(201);
+
+      for (const query of ['', '?from=2000-01-01T00:00:00.000Z&to=2037-12-31T23:59:59.999Z']) {
+        const list = await api(s.member).get(`/transactions${query}`).expect(404);
+        expect(list.body.code).toBe('NOT_FOUND');
+      }
+
+      const read = await api(s.member).get(`/transactions/${created.body.transaction.id}`).expect(200);
+      expect(read.body).toMatchObject({ amount: '10.00', version: 1 });
+    });
+  });
+
   describe('editing is PATCH', () => {
     it('updates with PATCH and has no PUT on a transaction', async () => {
       const s = await space();

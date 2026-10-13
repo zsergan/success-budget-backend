@@ -113,7 +113,11 @@ export class UpdateTransactionResult {
 }
 
 export class TransactionCount {
-  @ApiProperty({ type: 'integer', minimum: 0, description: 'Rows the list returns for the same query.' })
+  @ApiProperty({
+    type: 'integer',
+    minimum: 0,
+    description: 'The feed summary.count for the same period, q and filters.',
+  })
   count!: number;
 }
 

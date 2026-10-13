@@ -243,7 +243,7 @@ export class CategoryItem extends BreakdownItemFields implements CategoryItemSha
   @ApiProperty()
   is_archived!: boolean;
 
-  @ApiProperty({ enum: [true], description: 'Always true: opens the history filtered by category_id.' })
+  @ApiProperty({ enum: [true], description: 'Always true: opens the transactions feed filtered by category_id.' })
   opens_history!: boolean;
 }
 
@@ -269,7 +269,7 @@ export class WalletItem extends BreakdownItemFields implements WalletItemShape {
   @ApiProperty({ enum: [false] })
   is_archived!: boolean;
 
-  @ApiProperty({ enum: [true], description: 'Always true: opens the history filtered by wallet_id.' })
+  @ApiProperty({ enum: [true], description: 'Always true: opens the transactions feed filtered by wallet_id.' })
   opens_history!: boolean;
 }
 

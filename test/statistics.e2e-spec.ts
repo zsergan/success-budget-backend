@@ -409,17 +409,18 @@ describe('Statistics blocks (e2e)', () => {
 
       for (const categoryId of [gifts.id, realOther]) {
         const history = await api(member)
-          .get(`${url}/transactions`)
+          .get(`${url}/transactions/feed`)
           .query({
             from: body.period.from,
             to: body.period.actual_to,
+            time_zone: 'UTC',
             transaction_type: 'income',
             category_id: categoryId,
           })
           .expect(200);
         const item = body.by_category.primary_items.find((row: { id: number }) => row.id === categoryId);
 
-        expect(history.body.map((tx: { amount: string }) => tx.amount)).toEqual([item.amount]);
+        expect(history.body.items.map((tx: { amount: string }) => tx.amount)).toEqual([item.amount]);
       }
     } finally {
       await deleteUsers(testApp.dataSource, [member.userId]);
@@ -693,11 +694,12 @@ describe('Statistics blocks (e2e)', () => {
 
   describe('history drill-down', () => {
     const cents = (amount: string) => Math.round(Number(amount) * 100);
-    const history = (query: Record<string, string | number>) =>
-      api(owner)
-        .get(`${base(owner)}/transactions`)
-        .query(query)
+    const feed = (member: Member, query: Record<string, string | number>) =>
+      api(member)
+        .get(`${base(member)}/transactions/feed`)
+        .query({ time_zone: 'UTC', limit: 100, ...query })
         .expect(200);
+    const history = async (query: Record<string, string | number>) => (await feed(owner, query)).body.items;
 
     interface OpenableItem {
       kind: 'category' | 'wallet';
@@ -728,24 +730,21 @@ describe('Statistics blocks (e2e)', () => {
     const expectHistoryToMatch = async (member: Member, breakdown: Breakdown, items: OpenableItem[]) => {
       for (const item of items) {
         const query = drillDownQuery(breakdown, item);
-        const res = await api(member)
-          .get(`${base(member)}/transactions`)
-          .query(query)
-          .expect(200);
+        const items = (await feed(member, query)).body.items;
         const count = await api(member)
           .get(`${base(member)}/transactions/count`)
           .query(query)
           .expect(200);
-        const types = [...new Set(res.body.map((tx: { transaction_type: string }) => tx.transaction_type))];
-        const kinds = [...new Set(res.body.map((tx: { kind: string }) => tx.kind))];
-        const sum = res.body.reduce((total: number, tx: { amount: string }) => total + cents(tx.amount), 0);
+        const types = [...new Set(items.map((tx: { transaction_type: string }) => tx.transaction_type))];
+        const kinds = [...new Set(items.map((tx: { kind: string }) => tx.kind))];
+        const sum = items.reduce((total: number, tx: { amount: string }) => total + cents(tx.amount), 0);
 
         expect({ query, types, kinds, sum, count: count.body.count }).toEqual({
           query,
           types: [breakdown.transaction_type],
           kinds: ['regular'],
           sum: cents(item.amount),
-          count: res.body.length,
+          count: items.length,
         });
       }
     };
@@ -801,11 +800,11 @@ describe('Statistics blocks (e2e)', () => {
 
         const bounds = { from: '2026-08-31T21:00:00.000Z', to: AS_OF, transaction_type: 'income', wallet_id: card };
         const amounts = async (query: Record<string, string | number>) => {
-          const res = await api(member).get(`${url}/transactions`).query(query).expect(200);
+          const items = (await feed(member, query)).body.items;
           const count = await api(member).get(`${url}/transactions/count`).query(query).expect(200);
 
-          expect(count.body.count).toBe(res.body.length);
-          return res.body.map((tx: { amount: string }) => tx.amount).sort();
+          expect(count.body.count).toBe(items.length);
+          return items.map((tx: { amount: string }) => tx.amount).sort();
         };
 
         // without kind the history keeps the starting balance
@@ -876,11 +875,12 @@ describe('Statistics blocks (e2e)', () => {
         expect(schemaErrors(document, okResponseSchema(document, '/statistics/breakdown'), body)).toEqual([]);
 
         // without the type filter the category would also list the income
-        const untyped = await api(member)
-          .get(`${base(member)}/transactions`)
-          .query({ from: body.period.from, to: body.period.actual_to, category_id: mixed.id })
-          .expect(200);
-        expect(untyped.body).toHaveLength(2);
+        const untyped = await feed(member, {
+          from: body.period.from,
+          to: body.period.actual_to,
+          category_id: mixed.id,
+        });
+        expect(untyped.body.items).toHaveLength(2);
 
         await expectHistoryToMatch(member, body, openableItems(body));
       } finally {
@@ -898,8 +898,8 @@ describe('Statistics blocks (e2e)', () => {
       const inside = await history({ from: summary.body.period.from, to: summary.body.period.to });
       const before = await history({ from: summary.body.period.from, to: '2026-07-31T20:59:59.998Z' });
 
-      expect(inside.body.map((tx: { amount: string }) => tx.amount)).toEqual(['7.77']);
-      expect(before.body).toEqual([]);
+      expect(inside.map((tx: { amount: string }) => tx.amount)).toEqual(['7.77']);
+      expect(before).toEqual([]);
     });
 
     it('filters by an archived category, only by type or by both', async () => {
@@ -911,12 +911,10 @@ describe('Statistics blocks (e2e)', () => {
       // the starting balance is dated when the wallet was created, i.e. now
       const incomes = await history({ ...bounds, to: new Date().toISOString(), transaction_type: 'income' });
 
-      expect(byCategory.body.map((tx: { amount: string }) => tx.amount)).toEqual(['80.00']);
+      expect(byCategory.map((tx: { amount: string }) => tx.amount)).toEqual(['80.00']);
       // unlike statistics, the history keeps the starting balance
-      expect(incomes.body.map((tx: { amount: string }) => tx.amount).sort()).toEqual(['1000.00', '3000.00']);
-      await history({ ...bounds, category_id: archived.id, transaction_type: 'income' }).then((res) =>
-        expect(res.body).toEqual([]),
-      );
+      expect(incomes.map((tx: { amount: string }) => tx.amount).sort()).toEqual(['1000.00', '3000.00']);
+      expect(await history({ ...bounds, category_id: archived.id, transaction_type: 'income' })).toEqual([]);
     });
 
     it('refuses a deleted, foreign or system resource and a malformed filter', async () => {
@@ -935,15 +933,15 @@ describe('Statistics blocks (e2e)', () => {
 
       expect(body.by_wallet.deleted_wallets.opens_history).toBe(false);
       await api(owner)
-        .get(`${base(owner)}/transactions`)
+        .get(`${base(owner)}/transactions/count`)
         .query({ wallet_id: deletedWallet[0].id })
         .expect(403);
       await api(owner)
-        .get(`${base(owner)}/transactions`)
+        .get(`${base(owner)}/transactions/count`)
         .query({ category_id: systemCategory[0].id })
         .expect(403);
       await api(owner)
-        .get(`${base(owner)}/transactions`)
+        .get(`${base(owner)}/transactions/count`)
         .query({ category_id: outsiderCategories.body.expenses[0].id })
         .expect(403);
 
@@ -955,16 +953,16 @@ describe('Statistics blocks (e2e)', () => {
         { kind: '' },
       ]) {
         const res = await api(owner)
-          .get(`${base(owner)}/transactions`)
+          .get(`${base(owner)}/transactions/count`)
           .query(query)
           .expect(400);
 
         expect(res.body.message).toEqual([expect.objectContaining({ field: Object.keys(query)[0] })]);
       }
 
-      for (const path of ['transactions', 'transactions/count']) {
+      for (const path of [`transactions/feed?from=${AS_OF}&to=${AS_OF}&time_zone=UTC&`, 'transactions/count?']) {
         const res = await api(owner)
-          .get(`${base(owner)}/${path}?kind=regular&kind=initial_balance`)
+          .get(`${base(owner)}/${path}kind=regular&kind=initial_balance`)
           .expect(400);
 
         // field is "kind" in the tsc build; under @swc/jest the enum becomes the

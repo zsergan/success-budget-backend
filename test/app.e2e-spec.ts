@@ -245,10 +245,15 @@ describe('App (e2e)', () => {
     expect(walletsResponse.body.total_balance).toBe(200);
 
     const transactionsResponse = await request(app.getHttpServer())
-      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions/feed`)
+      .query({
+        from: new Date(Date.now() - 86400000).toISOString(),
+        to: new Date(Date.now() + 86400000).toISOString(),
+        time_zone: 'UTC',
+      })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const initialBalanceTransaction = transactionsResponse.body.find(
+    const initialBalanceTransaction = transactionsResponse.body.items.find(
       (transaction: TransactionRow) => transaction.wallet?.id === savingsWalletId,
     );
     expect(initialBalanceTransaction.category.name).toBe('Initial balance');
@@ -350,28 +355,29 @@ describe('App (e2e)', () => {
     const expenseTransactionId = expenseResponse.body.transaction.id;
 
     const withinRange = await request(app.getHttpServer())
-      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions/feed`)
       .query({
         from: new Date(Date.now() - 86400000).toISOString(),
         to: new Date(Date.now() + 86400000).toISOString(),
+        time_zone: 'UTC',
       })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(withinRange.body.length).toBeGreaterThanOrEqual(2);
-    for (const transaction of withinRange.body) {
+    expect(withinRange.body.items.length).toBeGreaterThanOrEqual(2);
+    for (const transaction of withinRange.body.items) {
       expect(transaction.wallet_id).toBeUndefined();
       expect(transaction.category_id).toBeUndefined();
       expect(transaction.currency_id).toBeUndefined();
     }
 
     const outsideRange = await request(app.getHttpServer())
-      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
-      .query({ from: '2000-01-01T00:00:00.000Z', to: '2000-01-31T23:59:59.999Z' })
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions/feed`)
+      .query({ from: '2000-01-01T00:00:00.000Z', to: '2000-01-31T23:59:59.999Z', time_zone: 'UTC' })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    expect(outsideRange.body).toHaveLength(0);
+    expect(outsideRange.body.items).toHaveLength(0);
 
     const latestResponse = await request(app.getHttpServer())
       .get(`/api/v1/spaces/${personalSpaceId}/transactions/latest`)
@@ -976,7 +982,7 @@ describe('App (e2e)', () => {
         ErrorMessages.FORBIDDEN_LIMIT,
       ],
       [
-        () => request(server).get(`/api/v1/spaces/${personalSpaceId}/transactions`).set('Authorization', auth),
+        () => request(server).get(`/api/v1/spaces/${personalSpaceId}/transactions/count`).set('Authorization', auth),
         ErrorMessages.FORBIDDEN_SPACE,
       ],
       [
@@ -1052,16 +1058,21 @@ describe('App (e2e)', () => {
     expect(latestResponse.body.wallet).toBeNull();
 
     const listResponse = await request(app.getHttpServer())
-      .get(`/api/v1/spaces/${personalSpaceId}/transactions`)
+      .get(`/api/v1/spaces/${personalSpaceId}/transactions/feed`)
       .query({
         from: new Date(Date.now() - 86400000).toISOString(),
         to: new Date(Date.now() + 86400000).toISOString(),
+        time_zone: 'UTC',
       })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const listed = listResponse.body.find((transaction: TransactionRow) => transaction.id === expenseTransactionId);
+    const listed = listResponse.body.items.find(
+      (transaction: TransactionRow) => transaction.id === expenseTransactionId,
+    );
     expect(listed.wallet).toBeNull();
-    expect(listResponse.body.some((transaction: TransactionRow) => transaction.wallet?.id === walletId)).toBe(true);
+    expect(listResponse.body.items.some((transaction: TransactionRow) => transaction.wallet?.id === walletId)).toBe(
+      true,
+    );
 
     const rejected = await request(app.getHttpServer())
       .post(`/api/v1/spaces/${personalSpaceId}/transactions`)

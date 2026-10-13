@@ -185,22 +185,67 @@ describe('TransactionQueriesService', () => {
 
   const spaceWallets = () => queryBuilder.getRawMany.mockResolvedValueOnce([{ id: 3 }, { id: 4 }]);
 
-  describe('getForAllWallets', () => {
+  describe('countForAllWallets', () => {
     beforeEach(spaceWallets);
 
     it('reads nothing when the space has no wallets', async () => {
       queryBuilder.getRawMany.mockReset().mockResolvedValue([]);
 
-      expect(await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'))).toEqual([]);
-      expect(queryBuilder.getMany).not.toHaveBeenCalled();
+      expect(await service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'))).toBe(0);
+      expect(queryBuilder.getCount).not.toHaveBeenCalled();
     });
 
-    it('filters transactions across all of a space wallets by date range', async () => {
+    it.each([
+      [
+        'beyond both ends',
+        '1960-01-01T00:00:00.000Z',
+        '2100-01-01T00:00:00.000Z',
+        '1970-01-01T00:00:01.000Z',
+        '2038-01-19T03:14:07.999Z',
+      ],
+      [
+        'ending inside the last stored second',
+        '2038-01-19T03:14:07.000Z',
+        '2038-01-19T03:14:07.500Z',
+        '2038-01-19T03:14:07.000Z',
+        '2038-01-19T03:14:07.500Z',
+      ],
+      [
+        'starting at the last stored millisecond',
+        '2038-01-19T03:14:07.999Z',
+        '2100-01-01T00:00:00.000Z',
+        '2038-01-19T03:14:07.999Z',
+        '2038-01-19T03:14:07.999Z',
+      ],
+    ])('bounds a period %s by what a TIMESTAMP(3) column holds', async (_, from, to, storedFrom, storedTo) => {
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await service.countForAllWallets(9, new Date(from), new Date(to));
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp >= :from', {
+        from: new Date(storedFrom),
+      });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to: new Date(storedTo) });
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('FALSE');
+    });
+
+    it.each([
+      ['after the last stored millisecond', '2038-01-19T03:14:08.000Z', '2100-01-01T00:00:00.000Z'],
+      ['before the first stored second', '1960-01-01T00:00:00.000Z', '1970-01-01T00:00:00.999Z'],
+    ])('selects nothing for a period wholly %s', async (_, from, to) => {
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await service.countForAllWallets(9, new Date(from), new Date(to));
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('FALSE');
+    });
+
+    it('counts across all of a space wallets in the period', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
-      queryBuilder.getMany.mockResolvedValue([]);
+      queryBuilder.getCount.mockResolvedValue(0);
 
-      await service.getForAllWallets(9, from, to);
+      await service.countForAllWallets(9, from, to);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
@@ -209,19 +254,10 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
 
-    it('orders newest first, then by id, so equal timestamps keep one order', async () => {
-      queryBuilder.getMany.mockResolvedValue([]);
-
-      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'));
-
-      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
-      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
-    });
-
     it('adds only the filters that are set', async () => {
-      queryBuilder.getMany.mockResolvedValue([]);
+      queryBuilder.getCount.mockResolvedValue(0);
 
-      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), {
+      await service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), {
         transactionType: TransactionType.EXPENSE,
         walletId: 3,
       });
@@ -241,53 +277,15 @@ describe('TransactionQueriesService', () => {
       [TransactionKind.REGULAR, 'category.is_system = 0'],
       [TransactionKind.INITIAL_BALANCE, 'category.is_system = 1'],
     ])('filters kind %s by the system flag of the category', async (kind, condition) => {
-      queryBuilder.getMany.mockResolvedValue([]);
+      queryBuilder.getCount.mockResolvedValue(0);
 
-      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { kind });
+      await service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { kind });
 
-      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
+      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(condition);
     });
-  });
 
-  describe('search', () => {
-    it.each([
-      ['coffee', '%coffee%'],
-      ['100%', '%100!%%'],
-      ['a_b', '%a!_b%'],
-      ['wow!', '%wow!!%'],
-      ['back\\slash', '%back\\slash%'],
-    ])('escapes %p as %p', (search, pattern) => {
-      expect(toSearchPattern(search)).toBe(pattern);
-    });
-
-    it('binds the trimmed text and compares in a fixed collation', async () => {
-      spaceWallets();
-      queryBuilder.getMany.mockResolvedValue([]);
-
-      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '  latte ' });
-
-      const [condition, parameters] = queryBuilder.andWhere.mock.calls.find(([sql]) => String(sql).includes('LIKE'));
-      expect(parameters).toEqual({ searchPattern: '%latte%' });
-      expect(condition).toContain('transaction.description');
-      expect(condition).toContain('category.name');
-      expect(condition).toContain('wallet.wallet_name');
-      expect(condition.match(/COLLATE utf8mb4_0900_ai_ci/g)).toHaveLength(6);
-      expect(condition).not.toContain('latte');
-    });
-
-    it('adds no text condition for blank text', async () => {
-      spaceWallets();
-      queryBuilder.getMany.mockResolvedValue([]);
-
-      await service.getForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '   ' });
-
-      expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('countForAllWallets', () => {
-    it('counts with the same scope and filters as the list, without loading rows', async () => {
+    it('counts the joined selection without loading rows', async () => {
       spaceWallets();
       queryBuilder.getCount.mockResolvedValue(4);
 
@@ -306,6 +304,42 @@ describe('TransactionQueriesService', () => {
       });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.category_id = :categoryId', { categoryId: 5 });
       expect(queryBuilder.getMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('search', () => {
+    it.each([
+      ['coffee', '%coffee%'],
+      ['100%', '%100!%%'],
+      ['a_b', '%a!_b%'],
+      ['wow!', '%wow!!%'],
+      ['back\\slash', '%back\\slash%'],
+    ])('escapes %p as %p', (search, pattern) => {
+      expect(toSearchPattern(search)).toBe(pattern);
+    });
+
+    it('binds the trimmed text and compares in a fixed collation', async () => {
+      spaceWallets();
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '  latte ' });
+
+      const [condition, parameters] = queryBuilder.andWhere.mock.calls.find(([sql]) => String(sql).includes('LIKE'));
+      expect(parameters).toEqual({ searchPattern: '%latte%' });
+      expect(condition).toContain('transaction.description');
+      expect(condition).toContain('category.name');
+      expect(condition).toContain('wallet.wallet_name');
+      expect(condition.match(/COLLATE utf8mb4_0900_ai_ci/g)).toHaveLength(6);
+      expect(condition).not.toContain('latte');
+    });
+
+    it('adds no text condition for blank text', async () => {
+      spaceWallets();
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await service.countForAllWallets(9, new Date('2026-01-01'), new Date('2026-01-31'), { search: '   ' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
   });
 
