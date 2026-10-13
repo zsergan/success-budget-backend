@@ -155,11 +155,19 @@ describe('API contract (e2e)', () => {
         '/operations/{operationId}': ['get'],
         '/{transactionId}': ['delete', 'get', 'patch'],
       });
+    });
 
+    it('answers an authorized GET /transactions with 404 and still creates with POST', async () => {
       const s = await space();
-      const list = await api(s.member).get('/transactions').expect(404);
-      expect(list.body.code).toBe('NOT_FOUND');
-      await createTransaction(s, s.expenses[0], '10').expect(201);
+      const created = await createTransaction(s, s.expenses[0], '10').expect(201);
+
+      for (const query of ['', '?from=2000-01-01T00:00:00.000Z&to=2037-12-31T23:59:59.999Z']) {
+        const list = await api(s.member).get(`/transactions${query}`).expect(404);
+        expect(list.body.code).toBe('NOT_FOUND');
+      }
+
+      const read = await api(s.member).get(`/transactions/${created.body.transaction.id}`).expect(200);
+      expect(read.body).toMatchObject({ amount: '10.00', version: 1 });
     });
   });
 
