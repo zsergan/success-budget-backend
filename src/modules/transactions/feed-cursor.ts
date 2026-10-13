@@ -3,7 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 
 import type { FeedPosition, TransactionSelection } from '@modules/transaction-queries/transaction-queries.service';
-import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
+import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
 export const FEED_CURSOR_VERSION = 1;
 export const FEED_CURSOR_MAX_LENGTH = 256;
@@ -81,7 +81,7 @@ const isValidPayload = (payload: CursorPayload): boolean =>
   (payload.d === 'older' || payload.d === 'newer') &&
   Number.isSafeInteger(payload.t) &&
   payload.t >= TIMESTAMP_MIN.getTime() &&
-  payload.t <= TIMESTAMP_MAX.getTime() &&
+  payload.t <= STORED_TIMESTAMP_MAX.getTime() &&
   typeof payload.i === 'string' &&
   isUUID(payload.i) &&
   typeof payload.s === 'string';
