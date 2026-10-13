@@ -7,6 +7,7 @@ import { Wallet } from '@entities/wallet.entity';
 import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
+import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
@@ -20,6 +21,7 @@ export interface TransactionFilters {
 }
 
 // What the history and the feed select: one space, both bounds inclusive.
+// The bounds may lie outside what a TIMESTAMP column holds.
 export interface TransactionSelection {
   spaceId: number;
   from: Date;
@@ -115,6 +117,9 @@ export interface StatisticsTotals {
   expense: bigint;
   expenseCount: number;
 }
+
+const clampToStored = (date: Date): Date =>
+  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), TIMESTAMP_MAX.getTime()));
 
 @Injectable()
 export class TransactionQueriesService {
@@ -367,8 +372,8 @@ export class TransactionQueriesService {
       .setParameters(
         Object.fromEntries(
           intervals.flatMap((interval, i) => [
-            [`intervalFrom${i}`, interval.from],
-            [`intervalTo${i}`, interval.to],
+            [`intervalFrom${i}`, clampToStored(interval.from)],
+            [`intervalTo${i}`, clampToStored(interval.to)],
           ]),
         ),
       )
@@ -597,10 +602,17 @@ export class TransactionQueriesService {
       query.innerJoin('transaction.wallet', 'wallet').innerJoin('transaction.category', 'category');
     }
 
-    query
-      .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to });
+    query.where('transaction.wallet_id IN (:...walletIds)', { walletIds });
+
+    // MySQL is only given the part of the period a TIMESTAMP can hold; a
+    // period wholly outside it selects nothing.
+    if (to < TIMESTAMP_MIN || from > TIMESTAMP_MAX) {
+      query.andWhere('FALSE');
+    } else {
+      query
+        .andWhere('transaction.timestamp >= :from', { from: clampToStored(from) })
+        .andWhere('transaction.timestamp <= :to', { to: clampToStored(to) });
+    }
 
     if (filters.transactionType) {
       query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });

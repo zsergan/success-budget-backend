@@ -60,7 +60,7 @@ describe('Transactions feed period bounds (e2e)', () => {
   });
 
   describe('January 1970', () => {
-    it.failing.each([
+    it.each([
       {
         zone: 'UTC',
         from: '1970-01-01T00:00:00.000Z',
@@ -96,7 +96,7 @@ describe('Transactions feed period bounds (e2e)', () => {
   });
 
   describe('a period outside the stored range', () => {
-    it.failing.each([
+    it.each([
       { name: 'December 1969', from: '1969-12-01T00:00:00.000Z', to: '1969-12-31T23:59:59.999Z' },
       { name: 'February 2038', from: '2038-02-01T00:00:00.000Z', to: '2038-02-28T23:59:59.999Z' },
     ])('returns $name as an empty page', async ({ from, to }) => {
@@ -109,6 +109,66 @@ describe('Transactions feed period bounds (e2e)', () => {
         summary: { count: 0, income: '0.00', expense: '0.00' },
         day_totals: [],
       });
+    });
+  });
+
+  describe('agreement with the count', () => {
+    it.each([
+      { name: 'all of time', from: '1000-01-01T00:00:00.000Z', to: '9999-12-31T23:59:59.999Z' },
+      { name: 'up to the earliest record', from: '1969-01-01T00:00:00.000+05:00', to: '1970-01-01T00:00:01.000Z' },
+      { name: 'just before the earliest record', from: '1960-01-01T00:00:00.000Z', to: '1970-01-01T00:00:00.999Z' },
+      { name: 'from the second day on', from: '1970-01-02T00:00:00.000Z', to: '2100-01-01T00:00:00.000Z' },
+      { name: 'past the stored range', from: '2038-01-19T03:14:07.001Z', to: '2100-01-01T00:00:00.000Z' },
+    ])('counts $name like /count, page after page', async ({ from, to }) => {
+      const period = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+      const count = await get(`${base()}/count?${period}`).expect(200);
+      const history = await get(`${base()}?${period}`).expect(200);
+      const seen: string[] = [];
+      let page = (await get(`${base()}/feed?${period}&time_zone=UTC&limit=1`).expect(200)).body as FeedBody;
+      seen.push(...page.items.map((item) => item.id));
+
+      while (page.page_info.next_cursor) {
+        page = (
+          await get(`${base()}/feed?${period}&time_zone=UTC&limit=1&cursor=${page.page_info.next_cursor}`).expect(200)
+        ).body as FeedBody;
+        expect(page.summary.count).toBe(count.body.count);
+        seen.push(...page.items.map((item) => item.id));
+      }
+
+      expect(page.summary.count).toBe(count.body.count);
+      expect(seen).toEqual(history.body.map((row: { id: string }) => row.id));
+    });
+  });
+
+  describe('around a record', () => {
+    it('opens the earliest record in a period that starts before the stored range', async () => {
+      const res = await get(
+        `${base()}/feed?from=1969-12-31T15:00:00.000Z&to=1970-01-31T14:59:59.999Z&time_zone=Asia/Tokyo&around_id=${earliest}`,
+      ).expect(200);
+
+      expect(res.body.items.map((item: { id: string }) => item.id)).toEqual([secondDay, earliest]);
+    });
+
+    it('answers TRANSACTION_NOT_IN_FEED for a period outside the stored range', async () => {
+      const res = await get(
+        `${base()}/feed?from=1969-12-01T00:00:00.000Z&to=1969-12-31T23:59:59.999Z&time_zone=UTC&around_id=${earliest}`,
+      ).expect(404);
+
+      expect(res.body.code).toBe('TRANSACTION_NOT_IN_FEED');
+    });
+  });
+
+  describe('bounds that stay refused', () => {
+    it.each([
+      { case: 'from after to', query: 'from=2040-01-01T00:00:00.000Z&to=1960-01-01T00:00:00.000Z', field: 'from' },
+      { case: 'no offset', query: 'from=1969-12-01T00:00:00&to=1970-01-31T23:59:59.999Z', field: 'from' },
+      { case: 'not a date', query: 'from=1969-13-01T00:00:00.000Z&to=1970-01-31T23:59:59.999Z', field: 'from' },
+      { case: 'a five-digit year', query: 'from=1970-01-01T00:00:00.000Z&to=+10000-01-01T00:00:00.000Z', field: 'to' },
+    ])('refuses $case', async ({ query, field }) => {
+      const res = await get(`${base()}/feed?${query}&time_zone=UTC`).expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+      expect(res.body.message.map((error: { field: string }) => error.field)).toContain(field);
     });
   });
 });

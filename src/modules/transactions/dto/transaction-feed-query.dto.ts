@@ -4,7 +4,7 @@ import { IsEnum, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateBy } 
 
 import { TransactionKind, TransactionType } from '@shared/enums';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
-import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
+import { IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
 import { IsTimeZone } from '@shared/decorators/is-local-date.decorator';
 import { FEED_CURSOR_MAX_LENGTH } from '../feed-cursor';
 import { MAX_SEARCH_LENGTH, SEARCH_TOO_LONG, isSearchWithinLimit, normalizeSearch } from '../transaction-rules';
@@ -27,7 +27,6 @@ export class TransactionFeedQueryDto {
     example: '2026-09-30T21:00:00.000Z',
   })
   @IsIsoInstant()
-  @IsInTimestampRange()
   from!: string;
 
   @ApiProperty({
@@ -35,7 +34,6 @@ export class TransactionFeedQueryDto {
     example: '2026-10-31T20:59:59.999Z',
   })
   @IsIsoInstant()
-  @IsInTimestampRange()
   to!: string;
 
   @ApiProperty({
