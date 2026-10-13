@@ -138,6 +138,31 @@ describe('API contract (e2e)', () => {
     );
   });
 
+  describe('transaction routes', () => {
+    it('reads the history only through the feed: the unpaged list is gone', async () => {
+      const prefix = '/api/v1/spaces/{spaceId}/transactions';
+      const routes = Object.fromEntries(
+        Object.entries(document.paths)
+          .filter(([path]) => path === prefix || path.startsWith(`${prefix}/`))
+          .map(([path, item]) => [path.slice(prefix.length), Object.keys(item).sort()]),
+      );
+
+      expect(routes).toEqual({
+        '': ['post'],
+        '/feed': ['get'],
+        '/count': ['get'],
+        '/latest': ['get'],
+        '/operations/{operationId}': ['get'],
+        '/{transactionId}': ['delete', 'get', 'patch'],
+      });
+
+      const s = await space();
+      const list = await api(s.member).get('/transactions').expect(404);
+      expect(list.body.code).toBe('NOT_FOUND');
+      await createTransaction(s, s.expenses[0], '10').expect(201);
+    });
+  });
+
   describe('editing is PATCH', () => {
     it('updates with PATCH and has no PUT on a transaction', async () => {
       const s = await space();

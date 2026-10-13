@@ -60,7 +60,6 @@ const IDEMPOTENCY_KEY_HEADER = {
     'returns the original result instead of applying the write again.',
 };
 
-// the list and its count take the same query
 const ApiHistoryQuery = () =>
   applyDecorators(
     ApiQuery({
@@ -156,7 +155,7 @@ export class TransactionsController {
   })
   @ApiOkResponse({
     type: TransactionCount,
-    description: 'The number of rows GET /transactions returns; with q, the feed summary.count of the same query.',
+    description: 'The summary.count of the feed for the same period, q and filters.',
   })
   @Get('count')
   async count(
@@ -191,27 +190,6 @@ export class TransactionsController {
     @Param('operationId') operationId: string,
   ): Promise<TransactionOperationView> {
     return this.transactionsService.getOperation(req.user.id, spaceId, operationId);
-  }
-
-  @ApiHistoryQuery()
-  @ApiOkResponse({ type: TransactionView, isArray: true })
-  @Get()
-  async getAll(
-    @Request() req: AuthedRequest,
-    @Param('spaceId', ParseIntPipe) spaceId: number,
-    @Query('from', ParseOptionalDatePipe) from: Date = getStartOfMonth(new Date()),
-    @Query('to', ParseOptionalDatePipe) to: Date = getEndOfMonth(new Date()),
-    @Query('transaction_type', new ParseOptionalEnumPipe(TransactionType)) transactionType?: TransactionType,
-    @Query('kind', new ParseOptionalEnumPipe(TransactionKind)) kind?: TransactionKind,
-    @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
-    @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
-  ) {
-    return this.transactionsService.getAll(req.user.id, spaceId, from, to, {
-      transactionType,
-      kind,
-      categoryId,
-      walletId,
-    });
   }
 
   @ApiOkResponse({ type: TransactionView })
