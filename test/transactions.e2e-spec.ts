@@ -828,7 +828,7 @@ describe('Transactions (e2e)', () => {
   });
 
   describe('history feed and count', () => {
-    it('orders equal timestamps by id and counts the rows the list returns, initial balance included', async () => {
+    it('orders equal timestamps by id and counts the records the feed returns, initial balance included', async () => {
       const member = await createVerifiedMember(testApp, 'transactions-history');
 
       try {
