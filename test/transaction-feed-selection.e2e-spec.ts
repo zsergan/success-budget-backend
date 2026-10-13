@@ -50,18 +50,17 @@ describe('Transaction feed selection (e2e)', () => {
 
   const search = async (text: string) => (await select(text)).map((row) => row.description);
 
-  // the records of the period, newest first, read from the table
-  const stored = async (): Promise<string[]> => {
-    const rows: { id: string }[] = await testApp.dataSource.query(
-      `SELECT transaction.id FROM transactions transaction
-         JOIN wallets wallet ON wallet.id = transaction.wallet_id
-         WHERE wallet.space_id = ? AND transaction.timestamp BETWEEN ? AND ?
-         ORDER BY transaction.timestamp DESC, transaction.id DESC`,
-      [member.spaceId, from, to],
-    );
-
-    return rows.map((row) => row.id);
-  };
+  // the records of the period, newest first; tree, cafe and percent share a timestamp, so their ids decide
+  const history = () => [
+    ids.quote,
+    ids.cashOnly,
+    ids.everywhere,
+    ids.salary,
+    ids.literal,
+    ...[ids.tree, ids.cafe, ids.percent].sort().reverse(),
+    ids.latte,
+    ids.initial,
+  ];
 
   beforeAll(async () => {
     testApp = await createTestApp();
@@ -246,40 +245,46 @@ describe('Transaction feed selection (e2e)', () => {
       }
     };
 
-    it.each([undefined, 'кофе', 'card'])('pages through the rows of the history, search %p', async (text) => {
-      const sel = selection(text);
-      const matching = new Set((await select(text)).map((row) => row.id));
-      const history = (await stored()).filter((id) => matching.has(id));
+    it.each([
+      [undefined, () => history()],
+      // the category of every record but salary, literal and initial
+      ['кофе', () => history().filter((id) => ![ids.salary, ids.literal, ids.initial].includes(id))],
+      // the wallet of every record but cashOnly
+      ['card', () => history().filter((id) => id !== ids.cashOnly)],
+    ])('pages through the records of the history, search %p', async (text, expected) => {
+      for (const limit of [1, 2, 3, 100]) {
+        const seen = await walk(selection(text), limit);
 
-      expect(await walk(sel, 2)).toEqual(history);
-      expect(await walk(sel, 100)).toEqual(history);
+        expect(new Set(seen).size).toBe(seen.length);
+        expect(seen).toEqual(expected());
+      }
     });
 
     it('reads newer records before a position, newest first', async () => {
-      const history = await stored();
-      const middle = await transactions.findOneByOrFail({ id: history[5] });
+      const ordered = history();
+      const middle = await transactions.findOneByOrFail({ id: ordered[5] });
 
       const page = await queries.getFeedPage(selection(), {
         limit: 3,
         before: { timestamp: middle.timestamp, id: middle.id },
       });
 
-      expect(page.items.map((row) => row.id)).toEqual(history.slice(2, 5));
+      expect(page.items.map((row) => row.id)).toEqual(ordered.slice(2, 5));
       expect(page.hasMore).toBe(true);
 
       const top = await queries.getFeedPage(selection(), {
         limit: 10,
         before: { timestamp: middle.timestamp, id: middle.id },
       });
-      expect(top.items.map((row) => row.id)).toEqual(history.slice(0, 5));
+      expect(top.items.map((row) => row.id)).toEqual(ordered.slice(0, 5));
       expect(top.hasMore).toBe(false);
     });
 
     it('orders records of one timestamp by id, descending', async () => {
       const sameInstant = [ids.tree, ids.cafe, ids.percent].sort().reverse();
-      const history = await stored();
+      const seen = await walk(selection(), 1);
 
-      expect(history.filter((id) => sameInstant.includes(id))).toEqual(sameInstant);
+      expect(seen.filter((id) => sameInstant.includes(id))).toEqual(sameInstant);
     });
 
     it('sums the selection, leaving initial balances out of income and expense', async () => {
