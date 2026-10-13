@@ -47,12 +47,12 @@ touch are the source of truth.
 All routes are under `/api/v1`, require the bearer token and membership in
 the space; a non-member gets the usual `403 FORBIDDEN_SPACE`.
 
-| Method | Route                                      | Block                                                 |
-| ------ | ------------------------------------------ | ----------------------------------------------------- |
-| `GET`  | `/spaces/:spaceId/statistics/summary`      | Income, Expense, Net, comparison with previous period |
-| `GET`  | `/spaces/:spaceId/statistics/trend`        | Income and Expense per bucket                         |
-| `GET`  | `/spaces/:spaceId/statistics/breakdown`    | Expenses or income by category **and** by wallet      |
-| `GET`  | `/spaces/:spaceId/transactions` (extended) | History filtered by category or wallet                |
+| Method | Route                                   | Block                                                 |
+| ------ | --------------------------------------- | ----------------------------------------------------- |
+| `GET`  | `/spaces/:spaceId/statistics/summary`   | Income, Expense, Net, comparison with previous period |
+| `GET`  | `/spaces/:spaceId/statistics/trend`     | Income and Expense per bucket                         |
+| `GET`  | `/spaces/:spaceId/statistics/breakdown` | Expenses or income by category **and** by wallet      |
+| `GET`  | `/spaces/:spaceId/transactions/feed`    | History filtered by category or wallet, paged         |
 
 The three blocks take the same period parameters and select transactions by
 the same rules; Breakdown alone also takes `transaction_type`. Each one fails
@@ -177,7 +177,7 @@ interface StatisticsPeriod {
 
 Transactions are selected with `from <= timestamp <= actual_to`, inclusive
 on both ends like the history filter, so `from` and `actual_to` can be
-passed to `GET /transactions` unchanged.
+passed to `GET /transactions/feed` unchanged.
 
 ### Previous period
 
@@ -491,8 +491,11 @@ refreshes.
 
 ## History filters (drill-down)
 
-`GET /spaces/:spaceId/transactions` gains four optional query parameters.
-This is the minimal support the Stats tab needs to let the user re-check a
+The history is read through `GET /spaces/:spaceId/transactions/feed`, in
+cursor pages, and counted by `GET .../transactions/count`; both take four
+optional filters (see the
+[transactions contract](transactions-contract.md#history-selection)). This
+is the minimal support the Stats tab needs to let the user re-check a
 number; the History screen itself is not redesigned here.
 
 | Param              | Meaning                                                 |
@@ -502,8 +505,8 @@ number; the History screen itself is not redesigned here.
 | `wallet_id`        | Only this wallet (active wallets only; deleted refused) |
 | `kind`             | `regular` (no starting balances) or `initial_balance`   |
 
-- Filters combine with AND, together and with `from`/`to`. Without any of
-  them the endpoint behaves exactly as before.
+- Filters combine with AND, together, with `from`/`to` and with the feed's
+  `q`.
 - A foreign or missing category, the system category, a foreign or missing
   wallet, or a soft-deleted wallet is the existing `403`
   (`FORBIDDEN_CATEGORY` / `FORBIDDEN_WALLET`), checked after membership.
@@ -518,11 +521,10 @@ number; the History screen itself is not redesigned here.
 
 ### Bounds
 
-The existing date semantics of the endpoint are unchanged: `from` and `to`
-are both **inclusive**, compared with millisecond precision; a value
-without `Z`/offset is the server's local time; absent bounds default to the
-server's current calendar month. The statistics bounds are therefore passed
-**verbatim**, as the ISO instants with `Z` the statistics endpoints return:
+`from` and `to` are both **inclusive**, compared with millisecond
+precision. The feed requires them, with `Z` or an offset, and has no
+default. The statistics bounds are therefore passed **verbatim**, as the ISO
+instants with `Z` the statistics endpoints return:
 
 ```
 from = period.from          (first millisecond of the first local day)
@@ -541,9 +543,10 @@ Every item with `opens_history: true` opens the history with **one**
 template, the same for both groupings:
 
 ```
-GET /spaces/:spaceId/transactions
+GET /spaces/:spaceId/transactions/feed
     ?from={period.from}
     &to={period.actual_to}
+    &time_zone={period.time_zone}
     &transaction_type={transaction_type}
     &kind=regular
     &{category_id | wallet_id}={item.id}
@@ -551,7 +554,9 @@ GET /spaces/:spaceId/transactions
 
 - `category_id` for `kind: "category"`, `wallet_id` for `kind: "wallet"`;
   `period` and `transaction_type` are the ones of the same Breakdown
-  response, not the current selection of the screen.
+  response, not the current selection of the screen. `time_zone` only
+  groups the feed's `day_totals`; then `cursor=next_cursor` while
+  scrolling.
 - It applies alike to `primary_items` and to the `children` of `other`.
   `other` itself and `deleted_wallets` have `opens_history: false` and open
   nothing.
@@ -567,11 +572,13 @@ GET /spaces/:spaceId/transactions
   this filter.
 
 With this template the history lists only the transactions of the
-breakdown's type, without starting balances, and they add up exactly to the
-item's `amount` (and their number to the item's share of `total.count`), in
-the same cycle and barring concurrent edits (see Consistency model). The
-same check holds for the whole breakdown: the history with the template
-minus `category_id`/`wallet_id` adds up to `total`.
+breakdown's type, without starting balances. The feed's `summary` of that
+type (`summary.expense` or `summary.income`) equals the item's `amount`, in
+the same cycle and barring concurrent edits (see Consistency model);
+`summary.count`, like `GET .../transactions/count` with the same
+parameters, is the number of transactions behind it. The same check holds for the
+whole breakdown: the template minus `category_id`/`wallet_id` adds up to
+`total`.
 
 ## Worked examples
 
