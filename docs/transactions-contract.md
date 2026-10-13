@@ -361,7 +361,7 @@ the whole selection, computed by the server.
 
 | Parameter          | Required | Rule                                                                                                                                          |
 | ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`, `to`       | yes      | Inclusive instants with `Z` or a UTC offset, within the MySQL `TIMESTAMP` range; `from` after `to` is an error. No defaults, no local time    |
+| `from`, `to`       | yes      | Inclusive instants with `Z` or a UTC offset, no default; may be outside the stored range (below); `from` after `to` is an error               |
 | `time_zone`        | yes      | IANA zone of the device (`Europe/Moscow`); groups the records into days. A fixed offset (`+03:00`) or an unknown zone is an error             |
 | `q`                | no       | Search text, see [Search](#search). Trimmed at both ends, inner whitespace kept; empty after trimming means no search. At most 255 characters |
 | `limit`            | no       | Page size, an integer `1`–`100`; default `50`                                                                                                 |
@@ -376,6 +376,17 @@ The four filters are those of `GET /transactions`, with the same meaning
 and errors. The **selection** is every transaction of the space with
 `from <= timestamp <= to` that matches `q` and the filters; initial
 balances are part of it unless `kind=regular` leaves them out.
+
+`from` and `to` bound a search, not a stored value, so they may lie outside
+the MySQL `TIMESTAMP` range that transaction timestamps are kept in
+(1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z): a month that starts on
+1970-01-01T00:00:00Z, or in a zone east of UTC on the evening of
+1969-12-31, opens like any other. Only the part of the period inside that
+range can hold records; a period wholly outside it is `200` with no
+`items`, a zero `summary` and no `day_totals`. `GET /transactions` and
+`GET /transactions/count` select the same records for the same bounds, so
+`summary.count` equals the count. Cursors keep the stored range: a cursor
+position is always a stored record's timestamp.
 
 Every malformed parameter is `400 VALIDATION_FAILED` with the parameter as
 `field`, never corrected: a `q` of 256 characters is refused, not cut; a
