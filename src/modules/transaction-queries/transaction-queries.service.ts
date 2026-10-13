@@ -7,7 +7,7 @@ import { Wallet } from '@entities/wallet.entity';
 import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
-import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
+import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
@@ -119,7 +119,7 @@ export interface StatisticsTotals {
 }
 
 const clampToStored = (date: Date): Date =>
-  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), TIMESTAMP_MAX.getTime()));
+  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), STORED_TIMESTAMP_MAX.getTime()));
 
 @Injectable()
 export class TransactionQueriesService {
@@ -580,7 +580,7 @@ export class TransactionQueriesService {
 
     // MySQL is only given the part of the period a TIMESTAMP can hold; a
     // period wholly outside it selects nothing.
-    if (to < TIMESTAMP_MIN || from > TIMESTAMP_MAX) {
+    if (to < TIMESTAMP_MIN || from > STORED_TIMESTAMP_MAX) {
       query.andWhere('FALSE');
     } else {
       query

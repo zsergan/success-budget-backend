@@ -195,6 +195,51 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.getCount).not.toHaveBeenCalled();
     });
 
+    it.each([
+      [
+        'beyond both ends',
+        '1960-01-01T00:00:00.000Z',
+        '2100-01-01T00:00:00.000Z',
+        '1970-01-01T00:00:01.000Z',
+        '2038-01-19T03:14:07.999Z',
+      ],
+      [
+        'ending inside the last stored second',
+        '2038-01-19T03:14:07.000Z',
+        '2038-01-19T03:14:07.500Z',
+        '2038-01-19T03:14:07.000Z',
+        '2038-01-19T03:14:07.500Z',
+      ],
+      [
+        'starting at the last stored millisecond',
+        '2038-01-19T03:14:07.999Z',
+        '2100-01-01T00:00:00.000Z',
+        '2038-01-19T03:14:07.999Z',
+        '2038-01-19T03:14:07.999Z',
+      ],
+    ])('bounds a period %s by what a TIMESTAMP(3) column holds', async (_, from, to, storedFrom, storedTo) => {
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await service.countForAllWallets(9, new Date(from), new Date(to));
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp >= :from', {
+        from: new Date(storedFrom),
+      });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to: new Date(storedTo) });
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('FALSE');
+    });
+
+    it.each([
+      ['after the last stored millisecond', '2038-01-19T03:14:08.000Z', '2100-01-01T00:00:00.000Z'],
+      ['before the first stored second', '1960-01-01T00:00:00.000Z', '1970-01-01T00:00:00.999Z'],
+    ])('selects nothing for a period wholly %s', async (_, from, to) => {
+      queryBuilder.getCount.mockResolvedValue(0);
+
+      await service.countForAllWallets(9, new Date(from), new Date(to));
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('FALSE');
+    });
+
     it('counts across all of a space wallets in the period', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
