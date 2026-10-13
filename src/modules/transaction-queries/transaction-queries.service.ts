@@ -3,9 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
+import { Wallet } from '@entities/wallet.entity';
 import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
+import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
@@ -14,7 +16,63 @@ export interface TransactionFilters {
   kind?: TransactionKind;
   categoryId?: number;
   walletId?: number;
+  // trimmed here too; blank means no text condition
+  search?: string;
 }
+
+// What the history and the feed select: one space, both bounds inclusive.
+// The bounds may lie outside what a TIMESTAMP column holds.
+export interface TransactionSelection {
+  spaceId: number;
+  from: Date;
+  to: Date;
+  filters?: TransactionFilters;
+}
+
+// A place in the history order (timestamp, then id, both descending).
+export interface FeedPosition {
+  timestamp: Date;
+  id: string;
+}
+
+export interface FeedPageRequest {
+  limit: number;
+  // older than this position; or newer than `before`, never both
+  after?: FeedPosition;
+  before?: FeedPosition;
+}
+
+export interface FeedPage {
+  // newest first
+  items: LoadedTransaction[];
+  // more records of the selection further in the direction that was read
+  hasMore: boolean;
+}
+
+// in cents; initial balances count in `count` only
+export interface FeedSummary {
+  count: number;
+  income: bigint;
+  expense: bigint;
+}
+
+export interface TimeInterval {
+  from: Date;
+  to: Date;
+}
+
+// Searched text is compared in one fixed collation, whatever the columns or
+// the server default use: case- and accent-insensitive, Cyrillic included.
+export const SEARCH_COLLATION = 'utf8mb4_0900_ai_ci';
+const SEARCH_ESCAPE = '!';
+
+export const toSearchPattern = (search: string): string => `%${search.replace(/[!%_]/g, (char) => `!${char}`)}%`;
+
+const searchable = (expression: string) => `CONVERT(${expression} USING utf8mb4) COLLATE ${SEARCH_COLLATION}`;
+
+// `pattern` is a bound parameter holding toSearchPattern() of the text.
+export const searchMatch = (column: string, pattern: string): string =>
+  `${searchable(column)} LIKE ${searchable(pattern)} ESCAPE '${SEARCH_ESCAPE}'`;
 
 // in cents
 export interface WalletPeriodTotals {
@@ -59,6 +117,9 @@ export interface StatisticsTotals {
   expense: bigint;
   expenseCount: number;
 }
+
+const clampToStored = (date: Date): Date =>
+  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), TIMESTAMP_MAX.getTime()));
 
 @Injectable()
 export class TransactionQueriesService {
@@ -181,9 +242,14 @@ export class TransactionQueriesService {
     to: Date,
     filters: TransactionFilters = {},
   ): Promise<LoadedTransaction[]> {
-    const transactions = await this.historyScope(spaceId, from, to, filters)
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
+    const selection = { spaceId, from, to, filters };
+    const walletIds = await this.selectionWallets(selection);
+
+    if (walletIds.length === 0) {
+      return [];
+    }
+
+    const transactions = await this.selectionScope(selection, walletIds, undefined, true)
       .orderBy('transaction.timestamp', 'DESC')
       .addOrderBy('transaction.id', 'DESC')
       .getMany();
@@ -193,10 +259,154 @@ export class TransactionQueriesService {
 
   // the number of rows getForAllWallets() returns for the same arguments
   async countForAllWallets(spaceId: number, from: Date, to: Date, filters: TransactionFilters = {}): Promise<number> {
-    return this.historyScope(spaceId, from, to, filters)
-      .innerJoin('transaction.wallet', 'wallet')
-      .innerJoin('transaction.category', 'category')
-      .getCount();
+    const selection = { spaceId, from, to, filters };
+    const walletIds = await this.selectionWallets(selection);
+
+    return walletIds.length === 0 ? 0 : this.selectionScope(selection, walletIds).getCount();
+  }
+
+  // Up to `limit` records of the selection next to a position, in the
+  // history order. One more is read to tell whether the direction goes on.
+  // Each wallet is read as its own branch: with a constant wallet_id, MySQL
+  // walks (wallet_id, timestamp, id) in index order and stops at the limit,
+  // so the cost does not grow with the history; only the branches' heads are
+  // sorted together.
+  async getFeedPage(
+    selection: TransactionSelection,
+    page: FeedPageRequest,
+    manager?: EntityManager,
+  ): Promise<FeedPage> {
+    const walletIds = await this.selectionWallets(selection, manager);
+
+    if (walletIds.length === 0) {
+      return { items: [], hasMore: false };
+    }
+
+    const newer = page.before !== undefined;
+    const position = page.before ?? page.after;
+    const direction = newer ? 'ASC' : 'DESC';
+    const branches = walletIds.map((walletId) => {
+      const branch = this.selectionScope(selection, [walletId], manager)
+        .select('transaction.id', 'id')
+        .addSelect('transaction.timestamp', 'timestamp');
+
+      if (position) {
+        const operator = newer ? '>' : '<';
+        branch.andWhere(
+          `transaction.timestamp ${operator}= :positionTimestamp AND ` +
+            `(transaction.timestamp ${operator} :positionTimestamp OR transaction.id ${operator} :positionId)`,
+          { positionTimestamp: position.timestamp, positionId: position.id },
+        );
+      }
+
+      return branch
+        .orderBy('transaction.timestamp', direction)
+        .addOrderBy('transaction.id', direction)
+        .limit(page.limit + 1)
+        .getQueryAndParameters();
+    });
+
+    const rows: { id: string }[] = await (manager ?? this.transactionRepository.manager).query(
+      `SELECT page.id FROM (${branches.map(([sql]) => `(${sql})`).join(' UNION ALL ')}) page ` +
+        `ORDER BY page.\`timestamp\` ${direction}, page.id ${direction} LIMIT ${page.limit + 1}`,
+      branches.flatMap(([, parameters]) => parameters),
+    );
+    const ids = rows.slice(0, page.limit).map((row) => row.id);
+    const items = await this.loadInOrder(ids, manager);
+
+    return { items: newer ? items.reverse() : items, hasMore: rows.length > page.limit };
+  }
+
+  async getFeedSummary(selection: TransactionSelection, manager?: EntityManager): Promise<FeedSummary> {
+    const walletIds = await this.selectionWallets(selection, manager);
+
+    if (walletIds.length === 0) {
+      return { count: 0, income: 0n, expense: 0n };
+    }
+
+    const row = await this.selectionScope(selection, walletIds, manager)
+      .select('COUNT(*)', 'count')
+      .addSelect(
+        'SUM(CASE WHEN category.is_system = 0 AND transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)',
+        'income',
+      )
+      .addSelect(
+        'SUM(CASE WHEN category.is_system = 0 AND transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)',
+        'expense',
+      )
+      .setParameter('income', TransactionType.INCOME)
+      .setParameter('expense', TransactionType.EXPENSE)
+      .getRawOne<{ count: string | number; income: string | null; expense: string | null }>();
+
+    return {
+      count: Number(row?.count ?? 0),
+      income: parseMoney(row?.income ?? '0'),
+      expense: parseMoney(row?.expense ?? '0'),
+    };
+  }
+
+  // Income minus expense of the selection within each interval, initial
+  // balances left out. Intervals must not overlap; the i-th net is for the
+  // i-th interval, 0 when it has no records.
+  async getFeedIntervalNets(
+    selection: TransactionSelection,
+    intervals: TimeInterval[],
+    manager?: EntityManager,
+  ): Promise<bigint[]> {
+    const nets = intervals.map(() => 0n);
+    const walletIds = intervals.length === 0 ? [] : await this.selectionWallets(selection, manager);
+
+    if (walletIds.length === 0) {
+      return nets;
+    }
+
+    const within = (i: number) => `transaction.timestamp BETWEEN :intervalFrom${i} AND :intervalTo${i}`;
+    const rows = await this.selectionScope(selection, walletIds, manager)
+      .select(`CASE ${intervals.map((_, i) => `WHEN ${within(i)} THEN ${i}`).join(' ')} END`, 'interval_index')
+      .addSelect(
+        'SUM(CASE WHEN category.is_system = 1 THEN 0 ' +
+          'WHEN transaction.transaction_type = :income THEN transaction.amount ELSE -transaction.amount END)',
+        'net',
+      )
+      .andWhere(`(${intervals.map((_, i) => within(i)).join(' OR ')})`)
+      .setParameters(
+        Object.fromEntries(
+          intervals.flatMap((interval, i) => [
+            [`intervalFrom${i}`, clampToStored(interval.from)],
+            [`intervalTo${i}`, clampToStored(interval.to)],
+          ]),
+        ),
+      )
+      .setParameter('income', TransactionType.INCOME)
+      .groupBy('interval_index')
+      .getRawMany<{ interval_index: string | number; net: string }>();
+
+    for (const row of rows) {
+      nets[Number(row.interval_index)] = parseMoney(row.net);
+    }
+
+    return nets;
+  }
+
+  // The position of a transaction of the space, or null when the selection
+  // does not contain it (another period, search or filter, or no such record).
+  async findFeedPosition(
+    selection: TransactionSelection,
+    transactionId: string,
+    manager?: EntityManager,
+  ): Promise<FeedPosition | null> {
+    const walletIds = await this.selectionWallets(selection, manager);
+
+    if (walletIds.length === 0) {
+      return null;
+    }
+
+    const transaction = await this.selectionScope(selection, walletIds, manager)
+      .select(['transaction.id', 'transaction.timestamp'])
+      .andWhere('transaction.id = :transactionId', { transactionId })
+      .getOne();
+
+    return transaction && { timestamp: transaction.timestamp, id: transaction.id };
   }
 
   async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
@@ -341,18 +551,68 @@ export class TransactionQueriesService {
     return transaction?.timestamp ?? null;
   }
 
-  // the wallet and category joins, aliased "wallet" and "category", are added by the caller
-  private historyScope(
-    spaceId: number,
-    from: Date,
-    to: Date,
-    filters: TransactionFilters,
-  ): SelectQueryBuilder<Transaction> {
-    const query = this.transactionRepository
+  // The wallets whose transactions the selection reads: every wallet of the
+  // space, soft-deleted included, or the one of the wallet filter.
+  private async selectionWallets(selection: TransactionSelection, manager?: EntityManager): Promise<number[]> {
+    const rows: { id: number }[] = await (manager ?? this.transactionRepository.manager)
+      .createQueryBuilder(Wallet, 'wallet')
+      .select('wallet.id', 'id')
+      .where('wallet.space_id = :spaceId', { spaceId: selection.spaceId })
+      .orderBy('wallet.id')
+      .getRawMany();
+    const walletId = selection.filters?.walletId;
+    const ids = rows.map((row) => Number(row.id));
+
+    return walletId === undefined ? ids : ids.filter((id) => id === walletId);
+  }
+
+  private async loadInOrder(ids: string[], manager?: EntityManager): Promise<LoadedTransaction[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const rows = await this.repository(manager)
       .createQueryBuilder('transaction')
-      .where('wallet.space_id = :spaceId', { spaceId })
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to });
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
+      .where('transaction.id IN (:...ids)', { ids })
+      .getMany();
+    const byId = new Map(rows.map((row) => [row.id, withRelations(row, 'wallet', 'category')]));
+
+    return ids.map((id) => byId.get(id)!);
+  }
+
+  // The one selection of the history, the feed and every total of it. Soft-
+  // deleted wallets are joined like active ones, so their history is listed
+  // and their stored name is searched; archived categories likewise. The
+  // space is applied as a list of wallet ids, not through the wallet join:
+  // only constants give MySQL index ranges on (wallet_id, timestamp), while
+  // the join let it scan the whole table, every space's rows included.
+  private selectionScope(
+    { from, to, filters = {} }: TransactionSelection,
+    walletIds: number[],
+    manager?: EntityManager,
+    load = false,
+  ): SelectQueryBuilder<Transaction> {
+    const query = this.repository(manager).createQueryBuilder('transaction');
+
+    if (load) {
+      query.innerJoinAndSelect('transaction.wallet', 'wallet').innerJoinAndSelect('transaction.category', 'category');
+    } else {
+      query.innerJoin('transaction.wallet', 'wallet').innerJoin('transaction.category', 'category');
+    }
+
+    query.where('transaction.wallet_id IN (:...walletIds)', { walletIds });
+
+    // MySQL is only given the part of the period a TIMESTAMP can hold; a
+    // period wholly outside it selects nothing.
+    if (to < TIMESTAMP_MIN || from > TIMESTAMP_MAX) {
+      query.andWhere('FALSE');
+    } else {
+      query
+        .andWhere('transaction.timestamp >= :from', { from: clampToStored(from) })
+        .andWhere('transaction.timestamp <= :to', { to: clampToStored(to) });
+    }
 
     if (filters.transactionType) {
       query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
@@ -366,8 +626,15 @@ export class TransactionQueriesService {
       query.andWhere('transaction.category_id = :categoryId', { categoryId: filters.categoryId });
     }
 
-    if (filters.walletId) {
-      query.andWhere('transaction.wallet_id = :walletId', { walletId: filters.walletId });
+    const search = filters.search?.trim();
+
+    if (search) {
+      const matches = (column: string) => searchMatch(column, ':searchPattern');
+
+      query.andWhere(
+        `(${matches('transaction.description')} OR ${matches('category.name')} OR ${matches('wallet.wallet_name')})`,
+        { searchPattern: toSearchPattern(search) },
+      );
     }
 
     return query;

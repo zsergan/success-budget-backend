@@ -16,3 +16,12 @@ export const isNotInFuture = (timestamp: string, now = Date.now()): boolean =>
 
 // trimmed; blank means no description
 export const normalizeDescription = (value: string | null | undefined): string | null => value?.trim() || null;
+
+export const MAX_SEARCH_LENGTH = 255;
+export const SEARCH_TOO_LONG = `q must be at most ${MAX_SEARCH_LENGTH} characters`;
+
+// trimmed, inner whitespace kept; blank means no search
+export const normalizeSearch = (value: string): string | undefined => value.trim() || undefined;
+
+// in code points, so an emoji outside the BMP counts as one
+export const isSearchWithinLimit = (value: string): boolean => [...value].length <= MAX_SEARCH_LENGTH;

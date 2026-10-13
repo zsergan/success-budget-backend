@@ -139,6 +139,14 @@ the same email.
    by hand (keep one account, remove the others with their spaces) and run
    this step again.
 
+   MySQL commits every `ALTER TABLE` on its own, so a run stopped midway
+   (a killed container, a lost connection) can leave part of a migration
+   applied but not recorded. `ExtendTransactionWalletTimestampIndex1790500000000`
+   checks the indexes first and finishes the remaining steps, so running
+   this step again is enough. If the index it creates already exists with
+   another definition, it stops with an error naming both definitions and changes
+   nothing: fix that index by hand and run this step again.
+
 3. **Check the schema** matches the build - the same check the app makes on
    boot, as a step of its own, so a pipeline can stop before switching
    traffic:
@@ -225,8 +233,9 @@ On boot the app compares the migrations compiled into its build
 | has run migrations the build does not know (a rollback)    | starts, with a warning naming them                                      |
 
 The last row is what lets a rollback to the previous image run on the newer
-schema (see "Roll back" below): migrations here only add columns and
-tables, so the previous build keeps working. A migration that breaks the
+schema (see "Roll back" below): migrations here only add columns, tables
+and indexes (or replace an index with a wider one), so the previous build
+keeps working. A migration that breaks the
 previous build has to say so in its PR, and then a rollback needs the schema
 reverted as well.
 

@@ -6,7 +6,14 @@ import { Category } from './category.entity';
 import { TransactionType } from '@shared/enums';
 
 @Entity('transactions')
-@Index('IDX_transactions_wallet_id_timestamp', ['wallet_id', 'timestamp'])
+@Index('IDX_transactions_wallet_id_timestamp_id', [
+  'wallet_id',
+  'timestamp',
+  'id',
+  'category_id',
+  'transaction_type',
+  'amount',
+])
 export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

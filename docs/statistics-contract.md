@@ -850,10 +850,12 @@ block run one after another in its snapshot transaction (see Consistency
 model). A `future` period sends none for its own range.
 
 All period reads go through the space's wallets and then the
-`transactions` rows of each wallet in a time range. The index
-`IDX_transactions_wallet_id_timestamp (wallet_id, timestamp)` (migration
-`AddTransactionWalletTimestampIndex`) serves them; it also serves the wallet
-foreign key, so it replaces the former single-column index on `wallet_id`.
+`transactions` rows of each wallet in a time range. The index on
+`(wallet_id, timestamp)` (migration `AddTransactionWalletTimestampIndex`)
+serves them; it also serves the wallet foreign key, so it replaces the
+former single-column index on `wallet_id`. It has since been extended to
+`IDX_transactions_wallet_id_timestamp_id` with the same prefix (see
+[`feed-performance.md`](feed-performance.md#index)).
 Checked with `EXPLAIN ANALYZE` on MySQL 8.4 with 500,000 transactions
 (500 spaces, 4 wallets each, about 3 years) for one month:
 

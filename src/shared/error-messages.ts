@@ -22,6 +22,7 @@ export const ErrorMessages = {
   SPACE_MEMBER_LIMIT_REACHED: 'This space has reached its member limit',
   SPACE_LAST_REMAINING: 'You cannot leave or delete your only remaining space',
   TRANSACTION_NOT_FOUND: 'Transaction not found',
+  TRANSACTION_NOT_IN_FEED: 'The transaction does not match the period, search or filters',
   TRANSACTION_IS_SYSTEM: 'The initial balance cannot be edited or deleted',
   TRANSACTION_VERSION_CONFLICT: 'The transaction was changed since it was read',
   TRANSACTION_VERSION_REQUIRED: 'If-Match with the version that was read is required',

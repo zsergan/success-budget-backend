@@ -22,6 +22,7 @@ import {
   ApiHeader,
   ApiNotFoundResponse,
   ApiOkResponse,
+  ApiOperation,
   ApiQuery,
   ApiResponse,
   ApiTags,
@@ -30,9 +31,13 @@ import {
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionDto } from './dto/update-transaction.dto';
+import { TransactionFeedQueryDto } from './dto/transaction-feed-query.dto';
+import { ParseOptionalSearchPipe } from './parse-optional-search.pipe';
+import { MAX_SEARCH_LENGTH } from './transaction-rules';
 import {
   CreateTransactionResult,
   TransactionCount,
+  TransactionFeed,
   TransactionOperationView,
   TransactionView,
   UpdateTransactionResult,
@@ -108,6 +113,33 @@ export class TransactionsController {
     return this.transactionsService.create(req.user.id, spaceId, createTransactionDto, { idempotencyKey });
   }
 
+  @ApiOperation({
+    summary: 'One page of the history: cursor pages, search, totals of the whole selection',
+    description:
+      'Newest first (timestamp, then id). summary covers the whole selection; day_totals covers each day of the ' +
+      'page in full, also its records on other pages. Initial balances are listed and counted, but left out of ' +
+      'income, expense and net. See docs/transactions-contract.md.',
+  })
+  @ApiOkResponse({ type: TransactionFeed })
+  @ApiBadRequestResponse({
+    description:
+      'VALIDATION_FAILED: a malformed parameter, from after to, cursor with around_id, or a cursor of another query.',
+  })
+  @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE, FORBIDDEN_CATEGORY or FORBIDDEN_WALLET.' })
+  @ApiNotFoundResponse({
+    description:
+      'TRANSACTION_NOT_FOUND: around_id is unknown, malformed or of another space. ' +
+      'TRANSACTION_NOT_IN_FEED: around_id is outside the period, the search or a filter.',
+  })
+  @Get('feed')
+  async getFeed(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query() query: TransactionFeedQueryDto,
+  ): Promise<TransactionFeed> {
+    return this.transactionsService.getFeed(req.user.id, spaceId, query);
+  }
+
   @ApiOkResponse({ type: TransactionView, description: 'Empty body when the space has no transactions.' })
   @Get('latest')
   async getLatest(@Request() req: AuthedRequest, @Param('spaceId', ParseIntPipe) spaceId: number) {
@@ -115,7 +147,17 @@ export class TransactionsController {
   }
 
   @ApiHistoryQuery()
-  @ApiOkResponse({ type: TransactionCount, description: 'The number of rows GET /transactions returns.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Counts the matches of the feed search: description, category or wallet name, ignoring case and accents. ' +
+      `Trimmed; blank means no search; at most ${MAX_SEARCH_LENGTH} characters.`,
+  })
+  @ApiOkResponse({
+    type: TransactionCount,
+    description: 'The number of rows GET /transactions returns; with q, the feed summary.count of the same query.',
+  })
   @Get('count')
   async count(
     @Request() req: AuthedRequest,
@@ -126,12 +168,15 @@ export class TransactionsController {
     @Query('kind', new ParseOptionalEnumPipe(TransactionKind)) kind?: TransactionKind,
     @Query('category_id', ParseOptionalIdPipe) categoryId?: number,
     @Query('wallet_id', ParseOptionalIdPipe) walletId?: number,
+    // unknown: with a string type the global ValidationPipe joins a repeated q into "a,b"
+    @Query('q', ParseOptionalSearchPipe) search?: unknown,
   ) {
     return this.transactionsService.count(req.user.id, spaceId, from, to, {
       transactionType,
       kind,
       categoryId,
       walletId,
+      search: search as string | undefined,
     });
   }
 
