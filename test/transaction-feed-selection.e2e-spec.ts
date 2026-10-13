@@ -40,8 +40,28 @@ describe('Transaction feed selection (e2e)', () => {
     filters: { ...extra, search },
   });
 
-  const search = async (text: string) =>
-    (await queries.getForAllWallets(member.spaceId, from, to, { search: text })).map((row) => row.description);
+  // the whole selection as one page
+  const select = async (text?: string) => {
+    const page = await queries.getFeedPage(selection(text), { limit: 100 });
+    expect(page.hasMore).toBe(false);
+
+    return page.items;
+  };
+
+  const search = async (text: string) => (await select(text)).map((row) => row.description);
+
+  // the records of the period, newest first, read from the table
+  const stored = async (): Promise<string[]> => {
+    const rows: { id: string }[] = await testApp.dataSource.query(
+      `SELECT transaction.id FROM transactions transaction
+         JOIN wallets wallet ON wallet.id = transaction.wallet_id
+         WHERE wallet.space_id = ? AND transaction.timestamp BETWEEN ? AND ?
+         ORDER BY transaction.timestamp DESC, transaction.id DESC`,
+      [member.spaceId, from, to],
+    );
+
+    return rows.map((row) => row.id);
+  };
 
   beforeAll(async () => {
     testApp = await createTestApp();
@@ -132,24 +152,24 @@ describe('Transaction feed selection (e2e)', () => {
     });
 
     it('matches the stored name of a deleted wallet, which is still read as a deleted wallet', async () => {
-      const rows = await queries.getForAllWallets(member.spaceId, from, to, { search: 'наличн' });
+      const rows = await select('наличн');
 
       expect(rows.map((row) => row.id)).toEqual([ids.cashOnly]);
       expect(rows[0].wallet.is_deleted).toBe(1);
     });
 
     it('matches the system category by its name', async () => {
-      const rows = await queries.getForAllWallets(member.spaceId, from, to, { search: 'initial' });
+      const rows = await select('initial');
 
       expect(rows.map((row) => row.id)).toEqual([ids.initial]);
     });
 
     it('lists a record matching in several fields once', async () => {
-      const rows = await queries.getForAllWallets(member.spaceId, from, to, { search: 'card' });
+      const rows = await select('card');
 
       expect(rows.filter((row) => row.id === ids.everywhere)).toHaveLength(1);
       expect(await queries.countForAllWallets(member.spaceId, from, to, { search: 'кофе' })).toBe(
-        (await queries.getForAllWallets(member.spaceId, from, to, { search: 'кофе' })).length,
+        (await select('кофе')).length,
       );
     });
 
@@ -172,7 +192,7 @@ describe('Transaction feed selection (e2e)', () => {
     it('keeps inner whitespace and treats blank text as no search', async () => {
       expect(await search('на вынос')).toEqual(['ЛАТТЕ на вынос']);
       expect(await search('навынос')).toEqual([]);
-      expect((await queries.getForAllWallets(member.spaceId, from, to, { search: '   ' })).length).toBe(10);
+      expect(await select('   ')).toHaveLength(10);
     });
 
     it('combines with the period and the other filters', async () => {
@@ -228,14 +248,15 @@ describe('Transaction feed selection (e2e)', () => {
 
     it.each([undefined, 'кофе', 'card'])('pages through the rows of the history, search %p', async (text) => {
       const sel = selection(text);
-      const history = await queries.getForAllWallets(member.spaceId, from, to, { search: text });
+      const matching = new Set((await select(text)).map((row) => row.id));
+      const history = (await stored()).filter((id) => matching.has(id));
 
-      expect(await walk(sel, 2)).toEqual(history.map((row) => row.id));
-      expect(await walk(sel, 100)).toEqual(history.map((row) => row.id));
+      expect(await walk(sel, 2)).toEqual(history);
+      expect(await walk(sel, 100)).toEqual(history);
     });
 
     it('reads newer records before a position, newest first', async () => {
-      const history = (await queries.getForAllWallets(member.spaceId, from, to)).map((row) => row.id);
+      const history = await stored();
       const middle = await transactions.findOneByOrFail({ id: history[5] });
 
       const page = await queries.getFeedPage(selection(), {
@@ -256,7 +277,7 @@ describe('Transaction feed selection (e2e)', () => {
 
     it('orders records of one timestamp by id, descending', async () => {
       const sameInstant = [ids.tree, ids.cafe, ids.percent].sort().reverse();
-      const history = (await queries.getForAllWallets(member.spaceId, from, to)).map((row) => row.id);
+      const history = await stored();
 
       expect(history.filter((id) => sameInstant.includes(id))).toEqual(sameInstant);
     });
