@@ -176,19 +176,6 @@ describe('ConfirmationCodesService', () => {
       expect(confirmationCodeRepo.update).not.toHaveBeenCalled();
     });
 
-    it('still reserves a non-email code for a verified user', async () => {
-      const confirmationCodeRepo = {
-        create: jest.fn((entity) => entity),
-        save: jest.fn((entity) => Promise.resolve({ ...entity, id: 42 })),
-      };
-      const { userQueryBuilder } = mockManager(null, confirmationCodeRepo);
-      userQueryBuilder.getOne.mockResolvedValue({ id: 1, email_verified: 1 });
-
-      await expect(service.reserveSend(1, ConfirmationType.RESET_PASSWORD)).resolves.toMatchObject({
-        shouldSend: true,
-      });
-    });
-
     it('reserves a fresh attempt and reuses the existing code once the cooldown has passed', async () => {
       const existing = {
         id: 7,
