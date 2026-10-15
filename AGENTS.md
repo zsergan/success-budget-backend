@@ -36,9 +36,10 @@ specs locally.
   (see `git log`) and, when needed, a 1–3 line body explaining why.
 - Never put AI session/transcript links in commits or PR bodies.
   A `Co-Authored-By` trailer is fine.
-- Branches: `feat/<initiative>-stage<N>-<topic>` for staged initiatives,
-  otherwise `feat/`, `fix/` or `chore/<topic>`. The old "Phase N"
-  numbering ended at 16; do not continue it.
+- Branches: `<type>/<scope>-<change>[-<extra>]`, e.g.
+  `feat/transactions-feed`, `fix/write-access-hardening`. No stage
+  numbering (`stage1`). The old "Phase N" numbering ended at 16; do not
+  continue it.
 - The repo is public (all rights reserved). Never commit secrets. `.env` is
   gitignored; `.env.example` must list every variable that
   `src/config/env.validation.ts` reads.
