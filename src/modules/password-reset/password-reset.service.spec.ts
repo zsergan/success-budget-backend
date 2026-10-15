@@ -16,6 +16,8 @@ const START = new Date('2026-10-15T12:00:00.000Z');
 const MINUTE = 60_000;
 const EMAIL = 'user@example.com';
 
+jest.mock('bcrypt', () => ({ hash: async (password: string) => `bcrypt(${password})` }));
+
 // One user and one challenge row, as the service sees them through its
 // transaction manager; locks are not modelled.
 class FakeStore {
@@ -41,9 +43,9 @@ class FakeStore {
 
   readonly manager = {
     createQueryBuilder: (entity: unknown) => this.queryBuilder(entity),
-    getRepository: () => ({
-      update: async (_id: string, fields: Partial<PasswordResetChallenge>) => {
-        Object.assign(this.challenge!, fields);
+    getRepository: (entity: unknown) => ({
+      update: async (_id: unknown, fields: Partial<PasswordResetChallenge> | Partial<User>) => {
+        Object.assign(entity === User ? this.user! : this.challenge!, fields);
       },
       insert: async (fields: Partial<PasswordResetChallenge>) => {
         const failure = this.insertFailures.shift();
@@ -63,6 +65,9 @@ class FakeStore {
   };
 
   readonly challengeRepository = {
+    findOne: jest.fn(async ({ where }: { where: { reset_token_hash: string } }) =>
+      this.challenge?.reset_token_hash === where.reset_token_hash ? { ...this.challenge } : null,
+    ),
     update: jest.fn(
       async (criteria: { id: string; send_attempt_id: number }, fields: Partial<PasswordResetChallenge>) => {
         if (this.challenge && this.challenge.send_attempt_id === criteria.send_attempt_id) {
@@ -83,6 +88,8 @@ describe('PasswordResetService', () => {
   const advance = (ms: number) => jest.setSystemTime(Date.now() + ms);
   const request = (email = EMAIL) => service.request({ email });
   const verify = (code: string, email = EMAIL) => service.verify({ email, code });
+  const complete = (resetToken: string, password = 'new-secret-42') =>
+    service.complete({ reset_token: resetToken, password });
   const wrongCode = () => (lastCode() === '000000' ? '000001' : '000000');
 
   async function rejection(promise: Promise<unknown>) {
@@ -421,6 +428,88 @@ describe('PasswordResetService', () => {
         attempts: 0,
         started_at: new Date(START.getTime() + MINUTE),
       });
+    });
+  });
+
+  describe('complete', () => {
+    async function authorize() {
+      await request();
+      return (await verify(lastCode())).reset_token;
+    }
+
+    it('changes the password, bumps the auth version and consumes the challenge', async () => {
+      const token = await authorize();
+      advance(MINUTE);
+      const locks = jest.spyOn(store.manager, 'createQueryBuilder');
+
+      await expect(complete(token)).resolves.toBeUndefined();
+
+      expect(locks.mock.calls.map(([entity]) => entity)).toEqual([User, PasswordResetChallenge]);
+      expect(store.user).toMatchObject({ password: 'bcrypt(new-secret-42)', auth_version: 2 });
+      expect(store.challenge).toMatchObject({
+        completed_at: new Date(START.getTime() + MINUTE),
+        code_hash: null,
+        reset_token_hash: null,
+      });
+    });
+
+    it('never accepts the same authorization twice', async () => {
+      const token = await authorize();
+      await complete(token);
+
+      await expectCode(complete(token, 'other-secret-7'), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
+      expect(store.user).toMatchObject({ password: 'bcrypt(new-secret-42)', auth_version: 2 });
+    });
+
+    it('ends the challenge, so the accepted code no longer yields a token', async () => {
+      await request();
+      const code = lastCode();
+      await complete((await verify(code)).reset_token);
+
+      await expectCode(verify(code), 'PASSWORD_RESET_CODE_UNUSABLE');
+    });
+
+    it('refuses an unknown token without opening a transaction', async () => {
+      await authorize();
+
+      await expectCode(complete('not-a-token'), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
+      expect(store.dataSource.transaction).toHaveBeenCalledTimes(2);
+      expect(store.user).toMatchObject({ auth_version: 1 });
+    });
+
+    it('refuses an expired token', async () => {
+      const token = await authorize();
+      advance(10 * MINUTE);
+
+      await expectCode(complete(token), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
+      expect(store.user).toMatchObject({ auth_version: 1 });
+    });
+
+    it('refuses a token whose challenge was ended by the fifth wrong code', async () => {
+      const token = await authorize();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await rejection(verify(wrongCode()));
+      }
+
+      await expectCode(complete(token), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
+    });
+
+    it('checks the token again under the locks', async () => {
+      const token = await authorize();
+      const stale = { ...store.challenge! };
+      advance(MINUTE);
+      await request();
+      store.challengeRepository.findOne.mockResolvedValueOnce(stale);
+
+      await expectCode(complete(token), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
+      expect(store.user).toMatchObject({ auth_version: 1 });
+    });
+
+    it('refuses when the account was deleted after the check', async () => {
+      const token = await authorize();
+      store.user = null;
+
+      await expectCode(complete(token), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
     });
   });
 });

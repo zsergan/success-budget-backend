@@ -12,6 +12,11 @@ export const CONFIRMATION_CODE_TTL_MS = 1000 * 60 * 10; // 10 minutes
 
 export const PASSWORD_HASH_ROUNDS = 10;
 
+export const NEW_PASSWORD_MIN_LENGTH = 8;
+
+// bcrypt ignores everything past the first 72 bytes
+export const NEW_PASSWORD_MAX_BYTES = 72;
+
 // temporary defaults, not a considered business limit - revisit later
 export const SPACE_LIMITS = {
   MAX_MEMBERS_PER_SPACE: 20,

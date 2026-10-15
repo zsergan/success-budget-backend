@@ -1,13 +1,20 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as jwt from 'jsonwebtoken';
 import request from 'supertest';
+import { type ObjectLiteral, Repository } from 'typeorm';
 
+import { LOCK_USER, overlap, pauseAfterFirstCall } from './support/concurrency';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 import { type TestApp, createTestApp, createVerifiedMember, deleteUsers, PASSWORD, uniqueEmail } from './support/app';
+import { User } from '@entities/user.entity';
 import { MailService } from '@modules/mail/mail.service';
 import { UsersService } from '@modules/users/users.service';
 import { PasswordResetService } from '@modules/password-reset/password-reset.service';
 import { hashEmail, passwordResetKey } from '@modules/password-reset/password-reset-secrets';
+
+const NEW_PASSWORD = 'new-secret-42';
+const SHARE_USER = '%FROM `users` `user`%SHARE%';
 
 interface ChallengeRow {
   user_id: number | null;
@@ -19,7 +26,7 @@ interface ChallengeRow {
   reset_token_hash: string | null;
 }
 
-describe('Password reset request and verification (e2e)', () => {
+describe('Password reset (e2e)', () => {
   let testApp: TestApp;
   let key: Buffer;
   let sendPasswordResetCode: jest.SpyInstance;
@@ -33,6 +40,12 @@ describe('Password reset request and verification (e2e)', () => {
     request(server()).post('/api/v1/users/password-reset/request').send({ email });
   const verify = (email: string, code: string) =>
     request(server()).post('/api/v1/users/password-reset/verify').send({ email, code });
+  const complete = (resetToken: string, password = NEW_PASSWORD) =>
+    request(server()).post('/api/v1/users/password-reset/complete').send({ reset_token: resetToken, password });
+  const login = (email: string, password: string) =>
+    request(server()).post('/api/v1/users/login').send({ email, password });
+  const profile = (token: string) =>
+    request(server()).get('/api/v1/users/profile').set('Authorization', `Bearer ${token}`);
 
   function address(prefix: string): string {
     const email = uniqueEmail(`password-reset-${prefix}`);
@@ -59,6 +72,17 @@ describe('Password reset request and verification (e2e)', () => {
     await settle();
     const calls = sendPasswordResetCode.mock.calls.filter(([to]) => to === email);
     return calls[calls.length - 1][1];
+  }
+
+  async function authorize(email: string): Promise<string> {
+    await requestReset(email).expect(202);
+    const authorized = await verify(email, await sentCode(email)).expect(200);
+    return authorized.body.reset_token;
+  }
+
+  async function authVersion(email: string): Promise<number> {
+    const [user] = await testApp.dataSource.query('SELECT auth_version FROM users WHERE email = ?', [email]);
+    return user.auth_version;
   }
 
   const otherCode = (code: string) => (code === '000000' ? '000001' : '000000');
@@ -319,5 +343,166 @@ describe('Password reset request and verification (e2e)', () => {
     const code = /password reset code is (\d{6})/.exec(message!.text)![1];
     await verify(email, code).expect(200);
     await fetch(`${maildevApiUrl}/api/email/${message!.id}`, { method: 'DELETE' }).catch(() => undefined);
+  });
+
+  describe('complete', () => {
+    it('replaces the password, ends every session and signs nobody in', async () => {
+      const email = await verifiedAccount('complete');
+      const session = (await login(email, PASSWORD).expect(201)).text;
+      expect(jwt.decode(session)).toMatchObject({ ver: 1 });
+      const token = await authorize(email);
+
+      const completed = await complete(token).expect(204);
+
+      expect(completed.text).toBe('');
+      await profile(session).expect(401);
+      testApp.resetThrottling();
+      await login(email, PASSWORD).expect(401, /INVALID_CREDENTIALS/);
+      const fresh = (await login(email, NEW_PASSWORD).expect(201)).text;
+      expect(jwt.decode(fresh)).toMatchObject({ ver: 2 });
+      await profile(fresh).expect(200);
+      expect(await challenge(email)).toMatchObject({ code_hash: null, reset_token_hash: null });
+    });
+
+    it('keeps tokens issued without a version valid until the reset', async () => {
+      const email = await verifiedAccount('legacy');
+      const [user] = await testApp.dataSource.query('SELECT id FROM users WHERE email = ?', [email]);
+      const legacy = jwt.sign({ id: user.id }, testApp.app.get(ConfigService).getOrThrow<string>('JWT_SECRET'), {
+        expiresIn: 60 * 60,
+      });
+
+      await profile(legacy).expect(200);
+      await complete(await authorize(email)).expect(204);
+      await profile(legacy).expect(401);
+    });
+
+    it('refuses a replay, the accepted code and the old token once the reset is done', async () => {
+      const email = await verifiedAccount('replay');
+      await requestReset(email).expect(202);
+      const code = await sentCode(email);
+      const token = (await verify(email, code).expect(200)).body.reset_token;
+      await complete(token).expect(204);
+
+      await complete(token, 'another-secret-7').expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+      await verify(email, code).expect(400, /PASSWORD_RESET_CODE_UNUSABLE/);
+      testApp.resetThrottling();
+      await login(email, 'another-secret-7').expect(401);
+      await login(email, NEW_PASSWORD).expect(201);
+      expect(await authVersion(email)).toBe(2);
+    });
+
+    it('lets exactly one of concurrent completions change the password', async () => {
+      const email = await verifiedAccount('concurrent-complete');
+      const token = await authorize(email);
+      const passwords = ['first-secret-1', 'second-secret-2', 'third-secret-3'];
+
+      const responses = await Promise.all(passwords.map((password) => complete(token, password)));
+
+      const statuses = responses.map((response) => response.status);
+      expect(statuses.filter((status) => status === 204)).toHaveLength(1);
+      expect(statuses.filter((status) => status === 400)).toHaveLength(2);
+      expect(await authVersion(email)).toBe(2);
+      testApp.resetThrottling();
+      const winner = passwords[statuses.indexOf(204)];
+      for (const password of passwords) {
+        await login(email, password).expect(password === winner ? 201 : 401);
+      }
+    });
+
+    it('refuses a login that waited on a reset in progress', async () => {
+      const email = await verifiedAccount('race-reset-first');
+      const token = await authorize(email);
+      const checkpoint = pauseAfterFirstCall(
+        Repository.prototype,
+        'update',
+        (self) => (self as Repository<ObjectLiteral>).target === User,
+      );
+
+      const [completed, raced] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        SHARE_USER,
+        () => complete(token),
+        () => login(email, PASSWORD),
+      );
+
+      expect(completed.status).toBe(204);
+      expect(raced.status).toBe(401);
+      expect(raced.body.code).toBe('INVALID_CREDENTIALS');
+    });
+
+    it('revokes the session of a login that finished before the reset', async () => {
+      const email = await verifiedAccount('race-login-first');
+      const token = await authorize(email);
+      const usersService = testApp.app.get(UsersService) as unknown as { generateAccessToken(user: User): string };
+      const checkpoint = pauseAfterFirstCall(usersService, 'generateAccessToken');
+
+      const [loggedIn, completed] = await overlap(
+        testApp.dataSource,
+        checkpoint,
+        LOCK_USER,
+        () => login(email, PASSWORD),
+        () => complete(token),
+      );
+
+      expect(loggedIn.status).toBe(201);
+      expect(completed.status).toBe(204);
+      await profile(loggedIn.text).expect(401);
+    });
+
+    it.each([
+      ['too short', 'abc1234'],
+      ['without a digit', 'password'],
+      ['without a letter', '12345678'],
+      ['over 72 bytes', 'a1' + 'ж'.repeat(36)],
+    ])('refuses a password %s without using the token', async (_case, password) => {
+      const email = await verifiedAccount('weak');
+      const token = await authorize(email);
+
+      const refused = await complete(token, password).expect(400);
+
+      expect(refused.body.code).toBe('VALIDATION_FAILED');
+      await complete(token).expect(204);
+    });
+
+    it('refuses an unknown or expired token', async () => {
+      const email = await verifiedAccount('expired-token');
+      const token = await authorize(email);
+
+      await complete('x'.repeat(43)).expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+      await testApp.dataSource.query(
+        'UPDATE password_reset_challenges SET reset_token_expires_at = NOW(3) WHERE email_hash = ?',
+        [hashEmail(key, email)],
+      );
+      await complete(token).expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+      expect(await authVersion(email)).toBe(1);
+    });
+
+    it('refuses a token replaced by a newer request', async () => {
+      const email = await verifiedAccount('replaced');
+      const token = await authorize(email);
+      await moveBack(email, 'last_requested_at', 60_000);
+
+      await requestReset(email).expect(202);
+
+      await complete(token).expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+    });
+  });
+
+  it('still signs users in after registration and email verification', async () => {
+    const sendConfirmationCode = jest.spyOn(testApp.app.get(MailService), 'sendConfirmationCode').mockResolvedValue();
+    const email = address('registration');
+    const registered = await request(server())
+      .post('/api/v1/users/register')
+      .send({ name: 'E2E', email, password: PASSWORD, base_currency_id: testApp.currencyId })
+      .expect(201);
+    userIds.push(registered.body.id);
+    const [, code] = sendConfirmationCode.mock.calls[0];
+
+    const verified = await request(server()).post('/api/v1/users/verify-email').send({ email, code }).expect(201);
+
+    expect(jwt.decode(verified.text)).toMatchObject({ id: registered.body.id, ver: 1 });
+    await profile(verified.text).expect(200);
+    await profile((await login(email, PASSWORD).expect(201)).text).expect(200);
   });
 });

@@ -83,3 +83,16 @@ export function verifyRetryAfter(challenge: WindowFields, now: Date): number | n
 export function resetTokenExpiry(now: Date, challengeExpiresAt: Date): Date {
   return new Date(Math.min(now.getTime() + PASSWORD_RESET_TOKEN_TTL_MS, challengeExpiresAt.getTime()));
 }
+
+// the authorization behind tokenHash can still complete the reset
+export function canComplete(
+  challenge: StateFields & Pick<PasswordResetChallenge, 'user_id' | 'reset_token_hash'>,
+  tokenHash: string,
+  now: Date,
+): boolean {
+  return (
+    challenge.user_id !== null &&
+    challenge.reset_token_hash === tokenHash &&
+    challengeState(challenge, now) === 'verified'
+  );
+}

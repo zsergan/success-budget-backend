@@ -1,5 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsNotEmpty, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, Matches, MaxLength } from 'class-validator';
+
+import { NEW_PASSWORD_MAX_BYTES, NEW_PASSWORD_MIN_LENGTH } from '@shared/constants';
+import { IsNewPassword } from '@shared/decorators/is-new-password.decorator';
 
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
 
@@ -35,9 +38,14 @@ export class CompletePasswordResetDto {
   @MaxLength(255)
   reset_token!: string;
 
-  @ApiProperty({ minLength: 6, description: 'The new password; same rules as at registration.' })
-  @IsNotEmpty()
-  @IsString()
-  @MinLength(6)
+  @ApiProperty({
+    minLength: NEW_PASSWORD_MIN_LENGTH,
+    maxLength: NEW_PASSWORD_MAX_BYTES,
+    example: 'new-secret-42',
+    description:
+      `At least ${NEW_PASSWORD_MIN_LENGTH} characters with a letter (A–Z, a–z) and a digit (0–9); ` +
+      `at most ${NEW_PASSWORD_MAX_BYTES} bytes in UTF-8.`,
+  })
+  @IsNewPassword()
   password!: string;
 }

@@ -1,17 +1,23 @@
 import { type BeforeApplicationShutdown, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import * as bcrypt from 'bcrypt';
 import { DataSource, type EntityManager, Repository } from 'typeorm';
 
 import { PasswordResetChallenge } from '@entities/password-reset-challenge.entity';
 import { User } from '@entities/user.entity';
 import { MailService } from '@modules/mail/mail.service';
 import { ApiException } from '@shared/api.exception';
+import { PASSWORD_HASH_ROUNDS } from '@shared/constants';
 import { ConfirmationCodeSendStatus } from '@shared/enums';
 import { RetryAfterException } from '@shared/retry-after.exception';
 import { constantTimeEquals, generateRandomNumberString, isDuplicateKey, runWriteTransaction } from '@shared/utils';
 import type { EnvironmentVariables } from '@config/env.validation';
-import type { RequestPasswordResetDto, VerifyPasswordResetDto } from './dto/password-reset-requests.dto';
+import type {
+  CompletePasswordResetDto,
+  RequestPasswordResetDto,
+  VerifyPasswordResetDto,
+} from './dto/password-reset-requests.dto';
 import type { PasswordResetAuthorization, PasswordResetRequested } from './dto/password-reset-responses';
 import {
   PASSWORD_RESET_CODE_TTL_MS,
@@ -19,6 +25,7 @@ import {
   PASSWORD_RESET_RESEND_COOLDOWN_MS,
 } from './password-reset.constants';
 import {
+  canComplete,
   challengeState,
   currentWindow,
   requestRetryAfter,
@@ -89,6 +96,42 @@ export class PasswordResetService implements BeforeApplicationShutdown {
     }
 
     return outcome.authorization;
+  }
+
+  // A consumed authorization never changes the password again, so a retry
+  // after a lost response is refused even though the reset succeeded.
+  async complete(dto: CompletePasswordResetDto): Promise<void> {
+    const tokenHash = hashResetToken(dto.reset_token);
+    const found = await this.challengeRepository.findOne({ where: { reset_token_hash: tokenHash } });
+
+    if (!found || !canComplete(found, tokenHash, new Date())) {
+      throw authorizationInvalid();
+    }
+
+    const password = await bcrypt.hash(dto.password, PASSWORD_HASH_ROUNDS);
+
+    await runWriteTransaction(this.dataSource, async (manager) => {
+      const user = await manager
+        .createQueryBuilder(User, 'user')
+        .setLock('pessimistic_write')
+        .where('user.id = :userId', { userId: found.user_id })
+        .getOne();
+      const challenge = await manager
+        .createQueryBuilder(PasswordResetChallenge, 'challenge')
+        .setLock('pessimistic_write')
+        .where('challenge.id = :id', { id: found.id })
+        .getOne();
+      const now = new Date();
+
+      if (!user || !challenge || challenge.user_id !== user.id || !canComplete(challenge, tokenHash, now)) {
+        throw authorizationInvalid();
+      }
+
+      await manager.getRepository(User).update(user.id, { password, auth_version: user.auth_version + 1 });
+      await manager
+        .getRepository(PasswordResetChallenge)
+        .update(challenge.id, { completed_at: now, code_hash: null, reset_token_hash: null });
+    });
   }
 
   async settleDeliveries(): Promise<void> {
@@ -276,6 +319,10 @@ export class PasswordResetService implements BeforeApplicationShutdown {
       this.logger.error(`Failed to record a password reset email outcome: ${reason}`);
     }
   }
+}
+
+function authorizationInvalid(): ApiException {
+  return new ApiException('PASSWORD_RESET_AUTHORIZATION_INVALID', HttpStatus.BAD_REQUEST);
 }
 
 function authorization(token: string, expiresAt: Date, now: Date): PasswordResetAuthorization {

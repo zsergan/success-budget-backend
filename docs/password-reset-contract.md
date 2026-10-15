@@ -16,9 +16,7 @@ This document is the source of truth for the mobile client. Routes are under
 | Storage (`password_reset_challenges`, `users.auth_version`) | migrated    |
 | `POST /users/password-reset/request`                        | implemented |
 | `POST /users/password-reset/verify`                         | implemented |
-| `POST /users/password-reset/complete`, session revocation   | planned     |
-
-Until `complete` is implemented it answers `404`.
+| `POST /users/password-reset/complete`, session revocation   | implemented |
 
 ## Flow
 
@@ -146,17 +144,28 @@ the order of checks depend on whether the address has an account.
 ### `POST /users/password-reset/complete`
 
 ```json
-{ "reset_token": "mX3v0b2rQ1kJ8yT6pZ4wN7cL5aH9eF0dS2gU1iO3qRk", "password": "new-secret" }
+{ "reset_token": "mX3v0b2rQ1kJ8yT6pZ4wN7cL5aH9eF0dS2gU1iO3qRk", "password": "new-secret-42" }
 ```
+
+`password` follows the rules the app checks on sign-up:
+
+| Rule    | Value                                                             |
+| ------- | ----------------------------------------------------------------- |
+| Length  | at least 8 characters                                             |
+| Letter  | at least one of `A`–`Z`, `a`–`z`                                  |
+| Digit   | at least one of `0`–`9`                                           |
+| Maximum | 72 bytes in UTF-8: 72 ASCII characters, fewer with non-ASCII ones |
 
 `204 No Content`. The password is changed, `reset_token` and the challenge
 are used up, and every existing session of the account ends: requests with
-an access token issued before this moment get `401 UNAUTHORIZED`. No new
+an access token issued before this moment get `401 UNAUTHORIZED`. A login
+that was in flight during the reset either fails with
+`401 INVALID_CREDENTIALS` or returns a token that is already revoked. No new
 access token is returned; the user signs in with `POST /users/login`.
 
 | Case                                                                                                       | Response                                   |
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `reset_token` missing or longer than 255; `password` missing or shorter than 6                             | `400 VALIDATION_FAILED`; token not used    |
+| `reset_token` missing or longer than 255; `password` missing or breaking a rule above                      | `400 VALIDATION_FAILED`; token not used    |
 | Too many calls from the network address                                                                    | `429 TOO_MANY_REQUESTS`, `Retry-After`     |
 | Token unknown, expired, already used, ended by 5 wrong codes, or replaced by a newer request for the email | `400 PASSWORD_RESET_AUTHORIZATION_INVALID` |
 | Success                                                                                                    | `204`                                      |
@@ -164,13 +173,24 @@ access token is returned; the user signs in with `POST /users/login`.
 A new accepted request for the address ends the previous challenge, so a
 `reset_token` issued before it stops working.
 
+**Lost response.** If the response to `complete` is lost (timeout, network
+error), the password may already be changed. Repeating the call cannot tell:
+a used `reset_token` never changes the password again and answers
+`400 PASSWORD_RESET_AUTHORIZATION_INVALID`, like an expired one. The client
+then tells the user the reset may have gone through, discards its stored
+access token, and opens the login screen: the user tries the new password
+and, if it is refused, starts again from the email screen.
+
+Of concurrent `complete` calls with one `reset_token`, exactly one succeeds;
+the others get `400 PASSWORD_RESET_AUTHORIZATION_INVALID`.
+
 ## Error codes
 
 | Code                                   | Status | Client action                                                     |
 | -------------------------------------- | ------ | ----------------------------------------------------------------- |
 | `PASSWORD_RESET_CODE_INVALID`          | 400    | Show "wrong code"; let the user retry or request a new code       |
 | `PASSWORD_RESET_CODE_UNUSABLE`         | 400    | Show "code expired or used up"; offer to request a new code       |
-| `PASSWORD_RESET_AUTHORIZATION_INVALID` | 400    | Restart the flow from the email screen                            |
+| `PASSWORD_RESET_AUTHORIZATION_INVALID` | 400    | Restart from the email screen; after a lost `complete`, see above |
 | `PASSWORD_RESET_RATE_LIMITED`          | 429    | Disable the action for `Retry-After` seconds, then allow it again |
 | `TOO_MANY_REQUESTS`                    | 429    | Same as above; comes from the per-network-address limit           |
 | `VALIDATION_FAILED`                    | 400    | Show the field errors; nothing was used up                        |
@@ -210,9 +230,16 @@ flight, as it already ends every session. Codes, tokens and passwords are
 never stored or logged in plain form; request bodies are not logged.
 
 `users.auth_version` starts at 1. Access tokens carry the version they were
-issued for (`ver`); a token without `ver` counts as version 1. A completed
-reset increments it, and `JwtStrategy.validate()` rejects tokens of an older
-version.
+issued for (`ver`); a token without `ver`, issued before versioning, counts
+as version 1 and keeps working until the account's first reset. A completed
+reset increments it, and `JwtStrategy.validate()` rejects any token whose
+version is not the current one. Login and email verification read the
+version under the user's lock and sign the token with it; login also checks
+that the password it compared is still the stored one, so it never issues a
+current-version token for a password a reset replaced.
+
+New passwords are hashed with bcrypt (cost 10), which ignores bytes past
+the 72nd; the 72-byte maximum keeps every byte significant.
 
 ### Lifecycle
 
@@ -234,10 +261,12 @@ version.
   error is returned; the fifth also clears the authorization. The first
   correct code sets `verified_at` and stores the token hash with
   `min(now + 10 min, expires_at)`; a repeat derives the same token again.
-- **Complete**: find the row by `reset_token_hash`, lock the user, lock the
-  row and check the token again, update the password and increment
-  `auth_version`, then set `completed_at` and clear `code_hash` and
-  `reset_token_hash`.
+- **Complete**: find the row by `reset_token_hash` and refuse at once if it
+  cannot complete (no account, not verified, expired, ended). Hash the new
+  password outside the transaction. Then lock the user, lock the row and
+  check the token again, update the password and increment `auth_version`,
+  and set `completed_at` and clear `code_hash` and `reset_token_hash`, all
+  in one transaction. A refused call writes nothing.
 
 Rows of addresses without an account are kept like the others; a purge of
 rows idle for longer than the window and the code lifetime can be added
@@ -252,6 +281,7 @@ Each write runs in one `runWriteTransaction` and locks:
 | Request   | user (S) if the address has one, challenge (X) |
 | Verify    | challenge (X)                                  |
 | Complete  | user (X), challenge (X)                        |
+| Login     | user (S), to sign the token                    |
 
 User before recovery record, as registration locks the user before its
 confirmation code. No other write locks a challenge row. The first request

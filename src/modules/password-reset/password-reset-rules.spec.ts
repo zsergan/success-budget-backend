@@ -1,4 +1,5 @@
 import {
+  canComplete,
   challengeState,
   currentWindow,
   requestRetryAfter,
@@ -92,5 +93,31 @@ describe('resetTokenExpiry', () => {
   it('lasts 10 minutes but never past the challenge', () => {
     expect(resetTokenExpiry(NOW, at(30 * MINUTE))).toEqual(at(10 * MINUTE));
     expect(resetTokenExpiry(NOW, at(4 * MINUTE))).toEqual(at(4 * MINUTE));
+  });
+});
+
+describe('canComplete', () => {
+  const verified = {
+    user_id: 3,
+    attempts: 0,
+    expires_at: at(10 * MINUTE),
+    verified_at: at(-MINUTE),
+    reset_token_hash: 'hash',
+    reset_token_expires_at: at(MINUTE),
+    completed_at: null,
+  };
+
+  it('accepts the token of a verified challenge', () => {
+    expect(canComplete(verified, 'hash', NOW)).toBe(true);
+  });
+
+  it.each([
+    ['another token', {}, 'other'],
+    ['no account', { user_id: null }, 'hash'],
+    ['an expired token', { reset_token_expires_at: NOW }, 'hash'],
+    ['a completed reset', { completed_at: at(-1), reset_token_hash: null }, 'hash'],
+    ['five wrong codes', { attempts: 5 }, 'hash'],
+  ])('refuses %s', (_case, fields, tokenHash) => {
+    expect(canComplete({ ...verified, ...fields }, tokenHash, NOW)).toBe(false);
   });
 });

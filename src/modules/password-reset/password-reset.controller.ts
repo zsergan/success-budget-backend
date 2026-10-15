@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import {
   ApiAcceptedResponse,
   ApiBadRequestResponse,
+  ApiNoContentResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -10,7 +11,11 @@ import {
 } from '@nestjs/swagger';
 
 import { PasswordResetService } from './password-reset.service';
-import { RequestPasswordResetDto, VerifyPasswordResetDto } from './dto/password-reset-requests.dto';
+import {
+  CompletePasswordResetDto,
+  RequestPasswordResetDto,
+  VerifyPasswordResetDto,
+} from './dto/password-reset-requests.dto';
 import { PasswordResetAuthorization, PasswordResetRequested } from './dto/password-reset-responses';
 import { Public } from '@shared/decorators/public.decorator';
 
@@ -57,5 +62,26 @@ export class PasswordResetController {
   @ApiTooManyRequestsResponse({ description: `Over 10 wrong codes an hour. ${RATE_LIMITED}` })
   async verify(@Body() dto: VerifyPasswordResetDto): Promise<PasswordResetAuthorization> {
     return this.passwordResetService.verify(dto);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('complete')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Set a new password and end every session of the account',
+    description:
+      'Returns no access token; the user signs in with the new password. A retry after a lost response gets ' +
+      'PASSWORD_RESET_AUTHORIZATION_INVALID even though the password was changed.',
+  })
+  @ApiNoContentResponse({ description: 'The password is changed; access tokens issued before are rejected.' })
+  @ApiBadRequestResponse({
+    description:
+      'PASSWORD_RESET_AUTHORIZATION_INVALID: reset_token unknown, expired, already used or replaced; start ' +
+      'again. VALIDATION_FAILED.',
+  })
+  @ApiTooManyRequestsResponse({ description: 'TOO_MANY_REQUESTS: limit for the network address. Retry-After.' })
+  async complete(@Body() dto: CompletePasswordResetDto): Promise<void> {
+    await this.passwordResetService.complete(dto);
   }
 }
