@@ -10,6 +10,8 @@ import {
 import { Exclude } from 'class-transformer';
 import * as bcrypt from 'bcrypt';
 
+import { PASSWORD_HASH_ROUNDS } from '@shared/constants';
+
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn()
@@ -28,7 +30,7 @@ export class User {
 
   @BeforeInsert()
   async hashPassword() {
-    this.password = await bcrypt.hash(this.password, 10);
+    this.password = await bcrypt.hash(this.password, PASSWORD_HASH_ROUNDS);
   }
 
   @Exclude()

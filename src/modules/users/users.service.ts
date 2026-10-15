@@ -17,8 +17,9 @@ import { MailService } from '@modules/mail/mail.service';
 import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/space-setup';
 import { ApiException } from '@shared/api.exception';
 import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
-import { MAX_CONFIRMATION_CODE_ATTEMPTS } from '@shared/constants';
+import { MAX_CONFIRMATION_CODE_ATTEMPTS, PASSWORD_HASH_ROUNDS } from '@shared/constants';
 import { assertFound, constantTimeEquals, isDuplicateKey } from '@shared/utils';
+import type { AccessTokenPayload } from '@shared/types';
 import type { EnvironmentVariables } from '@config/env.validation';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-constant-time-login', 10);
@@ -36,7 +37,8 @@ export class UsersService {
 
   private generateAccessToken(user: User): string {
     const jwtSecret = this.configService.getOrThrow('JWT_SECRET', { infer: true });
-    return jwt.sign({ id: user.id }, jwtSecret, { expiresIn: 60 * 60 * 24 * 90 });
+    const payload: AccessTokenPayload = { id: user.id, ver: user.auth_version };
+    return jwt.sign(payload, jwtSecret, { expiresIn: 60 * 60 * 24 * 90 });
   }
 
   async register(createUserDto: CreateUserDto): Promise<User> {
@@ -104,7 +106,7 @@ export class UsersService {
   }
 
   async updateUnverified(id: number, createUserDto: CreateUserDto): Promise<User> {
-    const password = await bcrypt.hash(createUserDto.password, 10);
+    const password = await bcrypt.hash(createUserDto.password, PASSWORD_HASH_ROUNDS);
 
     await this.dataSource.transaction(async (manager) => {
       const user = await this.lockUser(manager, id);
@@ -141,7 +143,7 @@ export class UsersService {
 
     // A rejected code is returned rather than thrown so the transaction
     // commits the attempt counter / expiry before the error reaches the client.
-    const rejection = await this.dataSource.transaction(async (manager): Promise<HttpException | null> => {
+    const outcome = await this.dataSource.transaction(async (manager): Promise<HttpException | User> => {
       const user = await this.lockUser(manager, found.id);
 
       if (!user) {
@@ -171,14 +173,14 @@ export class UsersService {
       await this.confirmationCodesService.expire(confirmationCode.id, manager);
       await this.initializeVerifiedUser(manager, user.id);
 
-      return null;
+      return user;
     });
 
-    if (rejection) {
-      throw rejection;
+    if (outcome instanceof HttpException) {
+      throw outcome;
     }
 
-    return this.generateAccessToken(found);
+    return this.generateAccessToken(outcome);
   }
 
   async login(loginUserDto: LoginUserDto): Promise<string> {
@@ -195,7 +197,19 @@ export class UsersService {
       throw new ApiException('EMAIL_NOT_VERIFIED', HttpStatus.FORBIDDEN);
     }
 
-    return this.generateAccessToken(user);
+    // The token is signed under the user's shared lock, and only if the
+    // checked password is still current: a password reset holds the
+    // exclusive lock, so a login racing it either finishes first and its
+    // session is revoked, or sees the new password and is refused.
+    return this.dataSource.transaction(async (manager) => {
+      const current = await this.lockUser(manager, user.id, 'pessimistic_read');
+
+      if (!current || current.password !== user.password || current.auth_version !== user.auth_version) {
+        throw new ApiException('INVALID_CREDENTIALS', HttpStatus.UNAUTHORIZED);
+      }
+
+      return this.generateAccessToken(current);
+    });
   }
 
   async getProfile(userId: number): Promise<User> {
@@ -221,17 +235,17 @@ export class UsersService {
     return this.updateUnverified(existing.id, createUserDto);
   }
 
-  async exists(id: number): Promise<boolean> {
-    const count = await this.userRepository.count({ where: { id } });
-    return count > 0;
+  async findAuthVersion(id: number): Promise<number | null> {
+    const user = await this.userRepository.findOne({ select: { id: true, auth_version: true }, where: { id } });
+    return user?.auth_version ?? null;
   }
 
-  private async lockUser(manager: EntityManager, userId: number): Promise<User | null> {
-    return manager
-      .createQueryBuilder(User, 'user')
-      .setLock('pessimistic_write')
-      .where('user.id = :userId', { userId })
-      .getOne();
+  private async lockUser(
+    manager: EntityManager,
+    userId: number,
+    mode: 'pessimistic_read' | 'pessimistic_write' = 'pessimistic_write',
+  ): Promise<User | null> {
+    return manager.createQueryBuilder(User, 'user').setLock(mode).where('user.id = :userId', { userId }).getOne();
   }
 
   // email_verified is set in the same transaction as the starter data, so

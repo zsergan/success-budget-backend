@@ -757,6 +757,7 @@ them in the order above, so two writes never wait on each other crosswise:
 | Password reset request                                                      | user (S) if the email has one, password reset challenge (X)                                           |
 | Password reset verify                                                       | password reset challenge (X)                                                                          |
 | Password reset complete                                                     | user (X), password reset challenge (X)                                                                |
+| Login (token issue)                                                         | user (S)                                                                                              |
 
 (S = shared, X = exclusive.) Consequences:
 
@@ -776,6 +777,10 @@ them in the order above, so two writes never wait on each other crosswise:
   in-flight transaction writes to it.
 - Moving a transaction between wallets locks both wallets in ascending id
   order, whichever is the source.
+- Login signs its token under the user's shared lock after checking that
+  the password and `auth_version` are still the ones it verified. A
+  password reset holds the user exclusively, so a login racing it either
+  gets a token that the reset then revokes, or is refused.
 - MySQL may still detect a deadlock in rare cases (for example, two waiting
   repeats of one key after the first attempt failed). The server retries
   the whole unit up to three times before answering `500`.

@@ -111,8 +111,10 @@ specs locally.
   `time_zone`.
 - There is no RBAC: `User` has no role, and the seeded `admin@dev.local` is
   only a label.
-- `JwtStrategy.validate()` checks that the user exists on every request, so
-  a deleted user's token is rejected immediately.
+- `JwtStrategy.validate()` checks on every request that the user exists and
+  that the token's `ver` matches `users.auth_version` (a token without `ver`
+  counts as 1), so a deleted user's token and tokens issued before a
+  password reset are rejected immediately.
 
 ## Database and migrations
 

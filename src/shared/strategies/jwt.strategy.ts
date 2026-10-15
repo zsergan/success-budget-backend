@@ -4,11 +4,12 @@ import { ConfigService } from '@nestjs/config';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
 import { UsersService } from '@modules/users/users.service';
+import type { AccessTokenPayload } from '@shared/types';
 import type { EnvironmentVariables } from '@config/env.validation';
 
-interface JwtPayload {
-  id: number;
-}
+// users.auth_version starts here, so tokens issued before versioning stay
+// valid until the account's first password reset
+const UNVERSIONED_TOKEN_VERSION = 1;
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -23,10 +24,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: JwtPayload) {
-    const userExists = await this.usersService.exists(payload.id);
+  async validate(payload: AccessTokenPayload) {
+    const authVersion = await this.usersService.findAuthVersion(payload.id);
 
-    if (!userExists) {
+    if (authVersion === null || (payload.ver ?? UNVERSIONED_TOKEN_VERSION) !== authVersion) {
       throw new UnauthorizedException();
     }
 
