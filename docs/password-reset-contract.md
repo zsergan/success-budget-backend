@@ -10,13 +10,13 @@ This document is the source of truth for the mobile client. Routes are under
 
 ## Implementation status
 
-| Part                                                        | Status      |
-| ----------------------------------------------------------- | ----------- |
-| Contract, error codes, request and response schemas         | defined     |
-| Storage (`password_reset_challenges`, `users.auth_version`) | migrated    |
-| `POST /users/password-reset/request`                        | implemented |
-| `POST /users/password-reset/verify`                         | implemented |
-| `POST /users/password-reset/complete`, session revocation   | implemented |
+| Part                                                                  | Status      |
+| --------------------------------------------------------------------- | ----------- |
+| `POST /users/password-reset/request`, `/verify`, `/complete`          | implemented |
+| Session revocation (`ver` in access tokens, checked on every request) | implemented |
+
+This is the only password recovery path; registration email codes
+(`POST /users/verify-email`) are a separate mechanism and unchanged.
 
 ## Flow
 
@@ -34,6 +34,16 @@ This document is the source of truth for the mobile client. Routes are under
 
 `reset_token` lives in memory only for the duration of the flow: never
 persist it, log it or put it in a URL.
+
+### Sessions
+
+Recovery never signs the user in: no route here returns an access token.
+After a completed reset, any request with an access token issued before it,
+on any device, gets `401 UNAUTHORIZED`, which the client already handles by
+discarding the token and opening the login screen. Tokens issued before
+this API existed keep working until the account's first reset. Signing in
+again with `POST /users/login` issues a token that is valid until the next
+reset (or its 90-day expiry).
 
 ## Rules
 
@@ -196,8 +206,9 @@ the others get `400 PASSWORD_RESET_AUTHORIZATION_INVALID`.
 | `VALIDATION_FAILED`                    | 400    | Show the field errors; nothing was used up                        |
 
 `Retry-After` is an integer number of seconds and is present on every
-`429` of these routes. The client should not try to tell from any response
-whether an account exists: no response says so.
+`429` of these routes. A `429 PASSWORD_RESET_RATE_LIMITED` body also
+carries the same value as `retryAfterSeconds`. The client should not try
+to tell from any response whether an account exists: no response says so.
 
 ## Server notes
 

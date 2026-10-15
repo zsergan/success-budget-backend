@@ -111,9 +111,11 @@ describe('Password reset (e2e)', () => {
 
   afterAll(async () => {
     try {
-      await testApp.dataSource.query('DELETE FROM password_reset_challenges WHERE email_hash IN (?)', [
-        emails.map((email) => hashEmail(key, email)),
-      ]);
+      if (emails.length) {
+        await testApp.dataSource.query('DELETE FROM password_reset_challenges WHERE email_hash IN (?)', [
+          emails.map((email) => hashEmail(key, email)),
+        ]);
+      }
       await deleteUsers(testApp.dataSource, userIds);
     } finally {
       await testApp.app.close();
@@ -143,6 +145,7 @@ describe('Password reset (e2e)', () => {
       const refused = await requestReset(email).expect(429);
       expect(refused.body.code).toBe('PASSWORD_RESET_RATE_LIMITED');
       expect(refused.headers['retry-after']).toBe('60');
+      expect(refused.body.retryAfterSeconds).toBe(60);
     }
 
     await settle();
@@ -173,6 +176,24 @@ describe('Password reset (e2e)', () => {
     expect(
       schemaErrors(document, okResponseSchema(document, '/password-reset/verify', 'post'), authorized.body),
     ).toEqual([]);
+  });
+
+  it('documents every status of the three routes, Retry-After on 429 and the password rules', () => {
+    const document = createOpenApiDocument(testApp.app);
+    const operation = (route: string) =>
+      document.paths[Object.keys(document.paths).find((path) => path.endsWith(`/password-reset/${route}`))!].post!;
+    const expected = { request: ['202', '400', '429'], verify: ['200', '400', '429'], complete: ['204', '400', '429'] };
+
+    for (const [route, statuses] of Object.entries(expected)) {
+      const responses = operation(route).responses as Record<string, { headers?: Record<string, unknown> }>;
+      expect(Object.keys(responses).sort()).toEqual(statuses);
+      expect(responses['429'].headers).toHaveProperty('Retry-After');
+    }
+
+    expect(document.components!.schemas!.CompletePasswordResetDto).toMatchObject({
+      required: ['reset_token', 'password'],
+      properties: { password: { minLength: 8, maxLength: 72 } },
+    });
   });
 
   it('exchanges the code for a reset token that is replayable and is not an access token', async () => {
