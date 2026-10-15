@@ -17,7 +17,7 @@ A modular NestJS app - one module per domain area, each with its own
 controller/service/DTOs. All routes are protected by a global JWT guard by
 default (`src/shared/guards/jwt-auth.guard.ts`); a `@Public()` decorator
 opts specific handlers out (registration, login, email verification,
-currencies, health check).
+password reset, currencies, health check).
 
 | Module                | Purpose                                                              |
 | ---------------------- | --------------------------------------------------------------------- |
@@ -28,6 +28,7 @@ currencies, health check).
 | `categories`           | Income/expense categories - user-defined plus defaults on signup    |
 | `limits`               | Monthly spending limits, per category or overall                    |
 | `currencies`           | Read-only list of supported currencies (public)                     |
+| `password-reset`       | Password reset by emailed code; ends every session of the account   |
 | `confirmation-codes`   | Email verification codes (internal service, no controller)          |
 | `health`               | `/health` liveness/readiness check for deployment tooling (public)  |
 
@@ -78,7 +79,7 @@ them from the UI directly.
    Easiest: use the provided docker-compose file, which already matches
    `.env.example`'s credentials - it starts both MySQL and
    [MailDev](https://github.com/maildev/maildev) (a local SMTP catcher for
-   confirmation-code emails; nothing sent through it leaves this machine).
+   confirmation-code and password reset emails; nothing sent through it leaves this machine).
    MailDev's web UI is at `http://localhost:1080`.
 
    ```bash

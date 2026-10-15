@@ -53,7 +53,6 @@ export enum CategoryIcon {
 
 export enum ConfirmationType {
   EMAIL = 'email',
-  RESET_PASSWORD = 'reset_password',
 }
 
 // tracks the outcome of the most recent send *attempt*, separately from

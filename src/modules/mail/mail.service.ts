@@ -31,28 +31,56 @@ export class MailService {
   }
 
   async sendConfirmationCode(to: string, code: string, expiresAt: Date): Promise<void> {
-    // a resent code keeps its original expiry, not a fresh 10 minutes - say
-    // how long is actually left, rounded up so "expires in 1 minute" never
-    // reads as "expires in 0 minutes"
-    const minutesLeft = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000));
-    const expiryText = `${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}`;
+    const expiryText = this.expiryText(expiresAt);
 
-    try {
-      await this.transporter.sendMail({
-        from: this.from,
+    await this.send(
+      {
         to,
         subject: 'Confirm your Success Budget account',
         text: `Your confirmation code is ${code}. It expires in ${expiryText}.`,
         html: `<p>Your confirmation code is <strong>${code}</strong>.</p><p>It expires in ${expiryText}.</p>`,
-      });
+      },
+      'confirmation',
+    );
+  }
+
+  async sendPasswordResetCode(to: string, code: string, expiresAt: Date): Promise<void> {
+    const expiryText = this.expiryText(expiresAt);
+    const latestOnly = 'Only the code from the most recent email works.';
+    const ignore = 'If you did not ask to reset your password, ignore this email; your password stays the same.';
+
+    await this.send(
+      {
+        to,
+        subject: 'Reset your Success Budget password',
+        text: `Your password reset code is ${code}. It expires in ${expiryText}. ${latestOnly}\n\n${ignore}`,
+        html:
+          `<p>Your password reset code is <strong>${code}</strong>.</p>` +
+          `<p>It expires in ${expiryText}. ${latestOnly}</p><p>${ignore}</p>`,
+      },
+      'password reset',
+    );
+  }
+
+  // A resent code keeps its original expiry, so this is the time actually
+  // left, rounded up so it never reads as 0 minutes.
+  private expiryText(expiresAt: Date): string {
+    const minutesLeft = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000));
+
+    return `${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}`;
+  }
+
+  private async send(message: { to: string; subject: string; text: string; html: string }, kind: string) {
+    try {
+      await this.transporter.sendMail({ from: this.from, ...message });
     } catch (error) {
       // Never log the code itself or SMTP credentials - just enough to
       // diagnose a delivery problem from the logs. This still flows
       // through the app's pino sink (see src/config/logger.config.ts),
       // not a separate console logger.
       const reason = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to send confirmation email to ${to}: ${reason}`);
-      throw new ServiceUnavailableException('Could not send the confirmation email, please try again shortly');
+      this.logger.error(`Failed to send ${kind} email to ${message.to}: ${reason}`);
+      throw new ServiceUnavailableException(`Could not send the ${kind} email, please try again shortly`);
     }
   }
 }

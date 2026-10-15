@@ -88,4 +88,42 @@ describe('MailService', () => {
       service.sendConfirmationCode('user@example.com', '123456', new Date(Date.now() + 60000)),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
+
+  describe('sendPasswordResetCode', () => {
+    beforeEach(() => {
+      service = new MailService(buildConfigService(baseEnv));
+    });
+
+    it('sends the code with its remaining lifetime and says only the latest code works', async () => {
+      sendMail.mockResolvedValue(undefined);
+
+      await service.sendPasswordResetCode('user@example.com', '042917', new Date(Date.now() + 17 * 60000 - 1000));
+
+      expect(sendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          from: baseEnv.MAIL_FROM,
+          to: 'user@example.com',
+          subject: 'Reset your Success Budget password',
+        }),
+      );
+      const { text, html } = sendMail.mock.calls[0][0] as { text: string; html: string };
+      for (const body of [text, html]) {
+        expect(body).toContain('042917');
+        expect(body).toContain('expires in 17 minutes');
+        expect(body).toContain('Only the code from the most recent email works.');
+      }
+    });
+
+    it('turns a delivery failure into a ServiceUnavailableException without logging the code', async () => {
+      sendMail.mockRejectedValue(new Error('connection refused'));
+      const logError = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+      await expect(
+        service.sendPasswordResetCode('user@example.com', '042917', new Date(Date.now() + 60000)),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(logError).toHaveBeenCalledWith(
+        'Failed to send password reset email to user@example.com: connection refused',
+      );
+    });
+  });
 });

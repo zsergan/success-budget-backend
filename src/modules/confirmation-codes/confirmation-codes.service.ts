@@ -92,7 +92,7 @@ export class ConfirmationCodesService {
 
       // same answer registration gives for a verified account - a
       // verification may have committed since the caller's own check
-      if (confirmationType === ConfirmationType.EMAIL && user.email_verified) {
+      if (user.email_verified) {
         throw new ApiException('EMAIL_ALREADY_EXISTS', HttpStatus.BAD_REQUEST);
       }
 

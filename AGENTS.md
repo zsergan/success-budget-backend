@@ -36,9 +36,10 @@ specs locally.
   (see `git log`) and, when needed, a 1–3 line body explaining why.
 - Never put AI session/transcript links in commits or PR bodies.
   A `Co-Authored-By` trailer is fine.
-- Branches: `feat/<initiative>-stage<N>-<topic>` for staged initiatives,
-  otherwise `feat/`, `fix/` or `chore/<topic>`. The old "Phase N"
-  numbering ended at 16; do not continue it.
+- Branches: `<type>/<scope>-<change>[-<extra>]`, e.g.
+  `feat/transactions-feed`, `fix/write-access-hardening`. No stage
+  numbering (`stage1`). The old "Phase N" numbering ended at 16; do not
+  continue it.
 - The repo is public (all rights reserved). Never commit secrets. `.env` is
   gitignored; `.env.example` must list every variable that
   `src/config/env.validation.ts` reads.
@@ -110,8 +111,10 @@ specs locally.
   `time_zone`.
 - There is no RBAC: `User` has no role, and the seeded `admin@dev.local` is
   only a label.
-- `JwtStrategy.validate()` checks that the user exists on every request, so
-  a deleted user's token is rejected immediately.
+- `JwtStrategy.validate()` checks on every request that the user exists and
+  that the token's `ver` matches `users.auth_version` (a token without `ver`
+  counts as 1), so a deleted user's token and tokens issued before a
+  password reset are rejected immediately.
 
 ## Database and migrations
 
@@ -126,8 +129,9 @@ specs locally.
 
 ## API contracts
 
-- `docs/transactions-contract.md`, `docs/statistics-contract.md` and
-  `docs/type-contract.md` are the source of truth for the mobile client.
+- `docs/transactions-contract.md`, `docs/statistics-contract.md`,
+  `docs/type-contract.md` and `docs/password-reset-contract.md` are the
+  source of truth for the mobile client.
   Change them in the same PR as the behavior they describe, and keep the
   contract e2e specs (`test/api-contract.e2e-spec.ts`,
   `test/type-contract.e2e-spec.ts`, ...) passing.

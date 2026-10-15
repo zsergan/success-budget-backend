@@ -34,6 +34,7 @@ describe('UsersService', () => {
   let repository: jest.Mocked<Repository<User>>;
   let userRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
   let lockedUser: { getOne: jest.Mock };
+  let userLockQueryBuilder: { setLock: jest.Mock; where: jest.Mock; getOne: (...args: unknown[]) => unknown };
   let manager: { getRepository: jest.Mock; createQueryBuilder: jest.Mock };
   let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
@@ -47,7 +48,7 @@ describe('UsersService', () => {
   beforeEach(async () => {
     userRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), update: jest.fn() };
     lockedUser = { getOne: jest.fn().mockResolvedValue(buildUser({ id: 1, email_verified: 0 })) };
-    const userLockQueryBuilder = {
+    userLockQueryBuilder = {
       setLock: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       getOne: (...args: unknown[]) => lockedUser.getOne(...args),
@@ -472,6 +473,17 @@ describe('UsersService', () => {
       expect(token).toBe('token');
     });
 
+    it('issues the token for the auth version read under the lock', async () => {
+      lockedUser.getOne.mockResolvedValue(buildUser({ id: 1, email_verified: 0, auth_version: 2 }));
+      confirmationCodesService.lockActive.mockResolvedValue(
+        buildConfirmationCode({ id: 7, confirmation_code: '1234' }),
+      );
+
+      const token = await service.verifyEmail(dto);
+
+      expect(jwt.verify(token, JWT_SECRET_FOR_TESTS)).toMatchObject({ id: 1, ver: 2 });
+    });
+
     it('issues no token when initialization fails', async () => {
       confirmationCodesService.lockActive.mockResolvedValue(
         buildConfirmationCode({ id: 7, confirmation_code: '1234' }),
@@ -520,18 +532,62 @@ describe('UsersService', () => {
       );
     });
 
-    it('returns an access token on valid credentials for a verified user', async () => {
-      repository.findOne.mockResolvedValue(buildUser({ id: 3, password: 'hashed', email_verified: 1 }));
-      mockCompare.mockResolvedValue(true);
+    describe('with valid credentials for a verified user', () => {
+      const user = buildUser({ id: 3, password: 'hashed', email_verified: 1, auth_version: 4 });
 
-      const token = await service.login({ email: 'a@b.com', password: 'right' });
+      beforeEach(() => {
+        repository.findOne.mockResolvedValue(user);
+        lockedUser.getOne.mockResolvedValue({ ...user });
+        mockCompare.mockResolvedValue(true);
+      });
 
-      const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number };
-      expect(decoded.id).toBe(3);
+      it('signs a token with the auth version under a shared lock on the user', async () => {
+        const signedInTransaction: boolean[] = [];
+        const generateAccessToken = jest.spyOn(
+          service as unknown as { generateAccessToken: (user: User) => string },
+          'generateAccessToken',
+        );
+        generateAccessToken.mockImplementation(() => {
+          signedInTransaction.push(inTransaction);
+          return 'token';
+        });
+
+        await expect(service.login({ email: 'a@b.com', password: 'right' })).resolves.toBe('token');
+        expect(userLockQueryBuilder.setLock).toHaveBeenCalledWith('pessimistic_read');
+        expect(signedInTransaction).toEqual([true]);
+      });
+
+      it('returns a token carrying the user id and auth version', async () => {
+        const token = await service.login({ email: 'a@b.com', password: 'right' });
+
+        const decoded = jwt.verify(token, JWT_SECRET_FOR_TESTS) as { id: number; ver: number };
+        expect(decoded).toMatchObject({ id: 3, ver: 4 });
+      });
+
+      it.each([
+        ['the password changed', { password: 'rehashed' }],
+        ['a password reset bumped the auth version', { auth_version: 5 }],
+      ])('refuses when %s after the check', async (_case, changes) => {
+        lockedUser.getOne.mockResolvedValue({ ...user, ...changes });
+
+        await expect(service.login({ email: 'a@b.com', password: 'right' })).rejects.toMatchObject(
+          new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
+        );
+      });
+
+      it('refuses when the user was deleted after the check', async () => {
+        lockedUser.getOne.mockResolvedValue(null);
+
+        await expect(service.login({ email: 'a@b.com', password: 'right' })).rejects.toMatchObject(
+          new HttpException(ErrorMessages.INVALID_CREDENTIALS, 401),
+        );
+      });
     });
 
     it('sets a ~90 day expiry, not 90000 days', async () => {
-      repository.findOne.mockResolvedValue(buildUser({ id: 3, password: 'hashed', email_verified: 1 }));
+      const user = buildUser({ id: 3, password: 'hashed', email_verified: 1 });
+      repository.findOne.mockResolvedValue(user);
+      lockedUser.getOne.mockResolvedValue(user);
       mockCompare.mockResolvedValue(true);
 
       const token = await service.login({ email: 'a@b.com', password: 'right' });
@@ -566,6 +622,21 @@ describe('UsersService', () => {
 
       expect(repository.findOne).toHaveBeenCalledWith({ where: { id: 1 } });
       expect(result).toEqual(user);
+    });
+  });
+
+  describe('findAuthVersion', () => {
+    it('reads only the auth version of the user', async () => {
+      repository.findOne.mockResolvedValue(buildUser({ id: 1, auth_version: 3 }));
+
+      await expect(service.findAuthVersion(1)).resolves.toBe(3);
+      expect(repository.findOne).toHaveBeenCalledWith({ select: { id: true, auth_version: true }, where: { id: 1 } });
+    });
+
+    it('returns null for a user that no longer exists', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(service.findAuthVersion(1)).resolves.toBeNull();
     });
   });
 

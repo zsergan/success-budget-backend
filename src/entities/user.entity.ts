@@ -10,6 +10,8 @@ import {
 import { Exclude } from 'class-transformer';
 import * as bcrypt from 'bcrypt';
 
+import { PASSWORD_HASH_ROUNDS } from '@shared/constants';
+
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn()
@@ -28,12 +30,17 @@ export class User {
 
   @BeforeInsert()
   async hashPassword() {
-    this.password = await bcrypt.hash(this.password, 10);
+    this.password = await bcrypt.hash(this.password, PASSWORD_HASH_ROUNDS);
   }
 
   @Exclude()
   @Column({ type: 'tinyint', default: 0 })
   email_verified!: number;
+
+  // access tokens issued for an older version are rejected
+  @Exclude()
+  @Column({ type: 'int', unsigned: true, default: 1 })
+  auth_version!: number;
 
   @CreateDateColumn({ type: 'timestamp' })
   created_at!: Date;
