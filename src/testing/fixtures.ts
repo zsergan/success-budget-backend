@@ -36,6 +36,7 @@ export function buildUser(overrides: Partial<User> = {}): User {
       name: 'User',
       password: 'hashed-password',
       email_verified: 1,
+      auth_version: 1,
       created_at: CREATED_AT,
       updated_at: CREATED_AT,
     },

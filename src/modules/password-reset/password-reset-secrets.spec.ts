@@ -1,5 +1,5 @@
 import {
-  generateResetToken,
+  deriveResetToken,
   hashCode,
   hashEmail,
   hashResetToken,
@@ -35,12 +35,22 @@ describe('password reset secrets', () => {
     expect(hashCode(key, hashEmail(key, 'other@example.com'), '042917')).not.toBe(hash);
   });
 
-  it('generates unguessable URL-safe reset tokens and stores only their hash', () => {
-    const token = generateResetToken();
+  it('derives the same URL-safe reset token for the same challenge and stores only its hash', () => {
+    const source = {
+      challengeId: '7',
+      userId: 3,
+      codeHash: hashCode(key, hashEmail(key, 'user@example.com'), '042917'),
+      verifiedAt: new Date('2026-10-15T10:00:00.123Z'),
+    };
+    const token = deriveResetToken(key, source);
 
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(generateResetToken()).not.toBe(token);
+    expect(deriveResetToken(key, { ...source })).toBe(token);
+    expect(deriveResetToken(key, { ...source, challengeId: '8' })).not.toBe(token);
+    expect(deriveResetToken(key, { ...source, userId: 4 })).not.toBe(token);
+    expect(deriveResetToken(key, { ...source, verifiedAt: new Date('2026-10-15T10:00:00.124Z') })).not.toBe(token);
+    expect(deriveResetToken(passwordResetKey('another-jwt-secret-value'), source)).not.toBe(token);
     expect(hashResetToken(token)).toMatch(/^[0-9a-f]{64}$/);
-    expect(hashResetToken(token)).toBe(hashResetToken(token));
+    expect(hashResetToken(token)).not.toContain(token);
   });
 });

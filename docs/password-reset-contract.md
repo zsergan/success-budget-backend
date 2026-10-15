@@ -10,15 +10,15 @@ This document is the source of truth for the mobile client. Routes are under
 
 ## Implementation status
 
-| Part                                                        | Status   |
-| ----------------------------------------------------------- | -------- |
-| Contract, error codes, request and response schemas         | defined  |
-| Storage (`password_reset_challenges`, `users.auth_version`) | migrated |
-| `POST /users/password-reset/request`                        | planned  |
-| `POST /users/password-reset/verify`                         | planned  |
-| `POST /users/password-reset/complete`, session revocation   | planned  |
+| Part                                                        | Status      |
+| ----------------------------------------------------------- | ----------- |
+| Contract, error codes, request and response schemas         | defined     |
+| Storage (`password_reset_challenges`, `users.auth_version`) | migrated    |
+| `POST /users/password-reset/request`                        | implemented |
+| `POST /users/password-reset/verify`                         | implemented |
+| `POST /users/password-reset/complete`, session revocation   | planned     |
 
-Until a route is implemented it answers `404`.
+Until `complete` is implemented it answers `404`.
 
 ## Flow
 
@@ -52,12 +52,14 @@ persist it, log it or put it in a URL.
 | Per network address        | at most 5 calls per minute to each of the three routes                                 |
 
 A **challenge** is one code sequence for one address. It starts with a
-request when the address has no active challenge, and ends when it expires,
-when its fifth wrong code is entered, when its code is accepted, or when the
-reset completes. Resends within an active challenge rotate the code but do
-not start a new challenge, so they never extend the 30 minutes or restore
-wrong-code attempts. The next accepted request after a challenge ended
-starts a new one, with a fresh 30 minutes and 5 attempts.
+request when the address has no pending challenge. While pending, resends
+rotate the code but do not start a new challenge, so they never extend the
+30 minutes or restore wrong-code attempts. Once its code is accepted, the
+challenge takes only that code again (see verify) until its `reset_token`
+expires. It ends when it expires, when its fifth wrong code is entered, when
+its `reset_token` expires, or when the reset completes. The next accepted
+request after the code was accepted or the challenge ended starts a new one,
+with a fresh 30 minutes and 5 attempts.
 
 The hourly limits count per address in a fixed one-hour window that starts
 with the first counted event after the previous window ended. They outlive
@@ -119,20 +121,24 @@ A refused request changes nothing: no code is sent or rotated.
 ```
 
 `reset_token` only authorizes `complete` for this account. It is not an
-access token and does not sign the user in. A code is accepted once; after
-that the challenge takes no more codes.
+access token and does not sign the user in.
+
+Repeating the accepted code while `reset_token` is valid, for example after
+a lost response, returns the same `reset_token` with the seconds it has
+left; it never issues a second one. Wrong codes still count after the code
+was accepted, and the fifth ends the challenge and its `reset_token`.
 
 Checked in this order; the first match answers:
 
-| Case                                                                               | Response                                                      |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `email` invalid, or `code` not exactly six ASCII digits (no attempt is used)       | `400 VALIDATION_FAILED`                                       |
-| Too many calls from the network address                                            | `429 TOO_MANY_REQUESTS`, `Retry-After`                        |
-| 10 wrong codes already entered in the address's hour window                        | `429 PASSWORD_RESET_RATE_LIMITED`, `Retry-After` = window end |
-| No active challenge: none requested, expired, 5 wrong codes used, or code accepted | `400 PASSWORD_RESET_CODE_UNUSABLE`                            |
-| Wrong code, and this was the fifth wrong code of the challenge                     | `400 PASSWORD_RESET_CODE_UNUSABLE`                            |
-| Wrong code, or a code of an earlier email                                          | `400 PASSWORD_RESET_CODE_INVALID`                             |
-| Correct code                                                                       | `200`                                                         |
+| Case                                                                                                        | Response                                                      |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `email` invalid, or `code` not exactly six ASCII digits (no attempt is used)                                | `400 VALIDATION_FAILED`                                       |
+| Too many calls from the network address                                                                     | `429 TOO_MANY_REQUESTS`, `Retry-After`                        |
+| 10 wrong codes already entered in the address's hour window                                                 | `429 PASSWORD_RESET_RATE_LIMITED`, `Retry-After` = window end |
+| No usable challenge: none requested, expired, 5 wrong codes used, `reset_token` expired, or reset completed | `400 PASSWORD_RESET_CODE_UNUSABLE`                            |
+| Wrong code, and this was the fifth wrong code of the challenge                                              | `400 PASSWORD_RESET_CODE_UNUSABLE`                            |
+| Wrong code, or a code of an earlier email                                                                   | `400 PASSWORD_RESET_CODE_INVALID`                             |
+| Correct code, or a repeat of the accepted code                                                              | `200`                                                         |
 
 The 10-per-hour limit applies even to a correct code. Neither the codes nor
 the order of checks depend on whether the address has an account.
@@ -148,12 +154,12 @@ are used up, and every existing session of the account ends: requests with
 an access token issued before this moment get `401 UNAUTHORIZED`. No new
 access token is returned; the user signs in with `POST /users/login`.
 
-| Case                                                                               | Response                                   |
-| ---------------------------------------------------------------------------------- | ------------------------------------------ |
-| `reset_token` missing or longer than 255; `password` missing or shorter than 6     | `400 VALIDATION_FAILED`; token not used    |
-| Too many calls from the network address                                            | `429 TOO_MANY_REQUESTS`, `Retry-After`     |
-| Token unknown, expired, already used, or replaced by a newer request for the email | `400 PASSWORD_RESET_AUTHORIZATION_INVALID` |
-| Success                                                                            | `204`                                      |
+| Case                                                                                                       | Response                                   |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `reset_token` missing or longer than 255; `password` missing or shorter than 6                             | `400 VALIDATION_FAILED`; token not used    |
+| Too many calls from the network address                                                                    | `429 TOO_MANY_REQUESTS`, `Retry-After`     |
+| Token unknown, expired, already used, ended by 5 wrong codes, or replaced by a newer request for the email | `400 PASSWORD_RESET_AUTHORIZATION_INVALID` |
+| Success                                                                                                    | `204`                                      |
 
 A new accepted request for the address ends the previous challenge, so a
 `reset_token` issued before it stops working.
@@ -189,8 +195,12 @@ challenge of that address so the hourly window survives it. The row holds:
   `NULL` when there is no account, so no code matches;
 - `attempts`, `started_at`, `expires_at`, `last_requested_at`: the
   challenge;
-- `verified_at`, `reset_token_hash` (SHA-256 of the 32-byte random token),
-  `reset_token_expires_at`: the authorization;
+- `verified_at`, `reset_token_hash`, `reset_token_expires_at`,
+  `completed_at`: the authorization. The token is an HMAC of the challenge
+  id, the user, the code hash and `verified_at`, so a repeat of the accepted
+  code yields the same token; only its SHA-256 is stored;
+- `send_attempt_id`, `send_status`, `last_sent_at`: the latest email, as for
+  registration codes; `send_status` is `NULL` when nothing is sent;
 - `window_started_at`, `window_requests`, `window_failed_attempts`: the
   hourly limits.
 
@@ -206,22 +216,28 @@ version.
 
 ### Lifecycle
 
-- **Request**, under the row lock: roll the hourly window if it ended;
-  refuse within the cooldown or over the request limit. If the challenge is
-  active (not expired, fewer than 5 attempts, not verified), rotate the code
-  and keep `expires_at` and `attempts`; bind the account if one became
-  eligible since the challenge started. Otherwise start a challenge: resolve
-  the account, new code, `attempts` 0, new `expires_at`, and clear any
-  authorization. Count the request, commit, then send the email outside the
-  transaction; a send failure is logged without the code and not reported.
+- **Request**: lock the user (shared) if the address has one, then the row.
+  Roll the hourly window if it ended; refuse within the cooldown or over the
+  request limit, changing nothing. If the challenge is pending (not
+  expired, fewer than 5 attempts, not verified), rotate the code and keep
+  `expires_at` and `attempts`; bind the account if one became eligible
+  since the challenge started. Otherwise start a challenge: new code,
+  `attempts` 0, new `expires_at`, authorization cleared. Count the request
+  and reserve the send (`send_attempt_id` + 1, `send_status` `pending`).
+  After the commit and the response, send the email; its outcome is written
+  only if `send_attempt_id` is still the reserved one, so a slow, stale send
+  never overwrites a newer one. A send failure is logged without the code.
+  In-flight sends are awaited on shutdown.
 - **Verify**, under the row lock: roll the window; refuse over the
-  wrong-code limit; refuse a challenge that is not active. A wrong code
+  wrong-code limit; refuse a challenge that has ended. A wrong code
   increments `attempts` and `window_failed_attempts` and commits before the
-  error is returned. A correct code sets `verified_at` and stores the token
-  hash with `min(now + 10 min, expires_at)`.
-- **Complete**: lock the row by `reset_token_hash`, check
-  `reset_token_expires_at`, lock the user, update the password and
-  increment `auth_version`, then clear `code_hash` and `reset_token_hash`.
+  error is returned; the fifth also clears the authorization. The first
+  correct code sets `verified_at` and stores the token hash with
+  `min(now + 10 min, expires_at)`; a repeat derives the same token again.
+- **Complete**: find the row by `reset_token_hash`, lock the user, lock the
+  row and check the token again, update the password and increment
+  `auth_version`, then set `completed_at` and clear `code_hash` and
+  `reset_token_hash`.
 
 Rows of addresses without an account are kept like the others; a purge of
 rows idle for longer than the window and the code lifetime can be added
@@ -231,13 +247,14 @@ without a contract change.
 
 Each write runs in one `runWriteTransaction` and locks:
 
-| Operation       | Locks, in order                                                |
-| --------------- | -------------------------------------------------------------- |
-| Request, verify | challenge row by `email_hash` (X); reads the user without lock |
-| Complete        | challenge row by `reset_token_hash` (X), user (X)              |
+| Operation | Locks, in order                                |
+| --------- | ---------------------------------------------- |
+| Request   | user (S) if the address has one, challenge (X) |
+| Verify    | challenge (X)                                  |
+| Complete  | user (X), challenge (X)                        |
 
-No other write locks a challenge row, and registration and email
-verification lock the user without touching challenges, so these cannot
-deadlock with them. The first request for an address inserts the row; a
-concurrent insert that loses on `UQ_password_reset_challenges_email_hash`
-re-reads and locks the winner's row.
+User before recovery record, as registration locks the user before its
+confirmation code. No other write locks a challenge row. The first request
+for an address inserts the row; a concurrent insert that loses on
+`UQ_password_reset_challenges_email_hash` runs the transaction again and
+waits on the winner's row.

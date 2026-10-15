@@ -19,6 +19,7 @@ import { LimitsModule } from '@modules/limits/limits.module';
 import { SpacesModule } from '@modules/spaces/spaces.module';
 import { StatisticsModule } from '@modules/statistics/statistics.module';
 import { HealthModule } from '@modules/health/health.module';
+import { PasswordResetModule } from '@modules/password-reset/password-reset.module';
 import { JwtStrategy } from '@shared/strategies/jwt.strategy';
 import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
 import { SchemaCheck } from './database/schema-check';
@@ -38,6 +39,7 @@ import { SchemaCheck } from './database/schema-check';
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     HealthModule,
     UsersModule,
+    PasswordResetModule,
     CategoriesModule,
     WalletsModule,
     TransactionsModule,
