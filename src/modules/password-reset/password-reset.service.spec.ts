@@ -80,10 +80,10 @@ class FakeStore {
 
 describe('PasswordResetService', () => {
   let store: FakeStore;
-  let sendPasswordResetCode: jest.Mock<Promise<void>, [string, string, Date]>;
+  let sendResetEmail: jest.Mock<Promise<void>, [string, string, Date]>;
   let service: PasswordResetService;
 
-  const sentCodes = () => sendPasswordResetCode.mock.calls.map(([, code]) => code);
+  const sentCodes = () => sendResetEmail.mock.calls.map(([, code]) => code);
   const lastCode = () => sentCodes()[sentCodes().length - 1];
   const advance = (ms: number) => jest.setSystemTime(Date.now() + ms);
   const request = (email = EMAIL) => service.request({ email });
@@ -115,11 +115,11 @@ describe('PasswordResetService', () => {
   beforeEach(() => {
     jest.useFakeTimers({ now: START, doNotFake: ['nextTick', 'setImmediate', 'setTimeout'] });
     store = new FakeStore();
-    sendPasswordResetCode = jest.fn().mockResolvedValue(undefined);
+    sendResetEmail = jest.fn().mockResolvedValue(undefined);
     service = new PasswordResetService(
       store.challengeRepository as never,
       store.dataSource as never,
-      { sendPasswordResetCode } as unknown as MailService,
+      { sendPasswordResetCode: sendResetEmail } as unknown as MailService,
       buildConfigService({ JWT_SECRET }),
     );
   });
@@ -137,7 +137,7 @@ describe('PasswordResetService', () => {
       });
       await service.settleDeliveries();
 
-      expect(sendPasswordResetCode).toHaveBeenCalledWith(
+      expect(sendResetEmail).toHaveBeenCalledWith(
         EMAIL,
         expect.stringMatching(/^\d{6}$/),
         new Date(START.getTime() + 30 * MINUTE),
@@ -169,7 +169,7 @@ describe('PasswordResetService', () => {
       });
       expect(store.challenge).toMatchObject({ user_id: null, code_hash: null, send_status: null, attempts: 0 });
       await expectCode(request(), 'PASSWORD_RESET_RATE_LIMITED', 60);
-      expect(sendPasswordResetCode).not.toHaveBeenCalled();
+      expect(sendResetEmail).not.toHaveBeenCalled();
     });
 
     it('refuses a request within the cooldown without sending or rotating anything', async () => {
@@ -179,7 +179,7 @@ describe('PasswordResetService', () => {
 
       await expectCode(request(), 'PASSWORD_RESET_RATE_LIMITED', 40);
       expect(store.challenge).toEqual(before);
-      expect(sendPasswordResetCode).toHaveBeenCalledTimes(1);
+      expect(sendResetEmail).toHaveBeenCalledTimes(1);
     });
 
     it('resends a new code that keeps the expiry and the used attempts; only the latest code works', async () => {
@@ -190,7 +190,7 @@ describe('PasswordResetService', () => {
 
       await request();
 
-      expect(sendPasswordResetCode).toHaveBeenLastCalledWith(
+      expect(sendResetEmail).toHaveBeenLastCalledWith(
         EMAIL,
         expect.any(String),
         new Date(START.getTime() + 30 * MINUTE),
@@ -244,7 +244,7 @@ describe('PasswordResetService', () => {
     });
 
     it('records a failed delivery without telling the client', async () => {
-      sendPasswordResetCode.mockRejectedValue(new ServiceUnavailableException());
+      sendResetEmail.mockRejectedValue(new ServiceUnavailableException());
 
       await expect(request()).resolves.toMatchObject({ resend_after_seconds: 60 });
       await service.settleDeliveries();
@@ -255,7 +255,7 @@ describe('PasswordResetService', () => {
 
     it('does not let a stale delivery overwrite the outcome of a newer one', async () => {
       let failFirst!: (error: Error) => void;
-      sendPasswordResetCode.mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)));
+      sendResetEmail.mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)));
       await request();
       advance(MINUTE);
       await request();
