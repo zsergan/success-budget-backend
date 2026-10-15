@@ -79,6 +79,14 @@ same states and limits and gets the same responses, but no email is sent
 and no code is ever accepted for it. Email verification for registration
 is not affected by any of this.
 
+An **address** is what the user typed, trimmed and lower-cased:
+`User@Example.com` and `user@example.com` are one address, with one
+cooldown, one set of limits and one challenge. A spelling that differs from
+the account's email in any other way, for example `réview@example.com` for
+`review@example.com`, is a different address without an account, even
+where login treats the two as equal. An account whose email contains such
+characters is recovered with the email as registered, in any case.
+
 ## Endpoints
 
 ### `POST /users/password-reset/request`
@@ -217,11 +225,16 @@ These do not change what the client sees.
 ### Storage
 
 `password_reset_challenges` holds one row per email address, keyed by an
-HMAC-SHA256 of the lower-cased address (`email_hash`), and reused for every
-challenge of that address so the hourly window survives it. The row holds:
+HMAC-SHA256 of the trimmed, lower-cased address (`email_hash`), and reused
+for every challenge of that address so the hourly window survives it. The
+row holds:
 
 - `user_id`: the verified account the challenge belongs to, `NULL` for an
-  unknown or unverified address; cascades with the user;
+  unknown or unverified address; cascades with the user. The account is
+  looked up by `users.email`, whose collation also equates accented and
+  unaccented letters, so it counts only if its own email hashes to
+  `email_hash`; a row bound under another spelling accepts no code and
+  completes nothing;
 - `code_hash`: HMAC-SHA256 of the latest code, bound to `email_hash`;
   `NULL` when there is no account, so no code matches;
 - `attempts`, `started_at`, `expires_at`, `last_requested_at`: the
@@ -266,16 +279,19 @@ the 72nd; the 72-byte maximum keeps every byte significant.
   only if `send_attempt_id` is still the reserved one, so a slow, stale send
   never overwrites a newer one. A send failure is logged without the code.
   In-flight sends are awaited on shutdown.
-- **Verify**, under the row lock: roll the window; refuse over the
-  wrong-code limit; refuse a challenge that has ended. A wrong code
-  increments `attempts` and `window_failed_attempts` and commits before the
-  error is returned; the fifth also clears the authorization. The first
-  correct code sets `verified_at` and stores the token hash with
+- **Verify**: lock the user (shared) if the address has one, then the row.
+  Roll the window; refuse over the wrong-code limit; refuse a challenge
+  that has ended. A wrong code increments `attempts` and
+  `window_failed_attempts` and commits before the error is returned; the
+  fifth also clears the authorization. A code is correct only while the row
+  is bound to the account found for the address. The first correct code
+  sets `verified_at` and stores the token hash with
   `min(now + 10 min, expires_at)`; a repeat derives the same token again.
 - **Complete**: find the row by `reset_token_hash` and refuse at once if it
   cannot complete (no account, not verified, expired, ended). Hash the new
   password outside the transaction. Then lock the user, lock the row and
-  check the token again, update the password and increment `auth_version`,
+  check the token again and that the account's email still hashes to the
+  row's `email_hash`, update the password and increment `auth_version`,
   and set `completed_at` and clear `code_hash` and `reset_token_hash`, all
   in one transaction. A refused call writes nothing.
 
@@ -290,7 +306,7 @@ Each write runs in one `runWriteTransaction` and locks:
 | Operation | Locks, in order                                |
 | --------- | ---------------------------------------------- |
 | Request   | user (S) if the address has one, challenge (X) |
-| Verify    | challenge (X)                                  |
+| Verify    | user (S) if the address has one, challenge (X) |
 | Complete  | user (X), challenge (X)                        |
 | Login     | user (S), to sign the token                    |
 

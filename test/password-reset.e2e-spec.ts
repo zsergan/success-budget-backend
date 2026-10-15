@@ -11,7 +11,7 @@ import { User } from '@entities/user.entity';
 import { MailService } from '@modules/mail/mail.service';
 import { UsersService } from '@modules/users/users.service';
 import { PasswordResetService } from '@modules/password-reset/password-reset.service';
-import { hashEmail, passwordResetKey } from '@modules/password-reset/password-reset-secrets';
+import { hashCode, hashEmail, hashResetToken, passwordResetKey } from '@modules/password-reset/password-reset-secrets';
 
 const NEW_PASSWORD = 'new-secret-42';
 const SHARE_USER = '%FROM `users` `user`%SHARE%';
@@ -507,6 +507,112 @@ describe('Password reset (e2e)', () => {
       await requestReset(email).expect(202);
 
       await complete(token).expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+    });
+  });
+
+  describe('address spellings', () => {
+    const accented = (email: string) => email.replace(/^e2e/, 'é2e');
+
+    async function userId(email: string): Promise<number> {
+      const [user] = await testApp.dataSource.query('SELECT id FROM users WHERE email = ?', [email]);
+      return user.id;
+    }
+
+    it('shares the cooldown and the wrong-code budget across case variations', async () => {
+      const email = await verifiedAccount('case');
+      const upper = email.toUpperCase();
+      await requestReset(email).expect(202);
+
+      await requestReset(upper).expect(429, /PASSWORD_RESET_RATE_LIMITED/);
+      const code = await sentCode(email);
+      await verify(upper, otherCode(code)).expect(400, /PASSWORD_RESET_CODE_INVALID/);
+      await verify(email, otherCode(code)).expect(400, /PASSWORD_RESET_CODE_INVALID/);
+      await verify(upper, code).expect(200);
+
+      expect(sendPasswordResetCode).toHaveBeenCalledTimes(1);
+      expect(await challenge(upper)).toMatchObject({ user_id: await userId(email), attempts: 2 });
+    });
+
+    it('treats a spelling that only the database equates with the account as an address without one', async () => {
+      const email = await verifiedAccount('accent');
+      const variant = accented(email);
+      const unknown = accented(address('accent-unknown'));
+      emails.push(variant, unknown);
+      await requestReset(email).expect(202);
+
+      for (const other of [variant, unknown]) {
+        testApp.resetThrottling();
+        const accepted = await requestReset(other).expect(202);
+        expect(accepted.body).toEqual({
+          message: 'If this email belongs to a verified account, a password reset code has been sent',
+          resend_after_seconds: 60,
+        });
+        const refused = await requestReset(other).expect(429);
+        expect(refused.body).toMatchObject({ code: 'PASSWORD_RESET_RATE_LIMITED', retryAfterSeconds: 60 });
+        expect(refused.headers['retry-after']).toBe('60');
+        await verify(other, '123456').expect(400, /PASSWORD_RESET_CODE_INVALID/);
+        expect(await challenge(other)).toMatchObject({
+          user_id: null,
+          code_hash: null,
+          attempts: 1,
+          send_status: null,
+        });
+      }
+
+      expect(sendPasswordResetCode.mock.calls.map(([to]) => to)).toEqual([email]);
+      expect((await challenge(email))!.attempts).toBe(0);
+    });
+
+    it('recovers an account whose stored email has Unicode characters by that address in any case', async () => {
+      const email = address('ünicode');
+      const user = await testApp.app.get(UsersService).register({
+        name: 'E2E',
+        email,
+        password: PASSWORD,
+        base_currency_id: testApp.currencyId,
+      });
+      userIds.push(user.id);
+      await testApp.app.get(UsersService).completeEmailVerification(user.id);
+      emails.push(email.toUpperCase(), email.replace('ü', 'u'));
+
+      await requestReset(email.replace('ü', 'u')).expect(202);
+      await requestReset(email.toUpperCase()).expect(202);
+      await settle();
+      expect(sendPasswordResetCode.mock.calls.map(([to]) => to)).toEqual([email]);
+
+      const authorized = await verify(email, await sentCode(email)).expect(200);
+      await complete(authorized.body.reset_token).expect(204);
+      await login(email, NEW_PASSWORD).expect(201);
+    });
+
+    it('never authorizes a reset from a challenge bound to the account under another spelling', async () => {
+      const email = await verifiedAccount('legacy');
+      const variant = accented(email);
+      emails.push(variant);
+      const variantHash = hashEmail(key, variant);
+      const legacyToken = 'legacy-reset-token';
+      await requestReset(variant).expect(202);
+      await testApp.dataSource.query(
+        'UPDATE password_reset_challenges SET user_id = ?, code_hash = ? WHERE email_hash = ?',
+        [await userId(email), hashCode(key, variantHash, '123456'), variantHash],
+      );
+
+      await verify(variant, '123456').expect(400, /PASSWORD_RESET_CODE_INVALID/);
+
+      await testApp.dataSource.query(
+        `UPDATE password_reset_challenges SET verified_at = NOW(3), reset_token_hash = ?,
+           reset_token_expires_at = NOW(3) + INTERVAL 10 MINUTE WHERE email_hash = ?`,
+        [hashResetToken(legacyToken), variantHash],
+      );
+      testApp.resetThrottling();
+      await verify(variant, '123456').expect(400, /PASSWORD_RESET_CODE_INVALID/);
+      await complete(legacyToken).expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+      expect(await authVersion(email)).toBe(1);
+
+      await complete(await authorize(email)).expect(204);
+      await complete(legacyToken, 'other-secret-7').expect(400, /PASSWORD_RESET_AUTHORIZATION_INVALID/);
+      await login(email, NEW_PASSWORD).expect(201);
+      expect(await authVersion(email)).toBe(2);
     });
   });
 

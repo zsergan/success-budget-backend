@@ -7,7 +7,11 @@ import { IsNewPassword } from '@shared/decorators/is-new-password.decorator';
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
 
 export class RequestPasswordResetDto {
-  @ApiProperty({ maxLength: 255, example: 'user@example.com', description: 'Matched case-insensitively.' })
+  @ApiProperty({
+    maxLength: 255,
+    example: 'user@example.com',
+    description: 'Trimmed and matched case-insensitively; any other difference in spelling is another address.',
+  })
   @IsNotEmpty()
   @IsEmail()
   @MaxLength(255)

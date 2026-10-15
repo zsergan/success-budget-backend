@@ -755,7 +755,7 @@ them in the order above, so two writes never wait on each other crosswise:
 | Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                     |
 | Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
 | Password reset request                                                      | user (S) if the email has one, password reset challenge (X)                                           |
-| Password reset verify                                                       | password reset challenge (X)                                                                          |
+| Password reset verify                                                       | user (S) if the email has one, password reset challenge (X)                                           |
 | Password reset complete                                                     | user (X), password reset challenge (X)                                                                |
 | Login (token issue)                                                         | user (S)                                                                                              |
 

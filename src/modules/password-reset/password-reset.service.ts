@@ -88,7 +88,7 @@ export class PasswordResetService implements BeforeApplicationShutdown {
     // A rejection is returned rather than thrown so the transaction commits
     // the counted attempt before the error reaches the client.
     const outcome = await runWriteTransaction(this.dataSource, (manager) =>
-      this.verifyIn(manager, emailHash, dto.code),
+      this.verifyIn(manager, dto.email, emailHash, dto.code),
     );
 
     if ('rejection' in outcome) {
@@ -123,7 +123,13 @@ export class PasswordResetService implements BeforeApplicationShutdown {
         .getOne();
       const now = new Date();
 
-      if (!user || !challenge || challenge.user_id !== user.id || !canComplete(challenge, tokenHash, now)) {
+      if (
+        !user ||
+        !challenge ||
+        challenge.user_id !== user.id ||
+        challenge.email_hash !== hashEmail(this.key, user.email) ||
+        !canComplete(challenge, tokenHash, now)
+      ) {
         throw authorizationInvalid();
       }
 
@@ -159,12 +165,7 @@ export class PasswordResetService implements BeforeApplicationShutdown {
 
   private async reserveIn(manager: EntityManager, email: string, emailHash: string): Promise<Delivery | null> {
     const now = new Date();
-    const user = await manager
-      .createQueryBuilder(User, 'user')
-      .setLock('pessimistic_read')
-      .where('user.email = :email', { email })
-      .getOne();
-    const account = user?.email_verified ? user : null;
+    const account = await this.lockAccount(manager, email, emailHash);
     const challenge = await this.lockChallenge(manager, emailHash);
 
     if (challenge) {
@@ -219,8 +220,14 @@ export class PasswordResetService implements BeforeApplicationShutdown {
     return account ? { challengeId, attemptId, to: account.email, code, expiresAt } : null;
   }
 
-  private async verifyIn(manager: EntityManager, emailHash: string, code: string): Promise<VerifyOutcome> {
+  private async verifyIn(
+    manager: EntityManager,
+    email: string,
+    emailHash: string,
+    code: string,
+  ): Promise<VerifyOutcome> {
     const now = new Date();
+    const account = await this.lockAccount(manager, email, emailHash);
     const challenge = await this.lockChallenge(manager, emailHash);
 
     if (!challenge) {
@@ -240,7 +247,8 @@ export class PasswordResetService implements BeforeApplicationShutdown {
     }
 
     const repository = manager.getRepository(PasswordResetChallenge);
-    const codeHash = challenge.code_hash;
+    // a row may be bound to the account under another spelling
+    const codeHash = account && challenge.user_id === account.id ? challenge.code_hash : null;
 
     if (codeHash === null || !constantTimeEquals(hashCode(this.key, emailHash, code), codeHash)) {
       const attempts = challenge.attempts + 1;
@@ -286,6 +294,17 @@ export class PasswordResetService implements BeforeApplicationShutdown {
     });
 
     return { authorization: authorization(token, tokenExpiresAt, now) };
+  }
+
+  // the column collation also matches spellings the hash keeps apart, such as accents
+  private async lockAccount(manager: EntityManager, email: string, emailHash: string): Promise<User | null> {
+    const user = await manager
+      .createQueryBuilder(User, 'user')
+      .setLock('pessimistic_read')
+      .where('user.email = :email', { email })
+      .getOne();
+
+    return user?.email_verified && hashEmail(this.key, user.email) === emailHash ? user : null;
   }
 
   private async lockChallenge(manager: EntityManager, emailHash: string): Promise<PasswordResetChallenge | null> {

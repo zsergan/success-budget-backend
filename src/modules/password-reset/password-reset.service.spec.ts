@@ -15,11 +15,13 @@ const JWT_SECRET = 'test-secret-value-for-reset';
 const START = new Date('2026-10-15T12:00:00.000Z');
 const MINUTE = 60_000;
 const EMAIL = 'user@example.com';
+const ACCENTED = 'üser@example.com';
 
 jest.mock('bcrypt', () => ({ hash: async (password: string) => `bcrypt(${password})` }));
 
 // One user and one challenge row, as the service sees them through its
-// transaction manager; locks are not modelled.
+// transaction manager; locks are not modelled. Every address finds the user,
+// as a collation that equates spellings would.
 class FakeStore {
   user: User | null = buildUser({ id: 3, email: EMAIL, email_verified: 1 });
   challenge: PasswordResetChallenge | null = null;
@@ -302,6 +304,46 @@ describe('PasswordResetService', () => {
       await service.settleDeliveries();
 
       expect(logError).toHaveBeenCalledWith('Failed to record a password reset email outcome: connection lost');
+    });
+  });
+
+  describe('address spellings', () => {
+    it('sends the code to the stored address for a case variation', async () => {
+      await request('USER@Example.COM');
+      await service.settleDeliveries();
+
+      expect(sendResetEmail).toHaveBeenCalledWith(EMAIL, expect.any(String), expect.any(Date));
+      expect(store.challenge).toMatchObject({ user_id: 3, email_hash: hashEmail(passwordResetKey(JWT_SECRET), EMAIL) });
+    });
+
+    it('binds no account to a spelling that differs from the stored one beyond case', async () => {
+      await expect(request(ACCENTED)).resolves.toEqual({
+        message: PASSWORD_RESET_REQUESTED_MESSAGE,
+        resend_after_seconds: 60,
+      });
+      await service.settleDeliveries();
+
+      expect(sendResetEmail).not.toHaveBeenCalled();
+      expect(store.challenge).toMatchObject({ user_id: null, code_hash: null, send_status: null });
+    });
+
+    it('accepts no code for a challenge whose address is no longer the account spelling', async () => {
+      await request();
+      store.user!.email = ACCENTED;
+
+      await expectCode(verify(lastCode()), 'PASSWORD_RESET_CODE_INVALID');
+      expect(store.challenge).toMatchObject({ attempts: 1, verified_at: null });
+    });
+
+    it('neither replays nor completes such a challenge once it was verified', async () => {
+      await request();
+      const code = lastCode();
+      const { reset_token: token } = await verify(code);
+      store.user!.email = ACCENTED;
+
+      await expectCode(verify(code), 'PASSWORD_RESET_CODE_INVALID');
+      await expectCode(complete(token), 'PASSWORD_RESET_AUTHORIZATION_INVALID');
+      expect(store.user).toMatchObject({ auth_version: 1 });
     });
   });
 
