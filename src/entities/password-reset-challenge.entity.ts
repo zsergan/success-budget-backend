@@ -1,5 +1,6 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 
+import { ConfirmationCodeSendStatus } from '@shared/enums';
 import { User } from './user.entity';
 
 // One row per email address, reused for every new challenge so the hourly
@@ -47,6 +48,21 @@ export class PasswordResetChallenge {
 
   @Column({ type: 'timestamp', precision: 3, nullable: true })
   reset_token_expires_at!: Date | null;
+
+  // the password was changed with this challenge; it accepts nothing more
+  @Column({ type: 'timestamp', precision: 3, nullable: true })
+  completed_at!: Date | null;
+
+  // markSent()/markFailed() apply only while this is still their attempt
+  @Column({ type: 'int', unsigned: true, default: 0 })
+  send_attempt_id!: number;
+
+  // null when nothing is sent: no eligible account
+  @Column({ type: 'enum', enum: ConfirmationCodeSendStatus, nullable: true })
+  send_status!: ConfirmationCodeSendStatus | null;
+
+  @Column({ type: 'timestamp', precision: 3, nullable: true })
+  last_sent_at!: Date | null;
 
   @Column({ type: 'timestamp', precision: 3 })
   window_started_at!: Date;
