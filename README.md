@@ -249,6 +249,7 @@ them against MySQL and MailDev service containers on every push/PR.
 ## Linting and type checking
 
 ```bash
+# check only; `npm run lint:fix` applies ESLint/Prettier fixes
 npm run lint
 
 # strict type check of the app, unit specs and e2e specs - Jest runs tests
