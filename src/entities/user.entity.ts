@@ -35,6 +35,11 @@ export class User {
   @Column({ type: 'tinyint', default: 0 })
   email_verified!: number;
 
+  // access tokens issued for an older version are rejected
+  @Exclude()
+  @Column({ type: 'int', unsigned: true, default: 1 })
+  auth_version!: number;
+
   @CreateDateColumn({ type: 'timestamp' })
   created_at!: Date;
 
