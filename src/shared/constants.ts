@@ -32,42 +32,68 @@ export const IDEMPOTENCY_KEY_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
 
 export const IDEMPOTENCY_KEY_PURGE_INTERVAL_MS = 1000 * 60 * 10; // 10 minutes
 
+// listed in display order: one save() keeps it as id order
 export const DEFAULT_CATEGORIES: CreateCategoryDto[] = [
   { name: 'Salary', transaction_type: TransactionType.INCOME, icon: CategoryIcon.SALARY, color: AppColor.EVERGREEN },
+  { name: 'Freelance', transaction_type: TransactionType.INCOME, icon: CategoryIcon.FREELANCE, color: AppColor.INDIGO },
   { name: 'Gifts', transaction_type: TransactionType.INCOME, icon: CategoryIcon.GIFTS, color: AppColor.CLAY },
+  { name: 'Other income', transaction_type: TransactionType.INCOME, icon: CategoryIcon.OTHER, color: AppColor.SLATE },
+  {
+    name: 'Groceries',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.GROCERY,
+    color: AppColor.EVERGREEN,
+  },
+  {
+    name: 'Eating out',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.RESTAURANT,
+    color: AppColor.CLAY,
+  },
   { name: 'Housing', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.HOUSING, color: AppColor.SLATE },
+  { name: 'Utilities', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.UTILITIES, color: AppColor.AMBER },
   {
     name: 'Transport',
     transaction_type: TransactionType.EXPENSE,
     icon: CategoryIcon.TRANSPORT,
     color: AppColor.INDIGO,
   },
-  { name: 'Grocery', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.GROCERY, color: AppColor.EVERGREEN },
-  {
-    name: 'Restaurant',
-    transaction_type: TransactionType.EXPENSE,
-    icon: CategoryIcon.RESTAURANT,
-    color: AppColor.CLAY,
-  },
-  { name: 'Car', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.CAR, color: AppColor.INDIGO },
-  { name: 'Clothes', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.CLOTHES, color: AppColor.PLUM },
+  { name: 'Car', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.CAR, color: AppColor.SLATE },
   { name: 'Health', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.HEALTH, color: AppColor.CLAY },
+  {
+    name: 'Personal care',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.BEAUTY,
+    color: AppColor.AMBER,
+  },
+  { name: 'Clothes', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.CLOTHES, color: AppColor.PLUM },
+  {
+    name: 'Home goods',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.HOME_GOODS,
+    color: AppColor.EVERGREEN,
+  },
   {
     name: 'Entertainment',
     transaction_type: TransactionType.EXPENSE,
     icon: CategoryIcon.ENTERTAINMENT,
     color: AppColor.AMBER,
   },
+  {
+    name: 'Subscriptions',
+    transaction_type: TransactionType.EXPENSE,
+    icon: CategoryIcon.SUBSCRIPTIONS,
+    color: AppColor.INDIGO,
+  },
   { name: 'Education', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.EDUCATION, color: AppColor.SLATE },
   { name: 'Travel', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.TRAVEL, color: AppColor.INDIGO },
-  { name: 'Pets', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.PETS, color: AppColor.CLAY },
+  { name: 'Gifts', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.GIFTS, color: AppColor.CLAY },
   {
-    name: 'Electronics',
+    name: 'Other expenses',
     transaction_type: TransactionType.EXPENSE,
-    icon: CategoryIcon.ELECTRONICS,
+    icon: CategoryIcon.OTHER,
     color: AppColor.SLATE,
   },
-  { name: 'Utilities', transaction_type: TransactionType.EXPENSE, icon: CategoryIcon.UTILITIES, color: AppColor.SLATE },
 ];
 
 // separate from DEFAULT_CATEGORIES (typed CreateCategoryDto[], which has

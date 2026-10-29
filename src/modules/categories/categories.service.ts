@@ -66,6 +66,7 @@ export class CategoriesService {
         .where('category.space_id = :spaceId', { spaceId })
         .andWhere('category.is_system = 0')
         .orderBy('category.sort', 'ASC')
+        .addOrderBy('category.id', 'ASC')
         .getMany();
 
       const categoryIds = categories.map((category) => category.id);

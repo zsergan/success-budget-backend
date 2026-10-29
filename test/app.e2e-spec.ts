@@ -316,7 +316,7 @@ describe('App (e2e)', () => {
       (category: CategoryRow) => category.name === 'Salary',
     ).id;
     const groceriesCategoryId = categoriesResponse.body.expenses.find(
-      (category: CategoryRow) => category.name === 'Grocery',
+      (category: CategoryRow) => category.name === 'Groceries',
     ).id;
 
     const incomeResponse = await request(app.getHttpServer())
@@ -418,7 +418,7 @@ describe('App (e2e)', () => {
       (category: CategoryRow) => category.name === 'Health',
     ).id;
     const restaurantsCategoryId = categoriesResponse.body.expenses.find(
-      (category: CategoryRow) => category.name === 'Restaurant',
+      (category: CategoryRow) => category.name === 'Eating out',
     ).id;
     const entertainmentCategoryId = categoriesResponse.body.expenses.find(
       (category: CategoryRow) => category.name === 'Entertainment',
@@ -724,7 +724,7 @@ describe('App (e2e)', () => {
     // categories plus the hidden system one, immediately, not just personal
     // spaces created at register time
     const groupCategories = await dataSource.getRepository(Category).find({ where: { space_id: groupSpaceId } });
-    expect(groupCategories).toHaveLength(16);
+    expect(groupCategories).toHaveLength(21);
     expect(groupCategories.filter((category) => category.is_system === 1)).toHaveLength(1);
     expect(groupCategories.some((category: CategoryRow) => category.name === 'Initial balance')).toBe(true);
 
@@ -1022,7 +1022,7 @@ describe('App (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     const groceriesCategoryId = categoriesResponse.body.expenses.find(
-      (category: CategoryRow) => category.name === 'Grocery',
+      (category: CategoryRow) => category.name === 'Groceries',
     ).id;
 
     const walletResponse = await request(app.getHttpServer())

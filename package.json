@@ -32,6 +32,8 @@
     "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/config/typeorm-cli.data-source.js",
     "migration:revert:prod": "node ./node_modules/typeorm/cli.js migration:revert -d dist/config/typeorm-cli.data-source.js",
     "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
+    "seed:testflight": "ts-node -r tsconfig-paths/register src/database/seed-testflight.ts",
+    "seed:testflight:prod": "node dist/database/seed-testflight.js",
     "bench:feed": "ts-node -r tsconfig-paths/register src/database/feed-benchmark.ts",
     "verify:reference-data": "ts-node -r tsconfig-paths/register src/database/verify-reference-data.ts",
     "verify:reference-data:prod": "node dist/database/verify-reference-data.js",

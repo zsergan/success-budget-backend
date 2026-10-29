@@ -4,7 +4,7 @@ import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { Category } from '@entities/category.entity';
-import { SpaceRole, SpaceType } from '@shared/enums';
+import { AppColor, SpaceRole, SpaceType } from '@shared/enums';
 import { DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY } from '@shared/constants';
 
 describe('space setup', () => {
@@ -58,6 +58,38 @@ describe('space setup', () => {
       expect(saved.filter((category: Category) => category.is_system === 1)).toEqual([
         { ...INITIAL_BALANCE_CATEGORY, space_id: 10 },
       ]);
+    });
+
+    it('saves the starter catalog in display order, the system category last', async () => {
+      await createDefaultCategories(manager, 10);
+
+      const [saved] = categoryRepository.save.mock.calls[0];
+      const row = ({ name, transaction_type, icon }: Category) => [transaction_type, name, icon];
+      expect(saved.map(row)).toEqual([
+        ['income', 'Salary', 'Salary'],
+        ['income', 'Freelance', 'Freelance'],
+        ['income', 'Gifts', 'Gifts'],
+        ['income', 'Other income', 'Other'],
+        ['expense', 'Groceries', 'Grocery'],
+        ['expense', 'Eating out', 'Restaurant'],
+        ['expense', 'Housing', 'Housing'],
+        ['expense', 'Utilities', 'Utilities'],
+        ['expense', 'Transport', 'Transport'],
+        ['expense', 'Car', 'Car'],
+        ['expense', 'Health', 'Health'],
+        ['expense', 'Personal care', 'Beauty'],
+        ['expense', 'Clothes', 'Clothes'],
+        ['expense', 'Home goods', 'Home goods'],
+        ['expense', 'Entertainment', 'Entertainment'],
+        ['expense', 'Subscriptions', 'Subscriptions'],
+        ['expense', 'Education', 'Education'],
+        ['expense', 'Travel', 'Travel'],
+        ['expense', 'Gifts', 'Gifts'],
+        ['expense', 'Other expenses', 'Other'],
+        ['income', 'Initial balance', 'Savings'],
+      ]);
+      expect(saved.slice(0, -1).every((category: Category) => !category.is_system)).toBe(true);
+      expect(saved.every((category: Category) => Object.values(AppColor).includes(category.color))).toBe(true);
     });
   });
 });

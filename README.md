@@ -209,6 +209,28 @@ set `SEED_USER_PASSWORD` before running the seed script:
 SEED_USER_PASSWORD='something-else' npm run seed
 ```
 
+### TestFlight demo account
+
+The dev seed is only for local and other disposable databases. It refuses
+`NODE_ENV=production`, and its accounts and password are public.
+
+The one account App Store review and TestFlight testers share is created on
+the real server instead, from an email and password you choose:
+- locally: `npm run seed:testflight`;
+- in the built image: `npm run seed:testflight:prod` or
+  `node dist/database/seed-testflight.js`.
+
+```bash
+read -rs TESTFLIGHT_USER_PASSWORD && export TESTFLIGHT_USER_PASSWORD
+TESTFLIGHT_USER_EMAIL=demo@example.com npm run seed:testflight
+```
+
+`TESTFLIGHT_USER_EMAIL` and `TESTFLIGHT_USER_PASSWORD` are read only by this
+command, so pass them to it rather than keeping them in `.env`. A repeat run
+writes nothing and only checks that the account still accepts the password.
+See [TestFlight demo account](docs/deployment.md#testflight-demo-account) for
+what it creates and how to run it in production.
+
 ## Running tests
 
 ```bash
@@ -271,6 +293,18 @@ the exact build → migrate → verify → start → health-check → smoke-test
 sequence, what to do when a deploy fails, and the backup/restore procedure
 (`scripts/db-backup.sh` / `scripts/db-restore.sh`) - lives in
 [`docs/deployment.md`](docs/deployment.md).
+
+The release that replaces the starter categories rewrites existing tester
+data and cannot be reverted, only restored from a backup. Deploy it with
+[Rolling out the starter category catalog](docs/deployment.md#rolling-out-the-starter-category-catalog):
+
+1. back up the database and pause writes;
+2. inspect the categories and limits, and resolve conflicts;
+3. migrate and run the checks;
+4. start the new backend;
+5. create the TestFlight account;
+6. verify it through the API;
+7. reopen the app.
 
 ## License
 

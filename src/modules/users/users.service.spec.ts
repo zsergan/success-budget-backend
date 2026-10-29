@@ -357,7 +357,7 @@ describe('UsersService', () => {
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ space_id: 20, name: 'Initial balance', is_system: 1 })]),
       );
-      expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(16);
+      expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(21);
     });
 
     it('is a no-op for a user that is already verified', async () => {
