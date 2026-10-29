@@ -60,6 +60,7 @@ manager, etc.), never in a committed file.
 | `SMTP_HOST`, `SMTP_PORT`, `MAIL_FROM` | Yes | Confirmation-code email delivery. |
 | `SMTP_SECURE` | No | `true` if the provider requires implicit TLS (usually port 465). Defaults to `false`. |
 | `SMTP_USER`, `SMTP_PASSWORD` | No | Omit for a provider/catcher that needs no auth. |
+| `TESTFLIGHT_USER_EMAIL`, `TESTFLIGHT_USER_PASSWORD` | Only for `seed-testflight.js` | Not read by the app. Pass them to that one command (see "TestFlight demo account" below), never keep them in the app's environment. |
 
 ### Reverse proxy / client IP
 
@@ -147,15 +148,8 @@ the same email.
    another definition, it stops with an error naming both definitions and changes
    nothing: fix that index by hand and run this step again.
 
-   `ReplaceCategoryCatalog1790900000000` replaces the ordinary categories of
-   every group space and verified personal space with the starter catalog,
-   moving transactions and limits to the matching new category in one
-   transaction. If that would put one category into two limits, or shrink a
-   group limit to a single category, it stops with an error listing the
-   spaces, limits and categories, and changes nothing: edit or delete those
-   limits and run this step again. Spaces that the previous app version
-   creates or verifies after this step still get the old starter categories,
-   so stop it first if that matters.
+   `ReplaceCategoryCatalog1790900000000` rewrites tester data: deploy it
+   with "Rolling out the starter category catalog" below.
 
 3. **Check the schema** matches the build - the same check the app makes on
    boot, as a step of its own, so a pipeline can stop before switching
@@ -231,10 +225,20 @@ or reproducing a deploy issue, without touching a real host.
 
 ### TestFlight demo account
 
-One shared, ready-to-use account for App Store review and TestFlight
-testers, created on the server without registration or an email code. Run it
-once, after a deploy that includes the starter category catalog (its schema
-check refuses an older database):
+`npm run seed` and the TestFlight command serve different purposes:
+
+- **`seed.js` (dev seed)**: well-known `@dev.local` accounts with a
+  public default password, for a disposable local or staging database. It
+  refuses `NODE_ENV=production`.
+- **`seed-testflight.js`**: one shared demo account for App Store review
+  and TestFlight testers, created on the real server without registration
+  or an email code, from an email and password you choose. It is allowed
+  with `NODE_ENV=production`.
+
+Run it from the same image tag and with the same environment as the
+migrations, after the migrations of that image ran (its schema check refuses
+an older database). The two credentials are passed to this one invocation
+only:
 
 ```bash
 read -rs TESTFLIGHT_USER_PASSWORD && export TESTFLIGHT_USER_PASSWORD
@@ -243,21 +247,193 @@ docker run --rm --env-file .env.production \
   success-budget-backend:<tag> \
   node dist/database/seed-testflight.js
 # Created the TestFlight account <email>.
+unset TESTFLIGHT_USER_PASSWORD
 ```
 
-The password follows the app's rules for a new password (at least 8
-characters with a letter and a digit, at most 72 bytes). In one database
-transaction the command creates a verified user named `TestFlight Demo`, its
-personal USD space with the starter categories, a Cash wallet, a dozen sample
-transactions dated earlier in the current month, and a Groceries limit.
-`NODE_ENV=production` is allowed; the dev seed (`npm run seed`) still refuses
-it.
+(`npm run seed:testflight:prod` in the image runs the same file.) The
+password follows the app's rules for a new password: at least 8 characters
+with a letter and a digit, at most 72 bytes. In one database transaction the
+command creates:
 
-Running it again writes nothing. If the email already exists, it only
-checks that the account is verified and accepts this password, so the
-testers' changes stay and a password they changed is never reset. Otherwise
-it exits with code 1 and changes nothing: it never takes over someone else's
+- a verified user named `TestFlight Demo`;
+- its personal USD space with the starter categories;
+- a Cash wallet;
+- a dozen synthetic transactions dated earlier in the current month;
+- a Groceries limit.
+
+Running it again writes nothing. If the email already exists, it only checks
+that the account is verified and accepts this password. The testers' changes
+stay, and a password they changed is never reset. If the check fails, it
+exits with code 1 and changes nothing, so it never takes over someone else's
 account. To change the demo data or password, use the app.
+
+### Rolling out the starter category catalog
+
+`ReplaceCategoryCatalog1790900000000` rewrites existing data. It replaces
+the categories of every group space and verified personal space with the
+20-category starter catalog. Categories are merged, and their transactions
+and limits move to the new category.
+
+**The merge loses information.** There is no inverse mapping, and
+`migration:revert` does not bring the old categories back. The only way back
+is the backup from step 1. Run every command below with the same image tag
+and the same `.env.production` as the rest of this procedure.
+
+1. **Pause tester writes and back up.**
+   - Ask testers to let the app finish syncing pending changes, then close it.
+   - Stop the running backend. Nothing is then written between the backup and
+     the migration, and the old version cannot create spaces with the old
+     catalog.
+   - Back up:
+
+   ```bash
+   set -a; source .env.production; set +a
+   ./scripts/db-backup.sh
+   ```
+
+2. **Inspect the categories and limits** the migration rewrites, and resolve
+   conflicts. Save the two read-only queries below as `inspect.sql`. Run it
+   with any MySQL client connected like the backup script. For example, with
+   `DB_SSL_CA` as a file path:
+
+   ```bash
+   docker run --rm -i -e MYSQL_PWD="$DB_PASSWORD" -v "$DB_SSL_CA:/ca.pem:ro" mysql:8 \
+     mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USERNAME" \
+     --ssl-mode=VERIFY_IDENTITY --ssl-ca=/ca.pem -t "$DB_DATABASE" < inspect.sql
+   ```
+
+   ```sql
+   -- Ordinary categories the migration maps, by type, name and icon
+   SELECT c.transaction_type, c.name, c.icon,
+          COUNT(DISTINCT c.space_id) AS spaces,
+          SUM(c.is_active = 0) AS archived,
+          COALESCE(SUM(t.transactions), 0) AS transactions
+   FROM categories c
+   INNER JOIN spaces s ON s.id = c.space_id
+   LEFT JOIN (SELECT category_id, COUNT(*) AS transactions FROM transactions GROUP BY category_id) t
+     ON t.category_id = c.id
+   WHERE c.is_system = 0
+     AND (s.type = 'group' OR EXISTS (
+       SELECT 1 FROM space_members m INNER JOIN users u ON u.id = m.user_id
+       WHERE m.space_id = s.id AND m.role = 'owner' AND u.email_verified = 1))
+   GROUP BY c.transaction_type, c.name, c.icon
+   ORDER BY c.transaction_type, c.name, c.icon;
+
+   -- Category and group limits with the categories they cover
+   SELECT l.space_id, l.id AS limit_id, l.name AS limit_name, l.amount,
+          GROUP_CONCAT(CONCAT(c.name, ' (', c.icon, IF(c.is_active = 0, ', archived', ''), ')')
+                       ORDER BY c.name SEPARATOR '; ') AS categories
+   FROM limits l
+   INNER JOIN limit_categories lc ON lc.limit_id = l.id
+   INNER JOIN categories c ON c.id = lc.category_id
+   GROUP BY l.id
+   ORDER BY l.space_id, l.id;
+   ```
+
+   **How each category is mapped**, archived ones included:
+   - by its name: the same name keeps its id;
+   - by a known rename, e.g. Grocery or Supermarket → Groceries,
+     Restaurant → Eating out, Electronics → Home goods;
+   - then by its icon;
+   - anything else goes to Other income or Other expenses.
+
+   The rules are `NAME_ALIASES` and `ICON_ALIASES` in
+   `src/migrations/1790900000000-ReplaceCategoryCatalog.ts`. A limit follows
+   its categories.
+
+   **A conflict** is one of:
+   - two limits whose categories end up in the same catalog category (e.g. one
+     limit on Grocery and one on Supermarket);
+   - a group limit whose categories all end up in one category.
+
+   Edit or delete one of those limits in the app. The queries are read-only,
+   so you can also run this step before step 1, while the app still runs, and
+   fix limits then. If you change anything after the backup, back up again:
+   the backup must hold the last state before the migration.
+
+3. **Run the migrations and the checks** (steps 2-4 of the deploy procedure
+   above). If a conflict remains, the migration stops with a report and
+   changes nothing:
+
+   ```text
+   Category catalog replacement stopped before changing any data: 1 limit conflict(s). Edit or delete these limits, then run the migrations again.
+   - space 1: expense category "Groceries" would be in 2 limits: limit #1 via "Grocery" #5; limit #2 via "Supermarket" #33
+   ```
+
+   To resolve it:
+   1. Start the previous image again.
+   2. Fix the listed limits in the app.
+   3. Stop it.
+   4. Back up again.
+   5. Rerun this step.
+
+4. **Start the updated backend** and check its health (steps 5-6 above).
+
+5. **Create the TestFlight account** (see "TestFlight demo account" above),
+   with its credentials passed to that invocation only.
+
+6. **Verify the account through the API**: login, categories, history,
+   wallet balance and limit progress. Run this with `curl` and `jq`, with
+   `TESTFLIGHT_USER_EMAIL` and `TESTFLIGHT_USER_PASSWORD` still exported:
+
+   ```bash
+   API=https://<host>
+   token=$(curl -sf -X POST "$API/api/v1/users/login" -H 'Content-Type: application/json' \
+     -d "$(jq -n --arg email "$TESTFLIGHT_USER_EMAIL" --arg password "$TESTFLIGHT_USER_PASSWORD" '{$email, $password}')")
+   get() { curl -sf "$API/api/v1$1" -H "Authorization: Bearer $token"; }
+   space=$(get /spaces | jq '.[0].id')
+   from=$(date -u +%Y-%m-01T00:00:00Z); to=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   get "/spaces/$space/categories" | jq -c '{incomes: [.incomes[].name], expenses: (.expenses | length)}'
+   get "/spaces/$space/transactions/feed?from=$from&to=$to&time_zone=UTC&limit=3" \
+     | jq -c '[.items[] | {amount, description, category: .category.name}]'
+   get "/spaces/$space/wallets" | jq -c '{total_balance, total_balance_currency}'
+   get "/spaces/$space/limits?time_zone=UTC" | jq -c '.categories[] | {amount, spent, in_percent}'
+   # {"incomes":["Salary","Freelance","Gifts","Other income"],"expenses":16}
+   # [{"amount":"15.20","description":"Pharmacy","category":"Health"}, ...]
+   # {"total_balance":2106.31,"total_balance_currency":"USD"}
+   # {"amount":"400.00","spent":189.7,"in_percent":47}
+   ```
+
+   Running this with a tester's own login checks a migrated space the same
+   way: its balance is the same as before the migration.
+
+7. **Reopen the mobile app and share the login.**
+   - Ask testers to reopen the app, so it reloads the categories.
+   - Put the demo email and password in App Store Connect's sign-in
+     information for Beta App Review.
+   - Send them to testers through a private channel, never in public
+     release notes.
+
+**What the mobile client sees.** Nothing in the API changes: routes,
+response shapes, statuses, error codes and accepted icon values stay the
+same, and no app release is needed. The data changes:
+
+- **Starter categories.** New and existing spaces have 4 income and 16 expense
+  categories, with new names and a new order.
+- **Merged categories.**
+  - A merged category's id no longer exists. A write still queued with that
+    id gets `403 FORBIDDEN_CATEGORY`, which is why step 1 lets pending
+    writes finish first.
+  - A transaction moved to another category gets `version` + 1. A `PATCH`
+    or `DELETE` with the old `If-Match` gets
+    `409 TRANSACTION_VERSION_CONFLICT`, and the client re-reads it.
+- **History and statistics.** By-category history, statistics and limits
+  follow the new mapping. Balances and income/expense totals do not change.
+- **Idempotent replays.** A write repeated with the same `Idempotency-Key`
+  within 24 hours of the original replays the stored response, which still
+  has the old category.
+
+**If the result is wrong, restore the backup.** Do not reverse the mapping
+by hand.
+1. Stop the new backend.
+2. Restore the step 1 backup into a new, empty database (see "Backup &
+   restore" below).
+3. Point the previous image's `DB_DATABASE` at it and start that image.
+   The new image refuses to start there, because its migration is pending
+   again.
+
+Anything written after the backup is lost, which is why step 1 pauses
+writes.
 
 ### Schema check
 

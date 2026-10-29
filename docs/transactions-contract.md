@@ -758,7 +758,8 @@ them in the order above, so two writes never wait on each other crosswise:
 | Password reset verify                                                       | user (S) if the email has one, password reset challenge (X)                                           |
 | Password reset complete                                                     | user (X), password reset challenge (X)                                                                |
 | Login (token issue)                                                         | user (S)                                                                                              |
-| TestFlight account provisioning (CLI)                                       | the new rows only; a concurrent run waits on the user's email key                                     |
+| Category catalog migration (maintenance)                                    | spaces (X, ascending id), categories (X), limit links (X), then the rows it rewrites                  |
+| TestFlight account provisioning (maintenance)                               | the new rows only; a concurrent run waits on the user's email key                                     |
 
 (S = shared, X = exclusive.) Consequences:
 
@@ -785,6 +786,32 @@ them in the order above, so two writes never wait on each other crosswise:
 - MySQL may still detect a deadlock in rare cases (for example, two waiting
   repeats of one key after the first attempt failed). The server retries
   the whole unit up to three times before answering `500`.
+
+### Maintenance writes
+
+Two writes run outside the API, from the backend image, as deploy steps:
+
+- **`ReplaceCategoryCatalog1790900000000`** (migration).
+  - Runs in one transaction with foreign keys on. Earlier migrations in the
+    same run may have committed DDL, so it starts a fresh transaction.
+  - Locks the spaces it rewrites (exclusive, ascending id), then their
+    ordinary categories, then every limit link in the database. It checks
+    for limit conflicts before writing anything.
+  - Then it renames, inserts and deletes categories and rewrites the limit
+    links. It moves transactions with `version + 1`.
+  - It takes the space row first, like category writes, and never takes a
+    member row, so it fits the order above. It still runs with the API
+    stopped: a client's queued write must not refer to a category it
+    deletes (see [`deployment.md`](deployment.md#rolling-out-the-starter-category-catalog)).
+- **TestFlight account provisioning** (`seed-testflight.js`).
+  - Reads the user by email without a lock. An existing account is only
+    checked, never written.
+  - Otherwise it inserts the user, space, membership, wallet, categories,
+    sample transactions and limit in one `runWriteTransaction`. It locks no
+    existing row.
+  - Of two concurrent runs, the second waits on the unique email key. It
+    then fails with a duplicate key, rolls back, and checks the account the
+    first one created.
 
 ### Versions and `If-Match`
 
