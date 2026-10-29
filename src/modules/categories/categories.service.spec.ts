@@ -32,6 +32,7 @@ describe('CategoriesService', () => {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
     };
 
@@ -181,13 +182,14 @@ describe('CategoriesService', () => {
       expect(categoryQueryBuilder.getMany).not.toHaveBeenCalled();
     });
 
-    it('scopes to the space and orders by sort ascending', async () => {
+    it('scopes to the space and orders by sort, then by id', async () => {
       await service.getAll(userId, 2);
 
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(2, userId);
       expect(categoryQueryBuilder.where).toHaveBeenCalledWith('category.space_id = :spaceId', { spaceId: 2 });
       expect(categoryQueryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
       expect(categoryQueryBuilder.orderBy).toHaveBeenCalledWith('category.sort', 'ASC');
+      expect(categoryQueryBuilder.addOrderBy).toHaveBeenCalledWith('category.id', 'ASC');
     });
 
     it('splits active categories into incomes/expenses and archived into its own bucket', async () => {
