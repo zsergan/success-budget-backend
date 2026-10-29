@@ -151,6 +151,10 @@ const normalize = (name: string) =>
 
 const targetKey = (type: CategoryType, name: string) => `${type}:${name}`;
 
+// names and icons are user data: "constructor" must not find Object's
+const alias = (aliases: Record<string, string>, key: string): string | undefined =>
+  Object.prototype.hasOwnProperty.call(aliases, key) ? aliases[key] : undefined;
+
 function mapCategory(category: Pick<StoredCategory, 'name' | 'transaction_type' | 'icon'>): Mapping {
   const type = category.transaction_type;
   const name = normalize(category.name);
@@ -160,13 +164,13 @@ function mapCategory(category: Pick<StoredCategory, 'name' | 'transaction_type' 
     return { target: same.name, rank: 0 };
   }
 
-  const renamed = NAME_ALIASES[type][name];
+  const renamed = alias(NAME_ALIASES[type], name);
 
   if (renamed) {
     return { target: renamed, rank: 1 };
   }
 
-  return { target: ICON_ALIASES[type][category.icon] ?? FALLBACK[type], rank: 2 };
+  return { target: alias(ICON_ALIASES[type], category.icon) ?? FALLBACK[type], rank: 2 };
 }
 
 // Replaces every ordinary category of initialized spaces with CATALOG.

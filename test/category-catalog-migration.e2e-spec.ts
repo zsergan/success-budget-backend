@@ -451,6 +451,42 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
     expect(await categoriesOf(unverifiedSpaceId)).toEqual([]);
   });
 
+  it('maps names and icons that are also inherited object properties like any other', async () => {
+    const [{ id: cash }] = await query<{ id: number }>(
+      "SELECT id FROM wallets WHERE space_id = ? AND wallet_name = 'Cash'",
+      [personal.spaceId],
+    );
+    const cases: { type: Type; name: string; icon: string; target: string }[] = [
+      { type: 'expense', name: 'Constructor', icon: 'Home goods', target: 'Home goods' },
+      { type: 'expense', name: '__proto__', icon: 'Home goods', target: 'Home goods' },
+      { type: 'expense', name: 'Oddity', icon: 'constructor', target: 'Other expenses' },
+      { type: 'income', name: 'Royalties', icon: 'constructor', target: 'Other income' },
+    ];
+    const legacyIds = new Map<number, string>();
+    for (const category of cases) {
+      const id = await insertCategory(personal.spaceId, category.type, category.name, category.icon);
+      legacyIds.set(id, category.target);
+      await insertTransaction(cash, id, category.type, '1.25');
+    }
+    const before = await transactionsOf(personal.spaceId);
+
+    await migrate();
+
+    const ids = await expectCatalog(personal.spaceId);
+    const after = await transactionsOf(personal.spaceId);
+    expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
+    expect(after.every((row) => [...ids.values()].includes(row.category_id))).toBe(true);
+    const moved = before.filter((row) => legacyIds.has(row.category_id));
+    expect(moved).toHaveLength(cases.length);
+    for (const row of moved) {
+      expect(after.find((found) => found.id === row.id)).toEqual({
+        ...row,
+        category_id: ids.get(key(row.transaction_type, legacyIds.get(row.category_id)!)),
+        version: row.version + 1,
+      });
+    }
+  });
+
   it('changes nothing when run again after a completed pass', async () => {
     await migrate();
     const migrated = await state();
