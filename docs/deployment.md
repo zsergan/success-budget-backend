@@ -147,6 +147,16 @@ the same email.
    another definition, it stops with an error naming both definitions and changes
    nothing: fix that index by hand and run this step again.
 
+   `ReplaceCategoryCatalog1790900000000` replaces the ordinary categories of
+   every group space and verified personal space with the starter catalog,
+   moving transactions and limits to the matching new category in one
+   transaction. If that would put one category into two limits, or shrink a
+   group limit to a single category, it stops with an error listing the
+   spaces, limits and categories, and changes nothing: edit or delete those
+   limits and run this step again. Spaces that the previous app version
+   creates or verifies after this step still get the old starter categories,
+   so stop it first if that matters.
+
 3. **Check the schema** matches the build - the same check the app makes on
    boot, as a step of its own, so a pipeline can stop before switching
    traffic:
