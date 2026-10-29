@@ -25,7 +25,9 @@ describe('Statistics blocks (e2e)', () => {
       .get(`${base(owner)}/categories`)
       .expect(200);
     const [salary] = categories.body.incomes;
-    const [housing, transport, grocery] = categories.body.expenses;
+    const expense = (name: string) =>
+      categories.body.expenses.find((category: { name: string }) => category.name === name);
+    const [housing, transport, grocery] = ['Housing', 'Transport', 'Groceries'].map(expense);
 
     const card = await createWallet('Card', '0');
     const cash = await createWallet('Cash', '0');
@@ -203,7 +205,7 @@ describe('Statistics blocks (e2e)', () => {
         is_archived: false,
         opens_history: true,
       },
-      { kind: 'category', name: 'Grocery', amount: '80.00', percent: 12.1, is_archived: true, opens_history: true },
+      { kind: 'category', name: 'Groceries', amount: '80.00', percent: 12.1, is_archived: true, opens_history: true },
     ]);
     expect(res.body.by_category.primary_items[0]).toMatchObject({
       key: `category:${res.body.by_category.primary_items[0].id}`,

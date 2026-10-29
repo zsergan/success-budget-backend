@@ -6,13 +6,14 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.config';
 import { UsersService } from '@modules/users/users.service';
 import { SpacesService } from '@modules/spaces/spaces.service';
+import { CategoriesService } from '@modules/categories/categories.service';
 import { User } from '@entities/user.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
-import { AppColor, SpaceRole, SpaceType } from '@shared/enums';
+import { AppColor, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
 import { DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY } from '@shared/constants';
 
 // Registration, email verification and POST /spaces each provision a
@@ -24,6 +25,7 @@ describe('Space setup across registration, verification and space creation (e2e)
   let dataSource: DataSource;
   let usersService: UsersService;
   let spacesService: SpacesService;
+  let categoriesService: CategoriesService;
   let currencyId: number;
   const userIds: number[] = [];
 
@@ -41,6 +43,7 @@ describe('Space setup across registration, verification and space creation (e2e)
     dataSource = moduleFixture.get(DataSource);
     usersService = moduleFixture.get(UsersService);
     spacesService = moduleFixture.get(SpacesService);
+    categoriesService = moduleFixture.get(CategoriesService);
 
     const [currency] = await dataSource.query('SELECT id FROM currencies LIMIT 1');
     currencyId = currency.id;
@@ -115,6 +118,26 @@ describe('Space setup across registration, verification and space creation (e2e)
     expect(system[0]).toMatchObject({ name: INITIAL_BALANCE_CATEGORY.name, transaction_type: 'income' });
   }
 
+  async function expectCatalogInDisplayOrder(userId: number, spaceId: number) {
+    const catalog = (type: TransactionType) =>
+      DEFAULT_CATEGORIES.filter((category) => category.transaction_type === type).map(({ name, icon, color }) => ({
+        name,
+        icon,
+        color,
+      }));
+    const listed = await categoriesService.getAll(userId, spaceId);
+
+    expect(listed.incomes.map(({ name, icon, color }) => ({ name, icon, color }))).toEqual(
+      catalog(TransactionType.INCOME),
+    );
+    expect(listed.expenses.map(({ name, icon, color }) => ({ name, icon, color }))).toEqual(
+      catalog(TransactionType.EXPENSE),
+    );
+    expect(listed.incomes).toHaveLength(4);
+    expect(listed.expenses).toHaveLength(16);
+    expect(listed.archived).toHaveLength(0);
+  }
+
   it('registration creates the user, a personal space and its owner - no wallet, no categories', async () => {
     const user = await register();
 
@@ -147,6 +170,7 @@ describe('Space setup across registration, verification and space creation (e2e)
     expect(data.wallets).toHaveLength(1);
     expect(data.wallets[0]).toMatchObject({ wallet_name: 'Cash', design: AppColor.SLATE });
     expectDefaultCategories(data.categories);
+    await expectCatalogInDisplayOrder(user.id, memberships[0].space_id);
 
     const stored = await dataSource.getRepository(User).findOneByOrFail({ id: user.id });
     expect(stored.email_verified).toBe(1);
@@ -167,6 +191,7 @@ describe('Space setup across registration, verification and space creation (e2e)
     expect(data.members).toEqual([expect.objectContaining({ user_id: user.id, role: SpaceRole.OWNER })]);
     expect(data.wallets).toHaveLength(0);
     expectDefaultCategories(data.categories);
+    await expectCatalogInDisplayOrder(user.id, space.id);
     expect(data.invites).toEqual([expect.objectContaining({ email: 'invitee@example.com', role: SpaceRole.MEMBER })]);
   });
 
