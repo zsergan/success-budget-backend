@@ -60,7 +60,7 @@
     "luxon": "^3.7.2",
     "mysql2": "^3.24.2",
     "nestjs-pino": "^5.1.0",
-    "nodemailer": "^10.0.10",
+    "nodemailer": "^10.1.4",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pino-http": "^11.0.0",
