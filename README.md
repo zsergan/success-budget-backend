@@ -209,6 +209,11 @@ set `SEED_USER_PASSWORD` before running the seed script:
 SEED_USER_PASSWORD='something-else' npm run seed
 ```
 
+`npm run seed:testflight` (`:prod` for the built image) creates the shared
+TestFlight demo account from `TESTFLIGHT_USER_EMAIL` and
+`TESTFLIGHT_USER_PASSWORD`, also on production. See
+[TestFlight demo account](docs/deployment.md#testflight-demo-account).
+
 ## Running tests
 
 ```bash

@@ -758,6 +758,7 @@ them in the order above, so two writes never wait on each other crosswise:
 | Password reset verify                                                       | user (S) if the email has one, password reset challenge (X)                                           |
 | Password reset complete                                                     | user (X), password reset challenge (X)                                                                |
 | Login (token issue)                                                         | user (S)                                                                                              |
+| TestFlight account provisioning (CLI)                                       | the new rows only; a concurrent run waits on the user's email key                                     |
 
 (S = shared, X = exclusive.) Consequences:
 

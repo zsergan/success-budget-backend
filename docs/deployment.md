@@ -229,6 +229,36 @@ the same email.
 MySQL and a MailDev catcher - useful for rehearsing this whole procedure,
 or reproducing a deploy issue, without touching a real host.
 
+### TestFlight demo account
+
+One shared, ready-to-use account for App Store review and TestFlight
+testers, created on the server without registration or an email code. Run it
+once, after a deploy that includes the starter category catalog (its schema
+check refuses an older database):
+
+```bash
+read -rs TESTFLIGHT_USER_PASSWORD && export TESTFLIGHT_USER_PASSWORD
+docker run --rm --env-file .env.production \
+  -e TESTFLIGHT_USER_EMAIL=<email> -e TESTFLIGHT_USER_PASSWORD \
+  success-budget-backend:<tag> \
+  node dist/database/seed-testflight.js
+# Created the TestFlight account <email>.
+```
+
+The password follows the app's rules for a new password (at least 8
+characters with a letter and a digit, at most 72 bytes). In one database
+transaction the command creates a verified user named `TestFlight Demo`, its
+personal USD space with the starter categories, a Cash wallet, a dozen sample
+transactions dated earlier in the current month, and a Groceries limit.
+`NODE_ENV=production` is allowed; the dev seed (`npm run seed`) still refuses
+it.
+
+Running it again writes nothing. If the email already exists, it only
+checks that the account is verified and accepts this password, so the
+testers' changes stay and a password they changed is never reset. Otherwise
+it exits with code 1 and changes nothing: it never takes over someone else's
+account. To change the demo data or password, use the app.
+
 ### Schema check
 
 On boot the app compares the migrations compiled into its build
