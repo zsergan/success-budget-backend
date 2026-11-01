@@ -130,8 +130,9 @@ specs locally.
 ## API contracts
 
 - `docs/transactions-contract.md`, `docs/statistics-contract.md`,
-  `docs/type-contract.md` and `docs/password-reset-contract.md` are the
-  source of truth for the mobile client.
+  `docs/type-contract.md`, `docs/password-reset-contract.md` and
+  `docs/invitations-contract.md` are the source of truth for the mobile
+  client.
   Change them in the same PR as the behavior they describe, and keep the
   contract e2e specs (`test/api-contract.e2e-spec.ts`,
   `test/type-contract.e2e-spec.ts`, ...) passing.
