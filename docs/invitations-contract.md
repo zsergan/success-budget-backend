@@ -21,9 +21,10 @@ prefix and need no token.
 | `Idempotency-Key` on `POST /spaces`                                      | planned     |
 | Invitation emails, delivery states, automatic retries                    | planned     |
 | `email_status`, `resend_after_seconds` on create; roster fields          | planned     |
+| Delivery state storage, signed link tokens, recorded acceptor            | implemented |
 | `POST /spaces/:id/invites/:inviteId/resend`                              | planned     |
 | `POST /spaces/invites/preview`, `token` on `POST /spaces/invites/accept` | planned     |
-| `409 SPACE_ALREADY_MEMBER` on accept                                     | planned     |
+| `409 SPACE_ALREADY_MEMBER` and repeats on accept                         | planned     |
 | `/invite`, `/.well-known/*` association files                            | planned     |
 
 Until a part is implemented the API answers as before; the client checks
@@ -55,19 +56,19 @@ invited address, verifies it, signs in and continues with step 4.
 
 ## Rules
 
-| Rule                        | Value                                                                                                             |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Who invites                 | the space owner only; a personal space has no invitations                                                         |
-| Lifetime                    | 7 days from creation; resending never extends it                                                                  |
-| Pending invitations         | at most 10 active per space, inline invitations included                                                          |
-| Members                     | at most 20 per space, checked on accept                                                                           |
-| Code                        | six digits, `000000`–`999999`; leading zeros are part of it; never changes                                        |
-| Link token                  | 43 characters of base64url (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`); one per invitation; never changes               |
-| Who can join                | only an account whose email equals the invitation's email (compared as login compares emails: case-insensitively) |
-| Ends when                   | accepted (by code or link), revoked, expired, or the space is deleted; both the code and the link stop working    |
-| Resend cooldown             | 60 seconds after the invitation's last email was scheduled                                                        |
-| Emails per invitation       | at most 5 in a 24-hour window that starts with the first email after the previous window ended                    |
-| Automatic delivery attempts | at most 5 per scheduled email                                                                                     |
+| Rule                        | Value                                                                                                                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Who invites                 | the space owner only; a personal space has no invitations                                                                                                                |
+| Lifetime                    | 7 days from creation; resending never extends it                                                                                                                         |
+| Pending invitations         | at most 10 active per space, inline invitations included                                                                                                                 |
+| Members                     | at most 20 per space, checked on accept                                                                                                                                  |
+| Code                        | six digits, `000000`–`999999`; leading zeros are part of it; never changes                                                                                               |
+| Link token                  | `<invitation id>.<proof>`, the proof 43 characters of base64url (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`); one per invitation; never changes; the client treats it as opaque |
+| Who can join                | only an account whose email equals the invitation's email (compared as login compares emails: case-insensitively)                                                        |
+| Ends when                   | accepted (by code or link), revoked, expired, or the space is deleted; both the code and the link stop working                                                           |
+| Resend cooldown             | 60 seconds after the invitation's last email was scheduled                                                                                                               |
+| Emails per invitation       | at most 5 in a 24-hour window that starts with the first email after the previous window ended                                                                           |
+| Automatic delivery attempts | at most 5 per scheduled email                                                                                                                                            |
 
 An **active** invitation is one that is not accepted, not revoked and not
 expired. Only active invitations appear in the roster, can be resent, or
@@ -395,31 +396,38 @@ refreshes `GET /spaces`) and may open it.
 
 **With `token`**, checked in this order:
 
-| Case                                                              | Response                         |
-| ----------------------------------------------------------------- | -------------------------------- |
-| Both `token` and `code`                                           | `400 VALIDATION_FAILED`, `token` |
-| `token` empty, not a string or longer than 255                    | `400 VALIDATION_FAILED`, `token` |
-| Too many calls (10 per minute per network address)                | `429 TOO_MANY_REQUESTS`          |
-| As for [preview](#post-spacesinvitespreview), `404`, `403`, `409` | same response as preview         |
-| The space has 20 members                                          | `400 SPACE_MEMBER_LIMIT_REACHED` |
-| Joined                                                            | `201`                            |
+| Case                                                           | Response                                               |
+| -------------------------------------------------------------- | ------------------------------------------------------ |
+| Both `token` and `code`                                        | `400 VALIDATION_FAILED`, `token`                       |
+| `token` empty, not a string or longer than 255                 | `400 VALIDATION_FAILED`, `token`                       |
+| Too many calls (10 per minute per network address)             | `429 TOO_MANY_REQUESTS`                                |
+| No invitation has this token, or as for preview: another email | as [preview](#post-spacesinvitespreview): `404`, `403` |
+| The caller accepted this invitation and is still a member      | `201`, a repeat: nothing is written                    |
+| The caller is already a member of the invitation's space       | `409 SPACE_ALREADY_MEMBER`                             |
+| The invitation is not active                                   | `404 SPACE_INVITE_UNUSABLE`                            |
+| The space has 20 members                                       | `400 SPACE_MEMBER_LIMIT_REACHED`                       |
+| Joined                                                         | `201`                                                  |
 
-**With `code`** (the manual path), behavior is unchanged except for an
-existing membership and the call limit:
+**With `code`** (the manual path), behavior is unchanged except for
+repeats, an existing membership and the call limit:
 
-| Case                                                       | Response                         |
-| ---------------------------------------------------------- | -------------------------------- |
-| Neither field; `code` empty, not a string or longer than 6 | `400 VALIDATION_FAILED`, `code`  |
-| Too many calls (10 per minute per network address)         | `429 TOO_MANY_REQUESTS`          |
-| No active invitation for the caller's email with this code | `404 NOT_FOUND` (unchanged)      |
-| The caller is already a member of that invitation's space  | `409 SPACE_ALREADY_MEMBER` (new) |
-| The space has 20 members                                   | `400 SPACE_MEMBER_LIMIT_REACHED` |
-| Joined                                                     | `201`                            |
+| Case                                                             | Response                         |
+| ---------------------------------------------------------------- | -------------------------------- |
+| Neither field; `code` empty, not a string or longer than 6       | `400 VALIDATION_FAILED`, `code`  |
+| Too many calls (10 per minute per network address)               | `429 TOO_MANY_REQUESTS`          |
+| An invitation with this code the caller accepted, still a member | `201`, a repeat (new)            |
+| No active invitation for the caller's email with this code       | `404 NOT_FOUND` (unchanged)      |
+| The caller is already a member of that invitation's space        | `409 SPACE_ALREADY_MEMBER` (new) |
+| The space has 20 members                                         | `400 SPACE_MEMBER_LIMIT_REACHED` |
+| Joined                                                           | `201`                            |
 
-Of concurrent accepts of one invitation, exactly one joins. A repeat after
-a lost response finds the caller already a member and answers
-`409 SPACE_ALREADY_MEMBER`, which the client treats as success: it
-refreshes `GET /spaces` and opens the space from there.
+Of concurrent accepts of one invitation, exactly one joins; the others
+are repeats. The server records which account accepted an invitation, so a
+repeat after a lost response, with the same token or code, answers `201`
+with the same space for as long as that account is still a member. Once it
+left the space, the repeat is `404`. An invitation accepted before this was
+recorded answers a repeat with `409 SPACE_ALREADY_MEMBER`, which the client
+treats as success: it refreshes `GET /spaces` and opens the space.
 
 ## Public resources
 
@@ -433,7 +441,8 @@ invitations and never receive the link token.
 https://<public host>/invite#token=<token>
 ```
 
-`<public host>` is configured per environment. The token is in the URL
+`<public host>` is the environment's `PUBLIC_WEB_ORIGIN`, never the host
+of the request that created the invitation. The token is in the URL
 fragment, so browsers do not send it to the server or in a `Referer`. The
 app reads it from the fragment of the opened URL. Link-rewriting click
 tracking must be off for these emails, or the link would no longer open the
@@ -448,7 +457,7 @@ open:
 - says to open the link on a phone with the app installed, or to install
   the app, sign in with the invited email, and enter the six-digit code
   from the email on the app's join-by-code screen;
-- links to the app stores when they are configured;
+- links to TestFlight when `TESTFLIGHT_URL` is configured;
 - shows no space name, inviter or code: it has none, as it does not call
   the API.
 
@@ -459,14 +468,16 @@ The page and its assets (under `/invite/assets/`) are static, sent with
 
 | Route                                         | Content                                                                                                                          |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /.well-known/apple-app-site-association` | `application/json`; `applinks` for the configured iOS app IDs, path `/invite` only                                               |
+| `GET /.well-known/apple-app-site-association` | `application/json`; `applinks` for `APPLE_APP_ID`, path `/invite` only                                                           |
 | `GET /.well-known/assetlinks.json`            | `application/json`; `delegate_permission/common.handle_all_urls` for the configured Android package and certificate fingerprints |
 
 Both are served directly with `200` (no redirect). A file whose app
 identifiers are not configured for the environment answers `404`. Mobile
-provides, per environment, the iOS app IDs (`<Team ID>.<bundle ID>`) and the
-Android package name with its signing certificate SHA-256 fingerprints;
-the Android app declares the `/invite` path in its intent filter.
+provides, per environment, the iOS app ID (`<Team ID>.<bundle ID>`, bundle
+`com.zsergan.successbudget`). Android identifiers (package name, signing
+certificate SHA-256 fingerprints) are not configured yet, so
+`assetlinks.json` answers `404` until they are; the Android app then
+declares the `/invite` path in its intent filter.
 
 ## Client behavior
 
@@ -555,20 +566,49 @@ These do not change what the client sees.
 
 ### Storage
 
-`space_invites` gains:
+`space_invites` columns, added by `AddSpaceInviteDelivery1791000000000`
+(entity `src/entities/space-invite.entity.ts`; none of them is serialized):
 
-- `token_hash`: SHA-256 of the link token, unique, `NULL` until the first
-  email. The token itself is an HMAC of the invitation id and a random
-  per-invitation `token_nonce`, keyed from `JWT_SECRET`, so a resend
-  derives the same link without storing it. Rotating `JWT_SECRET`
-  invalidates links in flight; codes keep working.
-- `email_status`, `email_attempts`, `email_next_attempt_at`,
-  `email_lease_expires_at`, `email_last_scheduled_at`, `email_last_sent_at`:
-  the outbox state of the latest email.
-- `email_window_started_at`, `email_window_count`: the 24-hour limit.
+| Column                   | Holds                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `token_nonce`            | 16 random bytes as hex, set on creation; `NULL` for invitations from before                                                     |
+| `accepted_by_user_id`    | the account that accepted; `NULL` before acceptance, for older acceptances, or once that user is deleted (`ON DELETE SET NULL`) |
+| `email_status`           | the [delivery state](#delivery-states); `not_sent` by default                                                                   |
+| `email_attempts`         | attempts of the latest scheduled email                                                                                          |
+| `email_attempt_id`       | increments with every attempt; an attempt writes its result only while it is current                                            |
+| `email_next_attempt_at`  | when the next attempt is due                                                                                                    |
+| `email_lease_expires_at` | until when the running attempt holds the row                                                                                    |
+| `email_last_sent_at`     | when SMTP last accepted an email                                                                                                |
 
-Existing rows get `email_status = 'not_sent'`. Tokens, codes and links are
-never logged; send failures are logged without them.
+`IDX_space_invites_email_due (email_status, email_next_attempt_at)` lets
+the delivery job find due rows. The resend cooldown and 24-hour limit add
+their columns with the resend route.
+
+The migration sends nothing: every existing row is `not_sent` without a
+nonce, as is any row the previous build inserts during the deploy. Such a
+row gets its nonce, and so its link, with its first email. Until the
+delivery stage ships, new invitations also stay `not_sent`.
+
+### Link tokens
+
+`src/modules/spaces/space-invite-links.ts`. A token is
+`<invitation id>.<proof>`, where the proof is
+`HMAC-SHA256(INVITE_TOKEN_SECRET, JSON ["space-invite/v1", id, space_id, token_nonce, email])`
+in unpadded base64url. The id only locates the row; the proof is compared
+in constant time against the one derived from the stored row. So:
+
+- a token cannot be derived from the id, the code or the email without
+  both the secret and the stored nonce, and it never contains the code;
+- it does not change with delivery state, retries or resends;
+- whether it still works is decided by the row (accepted, revoked,
+  expired, deleted), not by the token, which carries no expiry;
+- it is not an authentication token: preview and accept still need the
+  bearer token of the invited account.
+
+`INVITE_TOKEN_SECRET` is used for nothing else and must differ from
+`JWT_SECRET`. Rotating it invalidates every emailed link; codes keep
+working. Links are built from `PUBLIC_WEB_ORIGIN` only. Tokens, codes and
+links are never logged; send failures are logged without them.
 
 ### Delivery
 
