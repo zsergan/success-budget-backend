@@ -3,8 +3,9 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { HttpException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 
-import { SpaceInvitesService } from './space-invites.service';
+import { SpaceInvitesService, isActiveInvite } from './space-invites.service';
 import { SpacesService } from './spaces.service';
+import { SpaceInviteLinks } from './space-invite-links';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
 import { Space } from '@entities/space.entity';
@@ -14,7 +15,7 @@ import { SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
 import { withRelations } from '@shared/utils';
-import { buildCurrency, buildSpace, buildSpaceInvite, buildSpaceMember, buildUser } from '@testing';
+import { buildConfigService, buildCurrency, buildSpace, buildSpaceInvite, buildSpaceMember, buildUser } from '@testing';
 
 describe('SpaceInvitesService', () => {
   let service: SpaceInvitesService;
@@ -30,6 +31,13 @@ describe('SpaceInvitesService', () => {
 
   const spaceOfType = (type: SpaceType) =>
     withRelations(buildSpace({ id: 1, type, currency: buildCurrency() }), 'currency');
+
+  const links = new SpaceInviteLinks(
+    buildConfigService({
+      INVITE_TOKEN_SECRET: 'invite-token-secret-for-unit-tests-only',
+      PUBLIC_WEB_ORIGIN: 'https://app.example.com',
+    }),
+  );
 
   const forbidden = () => new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
 
@@ -68,6 +76,7 @@ describe('SpaceInvitesService', () => {
         { provide: SpaceAccessService, useValue: spaceAccessService },
         { provide: SpacesService, useValue: spacesService },
         { provide: UsersService, useValue: usersService },
+        { provide: SpaceInviteLinks, useValue: links },
       ],
     }).compile();
 
@@ -125,7 +134,12 @@ describe('SpaceInvitesService', () => {
       expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
       expect(spacesService.getOne).toHaveBeenCalledWith(1);
       expect(spaceInviteRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ space_id: 1, email: 'a@example.com', role: SpaceRole.MEMBER }),
+        expect.objectContaining({
+          space_id: 1,
+          email: 'a@example.com',
+          role: SpaceRole.MEMBER,
+          token_nonce: expect.stringMatching(/^[0-9a-f]{32}$/),
+        }),
       );
       expect(result).toEqual({
         id: 5,
@@ -189,7 +203,7 @@ describe('SpaceInvitesService', () => {
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
-    it('creates the membership and stamps accepted_at in one transaction', async () => {
+    it('creates the membership and stamps accepted_at and the acceptor in one transaction', async () => {
       spaceInviteRepository.findOne.mockResolvedValue(
         buildSpaceInvite({ id: 1, space_id: 10, role: SpaceRole.MEMBER }),
       );
@@ -207,8 +221,61 @@ describe('SpaceInvitesService', () => {
       expect(spaceMemberRepositoryInTx.save).toHaveBeenCalledWith(
         expect.objectContaining({ space_id: 10, user_id: 2, role: SpaceRole.MEMBER }),
       );
-      expect(spaceInviteRepositoryInTx.update).toHaveBeenCalledWith(1, { accepted_at: expect.any(Date) });
+      expect(spaceInviteRepositoryInTx.update).toHaveBeenCalledWith(1, {
+        accepted_at: expect.any(Date),
+        accepted_by_user_id: 2,
+      });
       expect(result).toBe(space);
+    });
+  });
+
+  describe('findByToken', () => {
+    const invite = buildSpaceInvite({ id: 42, space_id: 10, email: 'a@example.com' });
+
+    it('returns the invitation the token was issued for', async () => {
+      spaceInviteRepository.findOne.mockResolvedValue(invite);
+
+      await expect(service.findByToken(links.token(invite))).resolves.toBe(invite);
+      expect(spaceInviteRepository.findOne).toHaveBeenCalledWith({ where: { id: 42 } });
+    });
+
+    it('does not read anything for a malformed token', async () => {
+      await expect(service.findByToken('42.short')).resolves.toBeNull();
+      await expect(service.findByToken('123456')).resolves.toBeNull();
+      expect(spaceInviteRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects a tampered proof and a proof moved to another invitation id', async () => {
+      const [, proof] = links.token(invite).split('.');
+      const tampered = `${proof[0] === 'A' ? 'B' : 'A'}${proof.slice(1)}`;
+      spaceInviteRepository.findOne.mockImplementation(async ({ where }) =>
+        buildSpaceInvite({ ...invite, id: (where as { id: number }).id }),
+      );
+
+      await expect(service.findByToken(`42.${tampered}`)).resolves.toBeNull();
+      await expect(service.findByToken(`43.${proof}`)).resolves.toBeNull();
+    });
+
+    it('rejects a token of an unknown invitation and of a legacy one without a link', async () => {
+      spaceInviteRepository.findOne.mockResolvedValueOnce(null);
+      await expect(service.findByToken(links.token(invite))).resolves.toBeNull();
+
+      spaceInviteRepository.findOne.mockResolvedValueOnce(buildSpaceInvite({ ...invite, token_nonce: null }));
+      await expect(service.findByToken(links.token(invite))).resolves.toBeNull();
+    });
+
+    it('still identifies an expired, revoked or accepted invitation, which is not active', async () => {
+      const past = new Date(Date.now() - 1000);
+
+      for (const ended of [{ expires_at: past }, { revoked_at: past }, { accepted_at: past, accepted_by_user_id: 2 }]) {
+        const endedInvite = buildSpaceInvite({ ...invite, expires_at: new Date(Date.now() + 60_000), ...ended });
+        spaceInviteRepository.findOne.mockResolvedValueOnce(endedInvite);
+
+        await expect(service.findByToken(links.token(invite))).resolves.toBe(endedInvite);
+        expect(isActiveInvite(endedInvite)).toBe(false);
+      }
+
+      expect(isActiveInvite(buildSpaceInvite({ expires_at: new Date(Date.now() + 60_000) }))).toBe(true);
     });
   });
 });

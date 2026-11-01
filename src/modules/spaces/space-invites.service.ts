@@ -12,6 +12,14 @@ import { assertFound, generateRandomNumberString, withRelations } from '@shared/
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
 import { SpacesService, type SpaceWithCurrency } from './spaces.service';
+import { SpaceInviteLinks, newInviteTokenNonce, parseInviteToken } from './space-invite-links';
+
+export function isActiveInvite(
+  invite: Pick<SpaceInvite, 'accepted_at' | 'revoked_at' | 'expires_at'>,
+  now = new Date(),
+): boolean {
+  return invite.accepted_at === null && invite.revoked_at === null && invite.expires_at > now;
+}
 
 export interface CreatedSpaceInvite {
   id: number;
@@ -31,6 +39,7 @@ export class SpaceInvitesService {
     private readonly spaceAccessService: SpaceAccessService,
     private readonly spacesService: SpacesService,
     private readonly usersService: UsersService,
+    private readonly spaceInviteLinks: SpaceInviteLinks,
   ) {}
 
   async create(userId: number, spaceId: number, email: string): Promise<CreatedSpaceInvite> {
@@ -54,6 +63,7 @@ export class SpaceInvitesService {
       code: generateRandomNumberString(),
       role: SpaceRole.MEMBER,
       expires_at: new Date(Date.now() + SPACE_INVITE_TTL_MS),
+      token_nonce: newInviteTokenNonce(),
     });
 
     const saved = await this.spaceInviteRepository.save(invite);
@@ -68,6 +78,19 @@ export class SpaceInvitesService {
       where: { space_id: spaceId, accepted_at: IsNull(), revoked_at: IsNull(), expires_at: MoreThan(new Date()) },
       order: { created_at: 'ASC' },
     });
+  }
+
+  // the invitation the token was issued for, in any state: see isActiveInvite()
+  async findByToken(token: string): Promise<SpaceInvite | null> {
+    const parsed = parseInviteToken(token);
+
+    if (!parsed) {
+      return null;
+    }
+
+    const invite = await this.spaceInviteRepository.findOne({ where: { id: parsed.inviteId } });
+
+    return invite && this.spaceInviteLinks.proves(invite, parsed.proof) ? invite : null;
   }
 
   async revoke(userId: number, spaceId: number, inviteId: number): Promise<void> {
@@ -116,7 +139,9 @@ export class SpaceInvitesService {
           role: invite.role,
         }),
       );
-      await manager.getRepository(SpaceInvite).update(invite.id, { accepted_at: new Date() });
+      await manager
+        .getRepository(SpaceInvite)
+        .update(invite.id, { accepted_at: new Date(), accepted_by_user_id: userId });
 
       const space = await manager
         .getRepository(Space)

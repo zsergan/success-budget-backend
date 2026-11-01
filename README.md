@@ -97,8 +97,9 @@ them from the UI directly.
 
 3. **Configure environment variables**
 
-   Copy `.env.example` to `.env` and fill in your local DB credentials and a
-   `JWT_SECRET` (any random string is fine for local dev):
+   Copy `.env.example` to `.env` and fill in your local DB credentials, a
+   `JWT_SECRET` and a different `INVITE_TOKEN_SECRET` of 32+ characters (any
+   random strings are fine for local dev):
 
    ```bash
    cp .env.example .env

@@ -13,6 +13,7 @@ import { assertFound, generateRandomNumberString, withRelations } from '@shared/
 import type { WithRelations } from '@shared/types';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
+import { newInviteTokenNonce } from './space-invite-links';
 
 export type SpaceWithCurrency = WithRelations<Space, 'currency'>;
 
@@ -64,6 +65,7 @@ export class SpacesService {
             code: generateRandomNumberString(),
             role: SpaceRole.MEMBER,
             expires_at: new Date(Date.now() + SPACE_INVITE_TTL_MS),
+            token_nonce: newInviteTokenNonce(),
           }),
         );
         await manager.getRepository(SpaceInvite).save(inviteRows);

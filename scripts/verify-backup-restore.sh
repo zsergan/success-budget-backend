@@ -81,7 +81,9 @@ docker build -t "$IMAGE" "$REPO_ROOT" >/dev/null
 
 APP_ENV=(-e DB_HOST="$MYSQL_C" -e DB_PORT=3306 -e DB_USERNAME=success_budget -e DB_PASSWORD=change-me \
   -e DB_DATABASE=success_budget -e JWT_SECRET=bkrestore-verify-secret \
-  -e SMTP_HOST="$MAILDEV_C" -e SMTP_PORT=1025 -e MAIL_FROM="Success Budget <no-reply@success-budget.local>")
+  -e SMTP_HOST="$MAILDEV_C" -e SMTP_PORT=1025 -e MAIL_FROM="Success Budget <no-reply@success-budget.local>" \
+  -e PUBLIC_WEB_ORIGIN=https://app.example.com -e INVITE_TOKEN_SECRET=bkrestore-verify-invite-token-secret-0123 \
+  -e APPLE_APP_ID=ABCDE12345.com.example.successbudget)
 
 echo "=== [1] apply migrations ==="
 for i in $(seq 1 5); do
@@ -158,6 +160,8 @@ docker run -d --name "$API_RESTORED_C" --network "$NET" -p "$APP_RESTORED_PORT:3
   -e DB_HOST="$MYSQL_C" -e DB_PORT=3306 -e DB_USERNAME=success_budget -e DB_PASSWORD=change-me \
   -e DB_DATABASE=bkrestore_verify_restored -e JWT_SECRET=bkrestore-verify-secret \
   -e SMTP_HOST="$MAILDEV_C" -e SMTP_PORT=1025 -e MAIL_FROM="Success Budget <no-reply@success-budget.local>" \
+  -e PUBLIC_WEB_ORIGIN=https://app.example.com -e INVITE_TOKEN_SECRET=bkrestore-verify-invite-token-secret-0123 \
+  -e APPLE_APP_ID=ABCDE12345.com.example.successbudget \
   -e NODE_ENV=production "$IMAGE" >/dev/null
 for i in $(seq 1 20); do
   curl -sf "http://127.0.0.1:$APP_RESTORED_PORT/api/v1/health" >/dev/null && break

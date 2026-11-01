@@ -5,6 +5,7 @@ import { SpacesController } from './spaces.controller';
 import { SpacesService } from './spaces.service';
 import { SpaceMembersService } from './space-members.service';
 import { SpaceInvitesService } from './space-invites.service';
+import { SpaceInviteLinks } from './space-invite-links';
 import { SpaceAccessModule } from '@modules/space-access/space-access.module';
 import { UsersModule } from '@modules/users/users.module';
 import { Space } from '@entities/space.entity';
@@ -14,7 +15,7 @@ import { SpaceInvite } from '@entities/space-invite.entity';
 @Module({
   imports: [TypeOrmModule.forFeature([Space, SpaceMember, SpaceInvite]), SpaceAccessModule, UsersModule],
   controllers: [SpacesController],
-  providers: [SpacesService, SpaceMembersService, SpaceInvitesService],
+  providers: [SpacesService, SpaceMembersService, SpaceInvitesService, SpaceInviteLinks],
   exports: [SpacesService],
 })
 export class SpacesModule {}

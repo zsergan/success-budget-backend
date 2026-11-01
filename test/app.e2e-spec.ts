@@ -839,6 +839,11 @@ describe('App (e2e)', () => {
     const invite = await spaceInviteRepository.findOneOrFail({
       where: { space_id: groupSpaceId, email: secondTestEmail },
     });
+    expect(invite).toMatchObject({
+      token_nonce: expect.stringMatching(/^[0-9a-f]{32}$/),
+      email_status: 'not_sent',
+      accepted_by_user_id: null,
+    });
 
     // wrong account: the caller's own email must match the invite's email
     await request(app.getHttpServer())
@@ -860,6 +865,11 @@ describe('App (e2e)', () => {
     expect(membersResponse.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'member', email: secondTestEmail, role: 'member' })]),
     );
+
+    await expect(spaceInviteRepository.findOneByOrFail({ id: invite.id })).resolves.toMatchObject({
+      accepted_at: expect.any(Date),
+      accepted_by_user_id: secondUserId,
+    });
   });
 
   it('a plain member can create resources in the shared space, but not in a space they do not belong to', async () => {

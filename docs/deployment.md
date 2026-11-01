@@ -60,6 +60,10 @@ manager, etc.), never in a committed file.
 | `SMTP_HOST`, `SMTP_PORT`, `MAIL_FROM` | Yes | Confirmation-code email delivery. |
 | `SMTP_SECURE` | No | `true` if the provider requires implicit TLS (usually port 465). Defaults to `false`. |
 | `SMTP_USER`, `SMTP_PASSWORD` | No | Omit for a provider/catcher that needs no auth. |
+| `PUBLIC_WEB_ORIGIN` | Yes | The https origin of invitation links and the `/invite` page, such as `https://app.example.com`: no path, query or trailing slash. Links are built only from this value, never from a request's `Host`. `http` is accepted only for `localhost`/`127.0.0.1` and not with `NODE_ENV=production`. |
+| `INVITE_TOKEN_SECRET` | Yes | Signs invitation links. At least 32 characters and different from `JWT_SECRET`; generate it (`openssl rand -base64 48`) and keep it secret. Rotating it makes every emailed invitation link unusable; six-digit codes keep working. |
+| `APPLE_APP_ID` | **Yes, with `NODE_ENV=production`** | The iOS app invitation links open, as `<Team ID>.<bundle ID>` (e.g. `ABCDE12345.com.zsergan.successbudget`). |
+| `TESTFLIGHT_URL` | No | An `https://testflight.apple.com/join/...` link offered on the `/invite` page. |
 | `TESTFLIGHT_USER_EMAIL`, `TESTFLIGHT_USER_PASSWORD` | Only for `seed-testflight.js` | Not read by the app. Pass them to that one command (see "TestFlight demo account" below), never keep them in the app's environment. |
 
 ### Reverse proxy / client IP
@@ -105,6 +109,16 @@ credentials) and rethrows, so the caller's request fails loudly. Retrying is
 always safe: the user, space, and confirmation code created by the first
 call are reused, never duplicated, on any subsequent `register` call for
 the same email.
+
+### Invitation links
+
+Set `PUBLIC_WEB_ORIGIN` and `INVITE_TOKEN_SECRET` (and `APPLE_APP_ID` on
+staging/production) before deploying a build that reads them: without them
+the app refuses to start. `AddSpaceInviteDelivery1791000000000` marks every
+existing invitation `not_sent` and schedules nothing, so the deploy emails
+no one; the previous build keeps working on the migrated table. Use a
+different `INVITE_TOKEN_SECRET` per environment, so a staging link never
+opens a production invitation.
 
 ## Deploy procedure
 

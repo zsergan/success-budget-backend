@@ -133,10 +133,13 @@ describe('SpacesService', () => {
 
       await service.create(1, dto);
 
+      const nonce = expect.stringMatching(/^[0-9a-f]{32}$/);
       expect(spaceInviteRepositoryInTx.save).toHaveBeenCalledWith([
-        expect.objectContaining({ space_id: 11, email: 'a@example.com', role: SpaceRole.MEMBER }),
-        expect.objectContaining({ space_id: 11, email: 'b@example.com', role: SpaceRole.MEMBER }),
+        expect.objectContaining({ space_id: 11, email: 'a@example.com', role: SpaceRole.MEMBER, token_nonce: nonce }),
+        expect.objectContaining({ space_id: 11, email: 'b@example.com', role: SpaceRole.MEMBER, token_nonce: nonce }),
       ]);
+      const [rows] = spaceInviteRepositoryInTx.save.mock.calls[0] as [SpaceInvite[]];
+      expect(rows[0].token_nonce).not.toBe(rows[1].token_nonce);
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ space_id: 11, name: 'Initial balance', is_system: 1 })]),
       );
