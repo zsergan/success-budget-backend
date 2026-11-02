@@ -7,13 +7,15 @@ import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
-import { SPACE_LIMITS, SPACE_INVITE_TTL_MS } from '@shared/constants';
+import { SPACE_LIMITS } from '@shared/constants';
 import { ApiException } from '@shared/api.exception';
-import { assertFound, generateRandomNumberString, withRelations } from '@shared/utils';
+import { assertFound, runWriteTransaction, withRelations } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { IdempotencyService } from '@modules/idempotency/idempotency.service';
+import { NO_SPACE_ID } from '@entities/idempotency-key.entity';
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
-import { newInviteTokenNonce } from './space-invite-links';
+import { newInvite, normalizeInviteEmail } from './space-invite-state';
 
 export type SpaceWithCurrency = WithRelations<Space, 'currency'>;
 
@@ -36,45 +38,58 @@ export class SpacesService {
     private readonly spaceMemberRepository: Repository<SpaceMember>,
     private readonly dataSource: DataSource,
     private readonly spaceAccessService: SpaceAccessService,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
-  async create(userId: number, dto: CreateSpaceDto): Promise<SpaceWithCurrency> {
-    const invites = dto.invites ?? [];
+  // One write transaction: the space, its owner, categories, invitations and
+  // their queued emails commit together or not at all; nothing is sent from
+  // inside it. With a key, a repeat returns the stored result and writes
+  // nothing. The key is scoped to the user, as the space does not exist yet.
+  async create(
+    userId: number,
+    dto: CreateSpaceDto,
+    { idempotencyKey }: { idempotencyKey?: string } = {},
+  ): Promise<SpaceWithCurrency> {
+    const emails = [...new Set((dto.invites ?? []).map(normalizeInviteEmail))];
 
-    if (dto.type === SpaceType.PERSONAL && invites.length) {
+    if (dto.type === SpaceType.PERSONAL && emails.length) {
       throw new ApiException('SPACE_PERSONAL_NO_INVITES', HttpStatus.BAD_REQUEST);
     }
 
-    if (invites.length > SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE) {
+    if (emails.length > SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE) {
       throw new ApiException('SPACE_INVITE_LIMIT_REACHED', HttpStatus.BAD_REQUEST);
     }
 
-    const spaceId = await this.dataSource.transaction(async (manager) => {
-      const space = await createSpaceWithOwner(
-        manager,
-        { name: dto.name, type: dto.type, currency_id: dto.currency_id },
-        userId,
-      );
-      await createDefaultCategories(manager, space.id);
-
-      if (invites.length) {
-        const inviteRows = invites.map((email) =>
-          manager.getRepository(SpaceInvite).create({
-            space_id: space.id,
-            email,
-            code: generateRandomNumberString(),
-            role: SpaceRole.MEMBER,
-            expires_at: new Date(Date.now() + SPACE_INVITE_TTL_MS),
-            token_nonce: newInviteTokenNonce(),
-          }),
+    return runWriteTransaction(this.dataSource, (manager) => {
+      const work = async () => {
+        const space = await createSpaceWithOwner(
+          manager,
+          { name: dto.name, type: dto.type, currency_id: dto.currency_id },
+          userId,
         );
-        await manager.getRepository(SpaceInvite).save(inviteRows);
+        await createDefaultCategories(manager, space.id);
+
+        if (emails.length) {
+          const now = new Date();
+          await manager.getRepository(SpaceInvite).insert(emails.map((email) => newInvite(space.id, email, now)));
+        }
+
+        const created = await this.getOne(space.id, manager);
+        assertFound(created);
+
+        return created;
+      };
+
+      if (idempotencyKey === undefined) {
+        return work();
       }
 
-      return space.id;
+      return this.idempotencyService.run(
+        manager,
+        { userId, spaceId: NO_SPACE_ID, operation: 'spaces.create', key: idempotencyKey, payload: dto },
+        work,
+      );
     });
-
-    return this.getExisting(spaceId);
   }
 
   async getAllForUser(userId: number): Promise<SpaceListItem[]> {
@@ -147,8 +162,9 @@ export class SpacesService {
       throw new ApiException('SPACE_LAST_REMAINING', HttpStatus.BAD_REQUEST);
     }
 
+    // members, then the space, whose deletion cascades to its invitations:
+    // invitation acceptance locks the space before the invitation
     await this.dataSource.transaction(async (manager) => {
-      await manager.getRepository(SpaceInvite).delete({ space_id: spaceId });
       await manager.getRepository(SpaceMember).delete({ space_id: spaceId });
       await manager.getRepository(Space).delete(spaceId);
     });

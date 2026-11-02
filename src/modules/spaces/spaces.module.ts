@@ -8,12 +8,18 @@ import { SpaceInvitesService } from './space-invites.service';
 import { SpaceInviteLinks } from './space-invite-links';
 import { SpaceAccessModule } from '@modules/space-access/space-access.module';
 import { UsersModule } from '@modules/users/users.module';
+import { IdempotencyModule } from '@modules/idempotency/idempotency.module';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Space, SpaceMember, SpaceInvite]), SpaceAccessModule, UsersModule],
+  imports: [
+    TypeOrmModule.forFeature([Space, SpaceMember, SpaceInvite]),
+    SpaceAccessModule,
+    UsersModule,
+    IdempotencyModule,
+  ],
   controllers: [SpacesController],
   providers: [SpacesService, SpaceMembersService, SpaceInvitesService, SpaceInviteLinks],
   exports: [SpacesService],

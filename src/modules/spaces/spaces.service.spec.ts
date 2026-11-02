@@ -5,11 +5,13 @@ import { DataSource, Repository } from 'typeorm';
 
 import { SpacesService } from './spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { IdempotencyService } from '@modules/idempotency/idempotency.service';
+import { NO_SPACE_ID } from '@entities/idempotency-key.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { Category } from '@entities/category.entity';
-import { SpaceRole, SpaceType } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
 import type { CreateSpaceDto } from './dto/create-space.dto';
@@ -19,9 +21,10 @@ describe('SpacesService', () => {
   let service: SpacesService;
   let spaceRepository: jest.Mocked<Repository<Space>>;
   let spaceMemberRepository: jest.Mocked<Repository<SpaceMember>>;
-  let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
+  let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock; findOne: jest.Mock };
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
-  let spaceInviteRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
+  let spaceInviteRepositoryInTx: { insert: jest.Mock };
+  let idempotencyService: { run: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
@@ -42,9 +45,15 @@ describe('SpacesService', () => {
       getRawMany: jest.fn().mockResolvedValue([]),
     };
 
-    spaceRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
+    spaceRepositoryInTx = {
+      create: jest.fn((entity) => entity),
+      save: jest.fn(),
+      delete: jest.fn(),
+      findOne: jest.fn(),
+    };
     spaceMemberRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
-    spaceInviteRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
+    spaceInviteRepositoryInTx = { insert: jest.fn() };
+    idempotencyService = { run: jest.fn((_manager, _request, work: () => unknown) => work()) };
     categoryRepositoryInTx = { save: jest.fn() };
     const manager = {
       getRepository: jest.fn((entity) => {
@@ -55,7 +64,9 @@ describe('SpacesService', () => {
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     };
-    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    dataSource = {
+      transaction: jest.fn((...args: unknown[]) => (args[args.length - 1] as (m: unknown) => unknown)(manager)),
+    };
     spaceAccessService = { assertMembership: jest.fn().mockResolvedValue(buildSpaceMember()) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -78,6 +89,7 @@ describe('SpacesService', () => {
         },
         { provide: DataSource, useValue: dataSource },
         { provide: SpaceAccessService, useValue: spaceAccessService },
+        { provide: IdempotencyService, useValue: idempotencyService },
       ],
     }).compile();
 
@@ -90,7 +102,7 @@ describe('SpacesService', () => {
     it('creates a personal space with no invites', async () => {
       const dto: CreateSpaceDto = { name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 };
       spaceRepositoryInTx.save.mockResolvedValue(buildSpace({ id: 10 }));
-      spaceRepository.findOne.mockResolvedValue(
+      spaceRepositoryInTx.findOne.mockResolvedValue(
         buildSpace({
           id: 10,
           name: 'Personal',
@@ -100,7 +112,8 @@ describe('SpacesService', () => {
 
       const result = await service.create(1, dto);
 
-      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledWith('READ COMMITTED', expect.any(Function));
+      expect(idempotencyService.run).not.toHaveBeenCalled();
       expect(spaceRepositoryInTx.save).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Personal', type: SpaceType.PERSONAL, currency_id: 1 }),
       );
@@ -111,7 +124,7 @@ describe('SpacesService', () => {
         expect.arrayContaining([expect.objectContaining({ space_id: 10, name: 'Initial balance', is_system: 1 })]),
       );
       expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(21);
-      expect(spaceInviteRepositoryInTx.save).not.toHaveBeenCalled();
+      expect(spaceInviteRepositoryInTx.insert).not.toHaveBeenCalled();
       expect(result).toMatchObject({ id: 10, name: 'Personal' });
     });
 
@@ -123,7 +136,7 @@ describe('SpacesService', () => {
         invites: ['a@example.com', 'b@example.com'],
       };
       spaceRepositoryInTx.save.mockResolvedValue(buildSpace({ id: 11, name: 'Family', type: SpaceType.GROUP }));
-      spaceRepository.findOne.mockResolvedValue(
+      spaceRepositoryInTx.findOne.mockResolvedValue(
         buildSpace({
           id: 11,
           name: 'Family',
@@ -133,16 +146,53 @@ describe('SpacesService', () => {
 
       await service.create(1, dto);
 
-      const nonce = expect.stringMatching(/^[0-9a-f]{32}$/);
-      expect(spaceInviteRepositoryInTx.save).toHaveBeenCalledWith([
-        expect.objectContaining({ space_id: 11, email: 'a@example.com', role: SpaceRole.MEMBER, token_nonce: nonce }),
-        expect.objectContaining({ space_id: 11, email: 'b@example.com', role: SpaceRole.MEMBER, token_nonce: nonce }),
+      const queued = {
+        role: SpaceRole.MEMBER,
+        token_nonce: expect.stringMatching(/^[0-9a-f]{32}$/),
+        email_status: SpaceInviteEmailStatus.QUEUED,
+        email_next_attempt_at: expect.any(Date),
+      };
+      expect(spaceInviteRepositoryInTx.insert).toHaveBeenCalledWith([
+        expect.objectContaining({ space_id: 11, email: 'a@example.com', ...queued }),
+        expect.objectContaining({ space_id: 11, email: 'b@example.com', ...queued }),
       ]);
-      const [rows] = spaceInviteRepositoryInTx.save.mock.calls[0] as [SpaceInvite[]];
+      const [rows] = spaceInviteRepositoryInTx.insert.mock.calls[0] as [SpaceInvite[]];
       expect(rows[0].token_nonce).not.toBe(rows[1].token_nonce);
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ space_id: 11, name: 'Initial balance', is_system: 1 })]),
       );
+    });
+
+    it('stores each address once, trimmed and lower-cased, and counts the limit after that', async () => {
+      const invites = Array.from({ length: SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE }, (_, i) => `u${i}@example.com`);
+      spaceRepositoryInTx.save.mockResolvedValue(buildSpace({ id: 11, type: SpaceType.GROUP }));
+      spaceRepositoryInTx.findOne.mockResolvedValue(buildSpace({ id: 11, currency: buildCurrency() }));
+
+      await service.create(1, {
+        name: 'Family',
+        type: SpaceType.GROUP,
+        currency_id: 1,
+        invites: [...invites, 'U0@Example.COM', ' u1@example.com '],
+      });
+
+      const [rows] = spaceInviteRepositoryInTx.insert.mock.calls[0] as [SpaceInvite[]];
+      expect(rows.map((row) => row.email)).toEqual(invites);
+    });
+
+    it('runs the whole creation under the Idempotency-Key, scoped to the user', async () => {
+      const dto: CreateSpaceDto = { name: 'Family', type: SpaceType.GROUP, currency_id: 1, invites: ['a@example.com'] };
+      const stored = { id: 11, name: 'Family' };
+      idempotencyService.run.mockResolvedValue(stored);
+
+      await expect(service.create(1, dto, { idempotencyKey: 'key-1' })).resolves.toBe(stored);
+
+      expect(idempotencyService.run).toHaveBeenCalledWith(
+        expect.anything(),
+        { userId: 1, spaceId: NO_SPACE_ID, operation: 'spaces.create', key: 'key-1', payload: dto },
+        expect.any(Function),
+      );
+      expect(spaceRepositoryInTx.save).not.toHaveBeenCalled();
+      expect(spaceInviteRepositoryInTx.insert).not.toHaveBeenCalled();
     });
 
     it('rejects invites on a personal space', async () => {
@@ -282,21 +332,18 @@ describe('SpacesService', () => {
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
-    it('deletes invites, members, and the space in order', async () => {
+    it('deletes the members, then the space, which removes its invites', async () => {
       spaceMemberRepository.count.mockResolvedValue(2);
 
       await service.removeOwned(1, 10);
 
       expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
       expect(spaceMemberRepository.count).toHaveBeenCalledWith({ where: { user_id: 1 } });
-      expect(spaceInviteRepositoryInTx.delete).toHaveBeenCalledWith({ space_id: 10 });
       expect(spaceMemberRepositoryInTx.delete).toHaveBeenCalledWith({ space_id: 10 });
       expect(spaceRepositoryInTx.delete).toHaveBeenCalledWith(10);
 
-      const inviteCallOrder = spaceInviteRepositoryInTx.delete.mock.invocationCallOrder[0];
       const memberCallOrder = spaceMemberRepositoryInTx.delete.mock.invocationCallOrder[0];
       const spaceCallOrder = spaceRepositoryInTx.delete.mock.invocationCallOrder[0];
-      expect(inviteCallOrder).toBeLessThan(memberCallOrder);
       expect(memberCallOrder).toBeLessThan(spaceCallOrder);
     });
 
