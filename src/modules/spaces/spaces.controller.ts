@@ -14,9 +14,11 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
+  ApiAcceptedResponse,
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
+  ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiHeader,
   ApiNotFoundResponse,
@@ -33,7 +35,12 @@ import { CreateSpaceDto } from './dto/create-space.dto';
 import { CreateSpaceInviteDto } from './dto/create-space-invite.dto';
 import { AcceptSpaceInviteDto } from './dto/accept-space-invite.dto';
 import { PreviewSpaceInviteDto } from './dto/preview-space-invite.dto';
-import { SpaceInvitePreviewResponse } from './dto/space-invite-responses';
+import {
+  CreatedSpaceInviteResponse,
+  SpaceInvitePreviewResponse,
+  SpaceInviteStateResponse,
+  SpaceMemberViewResponse,
+} from './dto/space-invite-responses';
 import type { AuthedRequest } from '@shared/types';
 import { ParseIdempotencyKeyPipe } from '@shared/pipes/parse-idempotency-key.pipe';
 import { RequestHeader } from '@shared/decorators/request-header.decorator';
@@ -112,6 +119,7 @@ export class SpacesController {
     return this.spacesService.getForMember(req.user.id, id);
   }
 
+  @ApiOkResponse({ type: [SpaceMemberViewResponse] })
   @Get(':id/members')
   async getMembers(@Request() req: AuthedRequest, @Param('id', ParseIntPipe) id: number): Promise<SpaceMemberView[]> {
     return this.spaceMembersService.getMembersWithInvites(req.user.id, id);
@@ -125,6 +133,10 @@ export class SpacesController {
   }
 
   @ApiBadRequestResponse({ description: 'VALIDATION_FAILED, SPACE_PERSONAL_NO_INVITES or SPACE_INVITE_LIMIT_REACHED.' })
+  @ApiCreatedResponse({
+    type: CreatedSpaceInviteResponse,
+    description: 'The new invitation, or the active invitation of the same address; its email is sent afterwards.',
+  })
   @ApiTooManyRequestsResponse({ description: 'SPACE_INVITE_RATE_LIMITED with Retry-After, or TOO_MANY_REQUESTS.' })
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post(':id/invites')
@@ -137,6 +149,7 @@ export class SpacesController {
   }
 
   @ApiOperation({ summary: 'Schedule another email for an active invitation: same code, link and expiry.' })
+  @ApiAcceptedResponse({ type: SpaceInviteStateResponse })
   @ApiNotFoundResponse({ description: 'NOT_FOUND: no active invitation with this id in the space.' })
   @ApiTooManyRequestsResponse({ description: 'SPACE_INVITE_RATE_LIMITED with Retry-After: cooldown or limit.' })
   @Throttle(INVITE_LINK_THROTTLE)
