@@ -841,7 +841,7 @@ describe('App (e2e)', () => {
     });
     expect(invite).toMatchObject({
       token_nonce: expect.stringMatching(/^[0-9a-f]{32}$/),
-      email_status: 'not_sent',
+      email_status: 'queued',
       accepted_by_user_id: null,
     });
 

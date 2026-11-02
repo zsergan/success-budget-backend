@@ -6,6 +6,7 @@ import { SpaceMembersService } from './space-members.service';
 import { SpaceInvitesService } from './space-invites.service';
 import type { AuthedRequest } from '@shared/types';
 import { withRelations } from '@shared/utils';
+import { SpaceType } from '@shared/enums';
 import { buildCurrency, buildSpace } from '@testing';
 
 describe('SpacesController', () => {
@@ -30,7 +31,13 @@ describe('SpacesController', () => {
         },
         {
           provide: SpaceInvitesService,
-          useValue: { create: jest.fn(), revoke: jest.fn(), accept: jest.fn() },
+          useValue: {
+            create: jest.fn(),
+            revoke: jest.fn(),
+            accept: jest.fn(),
+            acceptToken: jest.fn(),
+            preview: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -80,6 +87,33 @@ describe('SpacesController', () => {
 
     await expect(controller.acceptInvite(req, { code: '123456' })).resolves.toBe(space);
     expect(spaceInvitesService.accept).toHaveBeenCalledWith(1, '123456');
+  });
+
+  it('acceptInvite with a token delegates to SpaceInvitesService.acceptToken', async () => {
+    const space = withRelations(buildSpace({ id: 10, currency: buildCurrency() }), 'currency');
+    spaceInvitesService.acceptToken.mockResolvedValue(space);
+
+    await expect(controller.acceptInvite(req, { token: '5.abc' })).resolves.toBe(space);
+    expect(spaceInvitesService.acceptToken).toHaveBeenCalledWith(1, '5.abc');
+    expect(spaceInvitesService.accept).not.toHaveBeenCalled();
+  });
+
+  it('previewInvite delegates to SpaceInvitesService.preview', async () => {
+    const preview = {
+      space: { name: 'Family', currency: { id: 1, code: 'EUR', name: 'Euro' } },
+      expires_at: new Date(),
+    };
+    spaceInvitesService.preview.mockResolvedValue(preview);
+
+    await expect(controller.previewInvite(req, { token: '5.abc' })).resolves.toBe(preview);
+    expect(spaceInvitesService.preview).toHaveBeenCalledWith(1, '5.abc');
+  });
+
+  it('create passes the Idempotency-Key to SpacesService.create', async () => {
+    const dto = { name: 'Family', currency_id: 1, type: SpaceType.GROUP };
+    await controller.create(req, dto, 'key-1');
+
+    expect(spacesService.create).toHaveBeenCalledWith(1, dto, { idempotencyKey: 'key-1' });
   });
 
   it('removeMember delegates to SpaceMembersService.leaveOrRemove and returns true', async () => {

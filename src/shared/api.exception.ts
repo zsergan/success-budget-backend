@@ -6,7 +6,9 @@ export class ApiException extends HttpException {
   constructor(
     public readonly code: ErrorCode,
     status: HttpStatus,
+    // extra body fields documented with the code, e.g. spaceId of SPACE_ALREADY_MEMBER
+    details: Record<string, unknown> = {},
   ) {
-    super({ code, message: ErrorMessages[code] }, status);
+    super({ ...details, code, message: ErrorMessages[code] }, status);
   }
 }
