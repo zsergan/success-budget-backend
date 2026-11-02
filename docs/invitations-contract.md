@@ -26,7 +26,8 @@ prefix and need no token.
 | `POST /spaces/invites/preview`, `token` on `POST /spaces/invites/accept` | implemented |
 | `409 SPACE_ALREADY_MEMBER` and repeats on accept                         | implemented |
 | One active invitation per address, invitations stored as `queued`        | implemented |
-| `/invite`, `/.well-known/*` association files                            | planned     |
+| `/invite` page, `apple-app-site-association`                             | implemented |
+| `assetlinks.json` (Android)                                              | not served  |
 
 Until a part is implemented the API answers as before; the client checks
 for a field (for example `email_status`) rather than assuming it.
@@ -480,34 +481,65 @@ app.
 
 ### `GET /invite`
 
-`200` with an HTML page (`text/html`), for a browser where the app did not
-open:
+`200` with an HTML page (`text/html; charset=utf-8`) for a browser where
+the app did not open: the app is not installed, or the link was opened
+somewhere Universal Links do not apply. `HEAD` answers the same headers.
 
-- tells the user they were invited to a shared space in Success Budget;
-- says to open the link on a phone with the app installed, or to install
-  the app, sign in with the invited email, and enter the six-digit code
-  from the email on the app's join-by-code screen;
-- links to TestFlight when `TESTFLIGHT_URL` is configured;
-- shows no space name, inviter or code: it has none, as it does not call
-  the API.
+- Says the reader was invited to a shared space in Success Budget and must
+  join signed in with the invited address.
+- **Open in Success Budget**: shown only when the fragment carries a
+  well-formed token. It opens `successbudget://invite#token=<token>`, the
+  same token in the fragment of the app's custom scheme. Nothing opens by
+  itself; the reader taps the button.
+- Without a token, or with a malformed one, the button stays hidden and the
+  page says the link is incomplete: open it from the email again or enter
+  the six-digit code in the app.
+- **TestFlight**: an "Install with TestFlight" button only when
+  `TESTFLIGHT_URL` is configured; otherwise it says the app is not publicly
+  available yet and to ask the inviter for access. Either way: after
+  installing, open the email again and tap the link, or enter the code.
+- It shows no space name, inviter, recipient or code: it has none. The page
+  never calls the API, never sends the token anywhere, redirects nowhere
+  and changes no invitation, so mail scanners and prefetches are harmless.
 
-The page and its assets (under `/invite/assets/`) are static, sent with
-`Referrer-Policy: no-referrer`, and do not set cookies.
+The page, `/invite/assets/invite.css` and `/invite/assets/invite.js` are
+static and the same for every visitor (`Cache-Control: public,
+max-age=300`, `X-Robots-Tag: noindex, nofollow`). They load nothing from
+another origin and set no cookies. They keep the API's security headers:
+`Referrer-Policy: no-referrer` and the Content-Security-Policy with
+`script-src 'self'` (the script is a file, not inline).
+
+The app registers the `successbudget` scheme and the associated domain
+`applinks:<public host>`, and accepts the token from either URL form.
 
 ### Association files
 
-| Route                                         | Content                                                                                                                          |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /.well-known/apple-app-site-association` | `application/json`; `applinks` for `APPLE_APP_ID`, path `/invite` only                                                           |
-| `GET /.well-known/assetlinks.json`            | `application/json`; `delegate_permission/common.handle_all_urls` for the configured Android package and certificate fingerprints |
+| Route                                         | Content                                                                                                 |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET /.well-known/apple-app-site-association` | `application/json`; `applinks.details[0]`: `appIDs: [APPLE_APP_ID]`, `components: [{ "/": "/invite" }]` |
+| `GET /.well-known/assetlinks.json`            | not served (`404`) until the Android package and its signing certificate fingerprints are confirmed     |
 
-Both are served directly with `200` (no redirect). A file whose app
-identifiers are not configured for the environment answers `404`. Mobile
-provides, per environment, the iOS app ID (`<Team ID>.<bundle ID>`, bundle
-`com.zsergan.successbudget`). Android identifiers (package name, signing
-certificate SHA-256 fingerprints) are not configured yet, so
-`assetlinks.json` answers `404` until they are; the Android app then
-declares the `/invite` path in its intent filter.
+```json
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["ABCDE12345.com.zsergan.successbudget"],
+        "components": [{ "/": "/invite", "comment": "Space invitations" }]
+      }
+    ]
+  }
+}
+```
+
+The file is served at that exact path, over HTTPS, with `200` and no
+redirect (`Cache-Control: public, max-age=3600`). Without `APPLE_APP_ID`
+(allowed outside production) it answers `404`. The app ID is the Apple
+Team ID and the bundle `com.zsergan.successbudget`. Apple caches the file
+through its CDN; a change can take a while to reach devices.
+
+Only these four paths answer outside `/api/v1`; every API route keeps its
+prefix and the bearer token.
 
 ## Client behavior
 

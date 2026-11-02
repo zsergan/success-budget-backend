@@ -143,6 +143,28 @@ the owner sees `email_status` `failed` in the roster and can resend.
 - Limits per address, space and sender are in
   [the invitations contract](invitations-contract.md#rules).
 
+### Invitation page and Apple association
+
+The app serves `/invite`, `/invite/assets/*` and
+`/.well-known/apple-app-site-association` itself, outside `/api/v1`. Route
+the whole public host (not just `/api`) to the app, over HTTPS, without
+redirects on these paths: Apple refuses an association file behind a
+redirect. After a deploy, check from outside:
+
+```bash
+HOST=https://app.example.com   # PUBLIC_WEB_ORIGIN
+curl -sSI "$HOST/invite" | grep -iE '^HTTP|content-type|content-security'
+curl -sS -o /dev/null -w '%{http_code} %{content_type} %{redirect_url}\n' \
+  "$HOST/.well-known/apple-app-site-association"   # 200 application/json, no redirect
+curl -sS "$HOST/.well-known/apple-app-site-association"   # appIDs = APPLE_APP_ID
+curl -sS "https://app-site-association.cdn-apple.com/a/v1/${HOST#https://}"   # Apple's cached copy
+```
+
+Then open an invitation email on an iPhone with the app installed (the
+link opens the app) and without it (the page opens; Open in Success Budget
+appears). `assetlinks.json` stays `404` until the Android package and
+signing certificate fingerprints are confirmed.
+
 ## Deploy procedure
 
 1. **Build the image** (from CI or locally):
