@@ -616,6 +616,13 @@ id as `spaceId`, so the client can open the space:
   `500 INTERNAL_SERVER_ERROR`. Accept also gets its own limit of 10 calls
   per minute per network address (`429 TOO_MANY_REQUESTS`), down from the
   global 100.
+- **Inviting an address again** while its invitation is active returns that
+  invitation (same `id` and `code`) instead of creating a second one.
+- **New `429 SPACE_INVITE_RATE_LIMITED`** on `POST /spaces/:id/invites` and
+  on `POST /spaces` with `invites`, when an email would exceed a 24-hour
+  limit. An older client shows it as a generic error; nothing was created.
+- **A repeated accept** by the account that joined answers `201` with the
+  space, where it used to fail.
 - **Invitations created before the release** are `not_sent` and have no
   link; their code still works. A resend sends their first email, with a
   link.

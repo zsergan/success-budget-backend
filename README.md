@@ -17,12 +17,12 @@ A modular NestJS app - one module per domain area, each with its own
 controller/service/DTOs. All routes are protected by a global JWT guard by
 default (`src/shared/guards/jwt-auth.guard.ts`); a `@Public()` decorator
 opts specific handlers out (registration, login, email verification,
-password reset, currencies, health check).
+password reset, currencies, health check, the invitation page).
 
 | Module                | Purpose                                                              |
 | ---------------------- | --------------------------------------------------------------------- |
 | `users`                | Registration, email verification, login, profile                    |
-| `spaces`               | Shared/personal budget spaces - membership, invites, single space-level currency |
+| `spaces`               | Shared/personal budget spaces - membership, emailed invitations, single space-level currency |
 | `wallets`              | Space-owned wallets, derived balance, soft-delete                   |
 | `transactions`         | Income/expense entries against a wallet                             |
 | `categories`           | Income/expense categories - user-defined plus defaults on signup    |
@@ -31,8 +31,10 @@ password reset, currencies, health check).
 | `password-reset`       | Password reset by emailed code; ends every session of the account   |
 | `confirmation-codes`   | Email verification codes (internal service, no controller)          |
 | `health`               | `/health` liveness/readiness check for deployment tooling (public)  |
+| `invite-page`          | `/invite` fallback page and `apple-app-site-association`, outside `/api` (public) |
 
-All API routes are prefixed with `/api` and URI-versioned, e.g.
+All API routes are prefixed with `/api` and URI-versioned (only the
+invitation page and the association file are served outside it), e.g.
 `/api/v1/users/register`. Wallets, transactions, categories, and limits are
 all scoped under the space they belong to, e.g.
 `/api/v1/spaces/:spaceId/wallets` - every user gets a personal space

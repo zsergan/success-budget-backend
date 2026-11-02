@@ -494,6 +494,91 @@ by hand.
 Anything written after the backup is lost, which is why step 1 pauses
 writes.
 
+### Rolling out space invitations
+
+Emailed invitations, link preview and acceptance, the `/invite` page and
+the Apple association ship together. The two migrations only add columns
+and a table; the previous build keeps working on the migrated schema, and
+the deploy emails no one. See [the invitations contract](invitations-contract.md)
+for the API.
+
+1. **Prepare the environment** (staging first, then production):
+   - Generate a new `INVITE_TOKEN_SECRET` per environment
+     (`openssl rand -base64 48`), different from `JWT_SECRET`.
+   - Set `PUBLIC_WEB_ORIGIN` to the https origin that serves the whole app
+     (not only `/api`), `APPLE_APP_ID` to `<Team ID>.com.zsergan.successbudget`
+     and, if there is a public TestFlight link, `TESTFLIGHT_URL`.
+   - In Brevo: turn off click tracking for transactional email, and check
+     that `MAIL_FROM`'s domain is authenticated (SPF, DKIM), so invitations
+     to unknown addresses are not spam-filtered.
+2. **Migrate and deploy** with the usual procedure:
+   `AddSpaceInviteDelivery1791000000000` and
+   `CreateSpaceInviteEmails1791100000000` run, `schema:check` passes, then
+   the new image starts.
+3. **Check the public resources** with the `curl` commands under
+   [Invitation page and Apple association](#invitation-page-and-apple-association).
+4. **Release the mobile app** that registers the `successbudget` scheme and
+   `applinks:<host>`, previews and accepts by token, and shows the roster's
+   email state. Older app versions keep working: they create invitations
+   (now emailed too) and join with the six-digit code.
+5. **Run the manual checks** below on staging, then on production.
+
+**Invitations from before the release** are `not_sent` and have no link;
+their codes keep working. Nothing emails them automatically. An owner
+sends one from the roster with resend, which creates its link and counts
+toward the limits like any email.
+
+**Delivery recovery** is automatic. Every instance runs the queue every 30
+seconds, so emails pending during a restart or a crash go out once an
+instance is up and their 2-minute lease has run out. A crash right after
+the provider accepted a message can send it twice; both copies carry the
+same link and code. To look at the queue:
+
+```sql
+SELECT email_status, COUNT(*) AS invitations, MIN(email_next_attempt_at) AS next_due
+FROM space_invites
+WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
+GROUP BY email_status;
+```
+
+**Terminal failures.** After five failed attempts, or an SMTP `5xx`
+rejection, an invitation is `failed` and stays so: the owner sees it in the
+roster and resends it, or shares the code. After a provider outage that
+left many invitations `failed`, fix SMTP first, then either let owners
+resend or requeue them at once. Requeueing adds nothing to the sending
+limits' log:
+
+```sql
+UPDATE space_invites
+SET email_status = 'queued', email_attempts = 0, email_next_attempt_at = NOW(3),
+    email_lease_expires_at = NULL, email_attempt_id = email_attempt_id + 1
+WHERE email_status = 'failed' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW();
+```
+
+**Rotating `INVITE_TOKEN_SECRET`** (for example after a suspected leak):
+set the new value and restart every instance together; links signed with
+the old secret answer `404 SPACE_INVITE_UNUSABLE` once the new one is
+live, and an instance still on the old secret refuses links from the new
+one. Six-digit codes are not affected. A resend after the rotation emails
+a new link for the same invitation. Rotating `JWT_SECRET` does not touch
+invitation links.
+
+**Manual checks** (not covered by the automated tests, which use MailDev
+over plain SMTP and a desktop browser):
+
+- [ ] A real invitation through Brevo reaches a Gmail and an iCloud inbox,
+      not spam; the link in the received email is unchanged, `#token=`
+      included (no click-tracking redirect).
+- [ ] On an iPhone with the app installed, tapping the link opens the app
+      on the invitation preview; joining works signed in as the invited
+      address, and a different account sees the account-switch message.
+- [ ] On an iPhone without the app, the link opens `/invite` over HTTPS;
+      the TestFlight button appears only when `TESTFLIGHT_URL` is set;
+      after installing, Open in Success Budget opens the app.
+- [ ] `https://app-site-association.cdn-apple.com/a/v1/<host>` returns the
+      same `appIDs` as the host itself.
+- [ ] Android links stay off: `/.well-known/assetlinks.json` is `404`.
+
 ### Schema check
 
 On boot the app compares the migrations compiled into its build
@@ -643,6 +728,12 @@ scripts on demand) - not just asserted in this doc:
   race fix (`test/confirmation-code-send-race.e2e-spec.ts`) - a slower,
   stale send attempt can no longer overwrite a newer one's confirmed-sent
   status.
+- Space invitations through **real, delivered** emails (MailDev in CI):
+  the link and code are read from the received email and preview and join
+  the space, including an SMTP outage, a partially failed batch, a repeated
+  creation key, wrong accounts, expiry, revocation and concurrent joins
+  (`test/space-invite-email-delivery.e2e-spec.ts`); delivery leases,
+  recovery and limits against MySQL (`test/space-invite-delivery.e2e-spec.ts`).
 - Backup → restore into a separate empty database → boot → login and data
   confirmed through the API, plus `DB_SSL_CA` accepting a correct CA and
   rejecting a wrong one (`scripts/verify-backup-restore.sh`, run manually,
@@ -651,6 +742,8 @@ scripts on demand) - not just asserted in this doc:
 Still specific to whatever host is eventually chosen, and not yet
 configured or verified anywhere in this repo:
 
+- **Invitation links on real devices and through Brevo** - see the manual
+  checks under "Rolling out space invitations".
 - **HTTPS** - the app itself only ever speaks plain HTTP; TLS termination
   is expected to happen in front of it (the hosting platform's own load
   balancer/ingress, or a reverse proxy you run) - set `TRUST_PROXY`
