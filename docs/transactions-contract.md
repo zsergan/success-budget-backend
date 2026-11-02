@@ -750,7 +750,11 @@ them in the order above, so two writes never wait on each other crosswise:
 | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Transaction `POST` / `PATCH` / `DELETE`                                     | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
 | Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                            |
-| Space delete                                                                | member rows (X), space (X)                                                                            |
+| Space create                                                                | key (with `Idempotency-Key`), then the new rows only                                                  |
+| Space delete                                                                | member rows (X), space (X); the space's invitations are deleted with it                               |
+| Invitation create                                                           | member (S), space (X), the new invitation                                                             |
+| Invitation revoke                                                           | member (S), invitation (X)                                                                            |
+| Invitation accept                                                           | space (X), invitation (X), the new member row; the recipient has no member row yet                    |
 | Member removal                                                              | member row (X)                                                                                        |
 | Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                     |
 | Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
@@ -779,6 +783,9 @@ them in the order above, so two writes never wait on each other crosswise:
   in-flight transaction writes to it.
 - Moving a transaction between wallets locks both wallets in ascending id
   order, whichever is the source.
+- Invitation acceptance starts at the space row because the recipient
+  has no member row yet; see
+  [the invitations contract](invitations-contract.md#lock-order).
 - Login signs its token under the user's shared lock after checking that
   the password and `auth_version` are still the ones it verified. A
   password reset holds the user exclusively, so a login racing it either

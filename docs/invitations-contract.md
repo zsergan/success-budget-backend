@@ -18,13 +18,14 @@ prefix and need no token.
 | Part                                                                     | Status      |
 | ------------------------------------------------------------------------ | ----------- |
 | Invitations by owners, seven-day lifetime, six-digit code accept         | implemented |
-| `Idempotency-Key` on `POST /spaces`                                      | planned     |
-| Invitation emails, delivery states, automatic retries                    | planned     |
+| `Idempotency-Key` on `POST /spaces`                                      | implemented |
+| Sending invitation emails, automatic retries                             | planned     |
 | `email_status`, `resend_after_seconds` on create; roster fields          | planned     |
 | Delivery state storage, signed link tokens, recorded acceptor            | implemented |
 | `POST /spaces/:id/invites/:inviteId/resend`                              | planned     |
-| `POST /spaces/invites/preview`, `token` on `POST /spaces/invites/accept` | planned     |
-| `409 SPACE_ALREADY_MEMBER` and repeats on accept                         | planned     |
+| `POST /spaces/invites/preview`, `token` on `POST /spaces/invites/accept` | implemented |
+| `409 SPACE_ALREADY_MEMBER` and repeats on accept                         | implemented |
+| One active invitation per address, invitations stored as `queued`        | implemented |
 | `/invite`, `/.well-known/*` association files                            | planned     |
 
 Until a part is implemented the API answers as before; the client checks
@@ -64,7 +65,8 @@ invited address, verifies it, signs in and continues with step 4.
 | Members                     | at most 20 per space, checked on accept                                                                                                                                  |
 | Code                        | six digits, `000000`–`999999`; leading zeros are part of it; never changes                                                                                               |
 | Link token                  | `<invitation id>.<proof>`, the proof 43 characters of base64url (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`); one per invitation; never changes; the client treats it as opaque |
-| Who can join                | only an account whose email equals the invitation's email (compared as login compares emails: case-insensitively)                                                        |
+| Address                     | stored trimmed and lower-cased; `Anna@Example.com` and `anna@example.com` are one address                                                                                |
+| Who can join                | only an account whose email is the invitation's address in that form; a spelling that differs in more than case (`réview@` for `review@`) is another address             |
 | Ends when                   | accepted (by code or link), revoked, expired, or the space is deleted; both the code and the link stop working                                                           |
 | Resend cooldown             | 60 seconds after the invitation's last email was scheduled                                                                                                               |
 | Emails per invitation       | at most 5 in a 24-hour window that starts with the first email after the previous window ended                                                                           |
@@ -74,10 +76,13 @@ An **active** invitation is one that is not accepted, not revoked and not
 expired. Only active invitations appear in the roster, can be resent, or
 can be used to join.
 
-Invitations for one address are independent: inviting the same address
-twice creates two invitations, two codes and two emails. An invitation to
-someone who is already a member is created like any other; using it
-answers [`409 SPACE_ALREADY_MEMBER`](#error-codes).
+A space has at most one active invitation per address. Inviting an address
+that already has one returns that invitation (same `id`, `code`,
+`expires_at`) and sends no email; resending is what sends another. Once an
+invitation has ended, inviting the address again creates a new one. An
+invitation to someone who is already a member is created like any other;
+using it answers [`409 SPACE_ALREADY_MEMBER`](#error-codes). Whether an
+address has an account never changes any of this.
 
 ## Delivery states
 
@@ -157,9 +162,12 @@ Request, response and validation are unchanged:
 
 The space, its owner membership, its categories, every invitation in
 `invites` and their scheduled emails are created in one database
-transaction: all of them or none. Each invitation starts as `queued`. The
-response does not list the invitations; the owner sees them in the roster.
-Their codes are only in the emails.
+transaction: all of them or none. Each invitation starts as `queued`; no
+email is sent from inside that transaction, so a mail failure can never
+undo a created space. An address listed twice (in any letter case) gets one
+invitation, and the limit of 10 counts addresses. The response does not
+list the invitations; the owner sees them in the roster. Their codes are
+only in the emails.
 
 **`Idempotency-Key`**, optional, with the format and rules of the
 [transactions contract](transactions-contract.md#idempotency-key):
@@ -168,8 +176,10 @@ Their codes are only in the emails.
   `201` body. It creates no second space and sends no second email.
 - The same key with another body is `409 IDEMPOTENCY_KEY_REUSED`; nothing
   is created. The client stops retrying and reports the conflict.
-- A key is scoped to the user and the operation (space creation): it never
-  collides with a key the same user sent for a transaction write.
+- A key is scoped to the user and the operation (`spaces.create`): it
+  never collides with a key another user sent, or one the same user sent
+  for a transaction write. As the space does not exist yet, it is stored
+  with the reserved space id `0` (`NO_SPACE_ID`).
 - Concurrent repeats wait for the first; only successes are stored.
 
 The client generates one UUID per tap on "Create" and reuses it for every
@@ -203,7 +213,10 @@ two fields are added:
 }
 ```
 
-`201` means the invitation exists. The email is sent after the response;
+`201` means the invitation exists. If the address already has an active
+invitation in the space, that one is returned, with its own code, expiry
+and email state; no new email is scheduled, and a repeat after a lost
+response is answered the same way. The email is sent after the response;
 `email_status` is always `queued` here and the outcome appears in the
 roster. The code is still returned so the owner can share it by other
 means; this is the only response that contains it. The link token is never
@@ -587,7 +600,8 @@ their columns with the resend route.
 The migration sends nothing: every existing row is `not_sent` without a
 nonce, as is any row the previous build inserts during the deploy. Such a
 row gets its nonce, and so its link, with its first email. Until the
-delivery stage ships, new invitations also stay `not_sent`.
+delivery stage ships, new invitations are stored as `queued` and wait for
+it; nothing is sent yet.
 
 ### Link tokens
 
@@ -629,17 +643,28 @@ links are never logged; send failures are logged without them.
 
 ### Lock order
 
-Writes run in `runWriteTransaction`. The implementation adds these rows to
-the [lock order table](transactions-contract.md#one-db-transaction-per-write):
+Every invitation write runs in one `runWriteTransaction` (READ COMMITTED)
+and is checked again under its locks. The rows are part of the
+[lock order table](transactions-contract.md#one-db-transaction-per-write):
 
-| Operation                      | Locks, in order                               |
-| ------------------------------ | --------------------------------------------- |
-| Space create                   | key, then the new rows only                   |
-| Invitation create              | member (S), space (X), the new row            |
-| Invitation resend, revoke      | member (S), invitation (X)                    |
-| Invitation accept              | space (X), invitation (X), the new member row |
-| Delivery attempt start, result | invitation (X)                                |
+| Operation                      | Locks, in order                                               |
+| ------------------------------ | ------------------------------------------------------------- |
+| Space create                   | key (with `Idempotency-Key`), then the new rows only          |
+| Invitation create              | member (S), space (X), then the new invitation                |
+| Invitation revoke              | member (S), invitation (X)                                    |
+| Invitation accept              | space (X), invitation (X), then the new member row            |
+| Space delete                   | member rows (X), space (X); its invitations go with the space |
+| Delivery attempt start, result | invitation (X) (delivery stage)                               |
 
-The space lock serializes the pending-invitation limit on create and the
-member limit on accept, consistent with space deletion (members, then
-space).
+- **Acceptance** has no member row of the recipient to lock first, so it
+  starts at the space. The space lock serializes accepts of one space: the
+  member limit counts every committed member, and two confirmations of one
+  invitation create one membership. The invitation lock orders it against
+  revocation: whichever commits first wins, and the other sees it.
+- **Creation** takes the space lock after the owner's member lock, so two
+  invitations of one address in parallel find each other, and the limit of
+  10 counts every committed invitation. A removal of the owner waits for an
+  in-flight create, and a create after the removal committed is refused.
+- **Space deletion** deletes the members, then the space, whose foreign key
+  removes its invitations. It never locks an invitation before the space,
+  so it cannot deadlock with an acceptance.
