@@ -17,6 +17,7 @@ import { CurrenciesModule } from '@modules/currencies/currencies.module';
 import { ConfirmationCodesModule } from '@modules/confirmation-codes/confirmation-codes.module';
 import { LimitsModule } from '@modules/limits/limits.module';
 import { SpacesModule } from '@modules/spaces/spaces.module';
+import { InvitePageModule } from '@modules/invite-page/invite-page.module';
 import { StatisticsModule } from '@modules/statistics/statistics.module';
 import { HealthModule } from '@modules/health/health.module';
 import { PasswordResetModule } from '@modules/password-reset/password-reset.module';
@@ -47,6 +48,7 @@ import { SchemaCheck } from './database/schema-check';
     ConfirmationCodesModule,
     LimitsModule,
     SpacesModule,
+    InvitePageModule,
     StatisticsModule,
   ],
   controllers: [],

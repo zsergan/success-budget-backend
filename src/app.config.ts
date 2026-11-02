@@ -4,6 +4,7 @@ import helmet from 'helmet';
 
 import { HttpExceptionFilter } from '@shared/http-exception.filter';
 import type { EnvironmentVariables } from '@config/env.validation';
+import { PUBLIC_PAGE_ROUTES } from '@modules/invite-page/invite-page.controller';
 
 /**
  * Express's `trust proxy` setting, driven by TRUST_PROXY:
@@ -66,7 +67,7 @@ export function configureApp(app: INestApplication): void {
     .set('trust proxy', parseTrustProxy(configService.get('TRUST_PROXY', { infer: true })));
 
   app.use(helmet());
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix('api', { exclude: PUBLIC_PAGE_ROUTES });
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
   app.useGlobalPipes(
     new ValidationPipe({
