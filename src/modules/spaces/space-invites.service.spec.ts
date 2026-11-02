@@ -6,6 +6,8 @@ import { DataSource } from 'typeorm';
 import { SpaceInvitesService, isActiveInvite } from './space-invites.service';
 import { SpacesService, type SpaceWithCurrency } from './spaces.service';
 import { SpaceInviteLinks } from './space-invite-links';
+import { SpaceInviteDelivery } from './space-invite-delivery';
+import { RetryAfterException } from '@shared/retry-after.exception';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { UsersService } from '@modules/users/users.service';
 import { Space } from '@entities/space.entity';
@@ -37,6 +39,10 @@ describe('SpaceInvitesService', () => {
   let calls: string[];
   let spaceAccessService: { lockMembership: jest.Mock; lockSpace: jest.Mock };
   let usersService: { findById: jest.Mock };
+  let delivery: Record<
+    'assertCanSchedule' | 'recordScheduled' | 'requeue' | 'expedite' | 'describe' | 'deliverSoon',
+    jest.Mock
+  >;
 
   const links = new SpaceInviteLinks(
     buildConfigService({
@@ -154,6 +160,22 @@ describe('SpaceInvitesService', () => {
       }),
     };
     usersService = { findById: jest.fn(async () => buildUser({ id: RECIPIENT_ID, email: RECIPIENT_EMAIL })) };
+    delivery = {
+      assertCanSchedule: jest.fn(async () => calls.push('check limits')),
+      recordScheduled: jest.fn(async (_manager, _sender, rows: SpaceInvite[]) =>
+        calls.push(`record ${rows.map((row) => row.id).join(',')}`),
+      ),
+      requeue: jest.fn(async (_manager, _sender, row: SpaceInvite) => {
+        row.email_status = SpaceInviteEmailStatus.QUEUED;
+        calls.push(`requeue ${row.id}`);
+      }),
+      expedite: jest.fn(async (_manager, row: SpaceInvite) => calls.push(`expedite ${row.id}`)),
+      describe: jest.fn(
+        async (rows: SpaceInvite[]) =>
+          new Map(rows.map((row) => [row.id, { email_status: row.email_status, resend_after_seconds: 60 }])),
+      ),
+      deliverSoon: jest.fn((ids: number[]) => calls.push(`deliver ${ids.join(',')}`)),
+    };
     const dataSource = {
       transaction: jest.fn((...args: unknown[]) => (args[args.length - 1] as (m: unknown) => unknown)(manager)),
     };
@@ -168,6 +190,7 @@ describe('SpaceInvitesService', () => {
         { provide: SpacesService, useValue: { getOne: jest.fn(async () => space) } },
         { provide: UsersService, useValue: usersService },
         { provide: SpaceInviteLinks, useValue: links },
+        { provide: SpaceInviteDelivery, useValue: delivery },
       ],
     }).compile();
 
@@ -206,7 +229,19 @@ describe('SpaceInvitesService', () => {
     it('stores a normalized invitation with its email queued, under the member and space locks', async () => {
       const result = await service.create(OWNER_ID, SPACE_ID, '  Anna@Example.COM ');
 
-      expect(calls).toEqual([`lock member ${OWNER_ID}`, `lock space ${SPACE_ID}`, 'insert invite']);
+      expect(calls).toEqual([
+        `lock member ${OWNER_ID}`,
+        `lock space ${SPACE_ID}`,
+        'check limits',
+        'insert invite',
+        'record 1',
+        'deliver 1',
+      ]);
+      expect(delivery.assertCanSchedule).toHaveBeenCalledWith(
+        expect.anything(),
+        { senderId: OWNER_ID, spaceId: SPACE_ID, emails: ['anna@example.com'] },
+        expect.any(Date),
+      );
       expect(invites).toEqual([
         expect.objectContaining({
           space_id: SPACE_ID,
@@ -223,7 +258,19 @@ describe('SpaceInvitesService', () => {
         email: 'anna@example.com',
         expires_at: invites[0].expires_at,
         code: invites[0].code,
+        email_status: SpaceInviteEmailStatus.QUEUED,
+        resend_after_seconds: 60,
       });
+    });
+
+    it('creates and emails nothing when a sending limit is reached', async () => {
+      delivery.assertCanSchedule.mockRejectedValue(new RetryAfterException('SPACE_INVITE_RATE_LIMITED', 120));
+
+      await expect(service.create(OWNER_ID, SPACE_ID, 'a@example.com')).rejects.toMatchObject({
+        retryAfterSeconds: 120,
+      });
+      expect(invites).toEqual([]);
+      expect(delivery.deliverSoon).not.toHaveBeenCalled();
     });
 
     it('returns the active invitation of the same address instead of a second one', async () => {
@@ -236,8 +283,13 @@ describe('SpaceInvitesService', () => {
         email: existing.email,
         expires_at: existing.expires_at,
         code: existing.code,
+        email_status: SpaceInviteEmailStatus.SENT,
+        resend_after_seconds: 60,
       });
       expect(invites).toHaveLength(1);
+      expect(delivery.assertCanSchedule).not.toHaveBeenCalled();
+      expect(delivery.recordScheduled).not.toHaveBeenCalled();
+      expect(delivery.deliverSoon).not.toHaveBeenCalled();
       expect(existing.email_status).toBe(SpaceInviteEmailStatus.SENT);
     });
 
@@ -287,6 +339,85 @@ describe('SpaceInvitesService', () => {
         email_lease_expires_at: null,
         email_attempt_id: 5,
       });
+    });
+  });
+
+  describe('resend', () => {
+    it('refuses a plain member before locking anything else', async () => {
+      invite();
+      spaceAccessService.lockMembership.mockResolvedValue(buildSpaceMember({ role: SpaceRole.MEMBER }));
+
+      await expect(service.resend(OWNER_ID, SPACE_ID, 1)).rejects.toMatchObject(apiError('FORBIDDEN_SPACE', 403));
+      expect(calls).toEqual([]);
+    });
+
+    it.each([
+      ['unknown', () => 99],
+      ['of another space', () => invite({ space_id: SPACE_ID + 1 }).id],
+      ['accepted', () => invite({ accepted_at: earlier() }).id],
+      ['revoked', () => invite({ revoked_at: earlier() }).id],
+      ['expired', () => invite({ expires_at: earlier() }).id],
+    ])('answers 404 for an invitation that is %s', async (_case, inviteId) => {
+      await expect(service.resend(OWNER_ID, SPACE_ID, inviteId())).rejects.toMatchObject(apiError('NOT_FOUND', 404));
+      expect(delivery.deliverSoon).not.toHaveBeenCalled();
+    });
+
+    it.each([SpaceInviteEmailStatus.NOT_SENT, SpaceInviteEmailStatus.SENT, SpaceInviteEmailStatus.FAILED])(
+      'schedules a new email for a %s invitation under the member, space and invitation locks',
+      async (status) => {
+        const row = invite({ email_status: status });
+
+        await expect(service.resend(OWNER_ID, SPACE_ID, row.id)).resolves.toEqual({
+          id: row.id,
+          email: row.email,
+          expires_at: row.expires_at,
+          email_status: SpaceInviteEmailStatus.QUEUED,
+          resend_after_seconds: 60,
+        });
+        expect(calls).toEqual([
+          `lock member ${OWNER_ID}`,
+          `lock space ${SPACE_ID}`,
+          `lock invite ${row.id}`,
+          'check limits',
+          `requeue ${row.id}`,
+          `deliver ${row.id}`,
+        ]);
+        expect(delivery.assertCanSchedule).toHaveBeenCalledWith(
+          expect.anything(),
+          { senderId: OWNER_ID, spaceId: SPACE_ID, emails: [row.email], inviteId: row.id },
+          expect.any(Date),
+        );
+      },
+    );
+
+    it('moves a queued email forward instead of adding one, also after a lost lease', async () => {
+      const queued = invite({ email_status: SpaceInviteEmailStatus.QUEUED });
+      const lost = invite({ email_status: SpaceInviteEmailStatus.SENDING, email_lease_expires_at: earlier() });
+
+      await service.resend(OWNER_ID, SPACE_ID, queued.id);
+      await service.resend(OWNER_ID, SPACE_ID, lost.id);
+
+      expect(delivery.expedite).toHaveBeenCalledTimes(2);
+      expect(delivery.requeue).not.toHaveBeenCalled();
+    });
+
+    it('leaves a running attempt alone', async () => {
+      const row = invite({ email_status: SpaceInviteEmailStatus.SENDING, email_lease_expires_at: later() });
+
+      await service.resend(OWNER_ID, SPACE_ID, row.id);
+
+      expect(delivery.expedite).not.toHaveBeenCalled();
+      expect(delivery.requeue).not.toHaveBeenCalled();
+      expect(delivery.deliverSoon).not.toHaveBeenCalled();
+    });
+
+    it('changes nothing when the cooldown or a limit refuses', async () => {
+      const row = invite({ email_status: SpaceInviteEmailStatus.SENT });
+      delivery.assertCanSchedule.mockRejectedValue(new RetryAfterException('SPACE_INVITE_RATE_LIMITED', 42));
+
+      await expect(service.resend(OWNER_ID, SPACE_ID, row.id)).rejects.toMatchObject({ retryAfterSeconds: 42 });
+      expect(delivery.requeue).not.toHaveBeenCalled();
+      expect(delivery.deliverSoon).not.toHaveBeenCalled();
     });
   });
 

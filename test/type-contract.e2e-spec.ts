@@ -88,6 +88,7 @@ describe('Boundary type contract (e2e)', () => {
       }
 
       for (const id of [userId, ...extraUserIds].filter(Boolean)) {
+        await dataSource.query('DELETE FROM space_invite_emails WHERE sender_user_id = ?', [id]);
         await dataSource.query('DELETE FROM users WHERE id = ?', [id]);
       }
     } finally {
@@ -903,7 +904,18 @@ describe('Boundary type contract (e2e)', () => {
       expect(keys(list.body[0])).toEqual(['created_at', 'currency', 'id', 'member_count', 'name', 'role', 'type']);
 
       const members = await api().get(`${base()}/members`).expect(200);
-      expect(keys(members.body[0])).toEqual(['can_remove', 'email', 'id', 'name', 'role', 'type', 'user_id']);
+      expect(keys(members.body[0])).toEqual([
+        'can_remove',
+        'can_resend',
+        'email',
+        'email_status',
+        'id',
+        'name',
+        'resend_after_seconds',
+        'role',
+        'type',
+        'user_id',
+      ]);
 
       const profile = await api().get('/api/v1/users/profile').expect(200);
       expect(keys(profile.body)).toEqual(['created_at', 'email', 'id', 'name', 'updated_at']);

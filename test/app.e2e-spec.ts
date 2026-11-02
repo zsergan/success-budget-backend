@@ -96,6 +96,7 @@ describe('App (e2e)', () => {
       }
 
       if (userId) {
+        await dataSource.query('DELETE FROM space_invite_emails WHERE sender_user_id = ?', [userId]);
         await dataSource.query('DELETE FROM users WHERE id = ?', [userId]);
       }
 
@@ -841,7 +842,7 @@ describe('App (e2e)', () => {
     });
     expect(invite).toMatchObject({
       token_nonce: expect.stringMatching(/^[0-9a-f]{32}$/),
-      email_status: 'queued',
+      email_status: expect.stringMatching(/^(queued|sending|sent)$/),
       accepted_by_user_id: null,
     });
 

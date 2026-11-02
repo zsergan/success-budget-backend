@@ -68,6 +68,7 @@ describe('Space setup across registration, verification and space creation (e2e)
           await dataSource.query('DELETE FROM spaces WHERE id IN (?)', [spaceIds]);
         }
 
+        await dataSource.query('DELETE FROM space_invite_emails WHERE sender_user_id IN (?)', [userIds]);
         await dataSource.query('DELETE FROM users WHERE id IN (?)', [userIds]);
       }
     } finally {

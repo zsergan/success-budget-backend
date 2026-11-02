@@ -6,7 +6,7 @@ import { Space } from '@entities/space.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import type { User } from '@entities/user.entity';
-import { SpaceRole, SpaceType } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS } from '@shared/constants';
 import { ApiException } from '@shared/api.exception';
 import { assertFound, lockRows, runWriteTransaction, withRelations } from '@shared/utils';
@@ -15,13 +15,19 @@ import { UsersService } from '@modules/users/users.service';
 import { SpacesService, type SpaceWithCurrency } from './spaces.service';
 import { SpaceInviteLinks, parseInviteToken } from './space-invite-links';
 import { isActiveInvite, isInviteFor, newInvite, normalizeInviteEmail } from './space-invite-state';
+import { SpaceInviteDelivery, effectiveStatus, type InviteDeliveryView } from './space-invite-delivery';
 
 export { isActiveInvite } from './space-invite-state';
 
-export interface CreatedSpaceInvite {
+export interface SpaceInviteState {
   id: number;
   email: string;
   expires_at: Date;
+  email_status: SpaceInviteEmailStatus;
+  resend_after_seconds: number;
+}
+
+export interface CreatedSpaceInvite extends SpaceInviteState {
   code: string;
 }
 
@@ -46,15 +52,19 @@ export class SpaceInvitesService {
     private readonly spacesService: SpacesService,
     private readonly usersService: UsersService,
     private readonly spaceInviteLinks: SpaceInviteLinks,
+    private readonly delivery: SpaceInviteDelivery,
   ) {}
 
-  // Locks: member (S), space (X), so the active-invitation check and limit
-  // see every committed invitation of the space. An active invitation for the
-  // same address is returned as it is: no second row, no second email.
+  // Locks: member (S), space (X), so the active-invitation check and the
+  // limits see every committed invitation of the space. An active invitation
+  // for the same address is returned as it is: no second row, no second
+  // email. A new one is emailed after the commit.
   async create(userId: number, spaceId: number, email: string): Promise<CreatedSpaceInvite> {
     const address = normalizeInviteEmail(email);
+    let scheduled: number | null = null;
 
-    return runWriteTransaction(this.dataSource, async (manager) => {
+    const created = await runWriteTransaction(this.dataSource, async (manager) => {
+      scheduled = null;
       await this.lockOwner(spaceId, userId, manager);
       await this.spaceAccessService.lockSpace(spaceId, manager);
       const space = await this.spacesService.getOne(spaceId, manager);
@@ -68,19 +78,70 @@ export class SpaceInvitesService {
       const existing = active.find((invite) => isInviteFor(invite, address));
 
       if (existing) {
-        return toCreatedInvite(existing);
+        return existing;
       }
 
       if (active.length >= SPACE_LIMITS.MAX_PENDING_INVITES_PER_SPACE) {
         throw new ApiException('SPACE_INVITE_LIMIT_REACHED', HttpStatus.BAD_REQUEST);
       }
 
+      const now = new Date();
+      await this.delivery.assertCanSchedule(manager, { senderId: userId, spaceId, emails: [address] }, now);
       const repository = manager.getRepository(SpaceInvite);
-      const saved = await repository.save(repository.create(newInvite(space.id, address)));
+      const saved = await repository.save(repository.create(newInvite(space.id, address, now)));
+      await this.delivery.recordScheduled(manager, userId, [saved], now);
+      scheduled = saved.id;
 
-      // the only response that exposes the code; GET :id/members never does
-      return toCreatedInvite(saved);
+      return saved;
     });
+
+    if (scheduled !== null) {
+      this.delivery.deliverSoon([scheduled]);
+    }
+
+    // the only response that exposes the code; GET :id/members never does
+    return { ...(await this.toState(created)), code: created.code };
+  }
+
+  // Locks: member (S), space (X), invitation (X). Same code, link and expiry:
+  // only the email is scheduled again. See docs/invitations-contract.md#resend.
+  async resend(userId: number, spaceId: number, inviteId: number): Promise<SpaceInviteState> {
+    let deliver = false;
+
+    const invite = await runWriteTransaction(this.dataSource, async (manager) => {
+      deliver = false;
+      await this.lockOwner(spaceId, userId, manager);
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+      const locked = await this.lockInvite(manager, inviteId);
+      const now = new Date();
+
+      if (!locked || locked.space_id !== spaceId || !isActiveInvite(locked, now)) {
+        throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
+      }
+
+      await this.delivery.assertCanSchedule(
+        manager,
+        { senderId: userId, spaceId, emails: [locked.email], inviteId: locked.id },
+        now,
+      );
+      const status = effectiveStatus(locked, now);
+
+      if (status === SpaceInviteEmailStatus.QUEUED) {
+        await this.delivery.expedite(manager, locked, now);
+        deliver = true;
+      } else if (status !== SpaceInviteEmailStatus.SENDING) {
+        await this.delivery.requeue(manager, userId, locked, now);
+        deliver = true;
+      }
+
+      return locked;
+    });
+
+    if (deliver) {
+      this.delivery.deliverSoon([invite.id]);
+    }
+
+    return this.toState(invite);
   }
 
   async getActive(spaceId: number, manager?: EntityManager): Promise<SpaceInvite[]> {
@@ -233,6 +294,12 @@ export class SpaceInvitesService {
     });
   }
 
+  private async toState(invite: SpaceInvite): Promise<SpaceInviteState> {
+    const view = (await this.delivery.describe([invite])).get(invite.id) as InviteDeliveryView;
+
+    return { id: invite.id, email: invite.email, expires_at: invite.expires_at, ...view };
+  }
+
   private async lockOwner(spaceId: number, userId: number, manager: EntityManager): Promise<void> {
     const member = await this.spaceAccessService.lockMembership(spaceId, userId, manager);
 
@@ -260,10 +327,6 @@ export class SpaceInvitesService {
 
     return withRelations(space, 'currency');
   }
-}
-
-function toCreatedInvite(invite: SpaceInvite): CreatedSpaceInvite {
-  return { id: invite.id, email: invite.email, expires_at: invite.expires_at, code: invite.code };
 }
 
 function unusable(credential: InviteCredential): ApiException {

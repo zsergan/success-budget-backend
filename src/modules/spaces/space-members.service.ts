@@ -3,13 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Not, Repository } from 'typeorm';
 
 import { SpaceMember } from '@entities/space-member.entity';
-import { SpaceRole } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceRole } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { withRelations } from '@shared/utils';
 import { ApiException } from '@shared/api.exception';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
 import { SpaceInvitesService } from './space-invites.service';
+import { SpaceInviteDelivery } from './space-invite-delivery';
 
 export interface SpaceMemberView {
   type: 'member' | 'invite';
@@ -23,6 +24,10 @@ export interface SpaceMemberView {
   email: string;
   role: SpaceRole | null;
   can_remove: boolean;
+  // invitation rows only; null/false on member rows
+  email_status: SpaceInviteEmailStatus | null;
+  can_resend: boolean;
+  resend_after_seconds: number | null;
 }
 
 @Injectable()
@@ -34,6 +39,7 @@ export class SpaceMembersService {
     private readonly spaceAccessService: SpaceAccessService,
     private readonly spacesService: SpacesService,
     private readonly spaceInvitesService: SpaceInvitesService,
+    private readonly delivery: SpaceInviteDelivery,
   ) {}
 
   async getAll(spaceId: number): Promise<WithRelations<SpaceMember, 'user'>[]> {
@@ -51,6 +57,7 @@ export class SpaceMembersService {
     const isOwner = caller.role === SpaceRole.OWNER;
 
     const [members, invites] = await Promise.all([this.getAll(spaceId), this.spaceInvitesService.getActive(spaceId)]);
+    const deliveries = await this.delivery.describe(invites);
 
     const memberViews: SpaceMemberView[] = members.map((member) => ({
       type: 'member',
@@ -60,17 +67,30 @@ export class SpaceMembersService {
       email: member.user.email,
       role: member.role,
       can_remove: isOwner && member.user_id !== userId,
+      email_status: null,
+      can_resend: false,
+      resend_after_seconds: null,
     }));
 
-    const inviteViews: SpaceMemberView[] = invites.map((invite) => ({
-      type: 'invite',
-      id: invite.id,
-      user_id: null,
-      name: null,
-      email: invite.email,
-      role: null,
-      can_remove: isOwner,
-    }));
+    const inviteViews: SpaceMemberView[] = invites.map((invite) => {
+      const { email_status, resend_after_seconds } = deliveries.get(invite.id) as {
+        email_status: SpaceInviteEmailStatus;
+        resend_after_seconds: number;
+      };
+
+      return {
+        type: 'invite',
+        id: invite.id,
+        user_id: null,
+        name: null,
+        email: invite.email,
+        role: null,
+        can_remove: isOwner,
+        email_status,
+        can_resend: isOwner && email_status !== SpaceInviteEmailStatus.SENDING && resend_after_seconds === 0,
+        resend_after_seconds,
+      };
+    });
 
     return [...memberViews, ...inviteViews];
   }

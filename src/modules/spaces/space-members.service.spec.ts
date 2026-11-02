@@ -6,9 +6,10 @@ import { DataSource, Repository } from 'typeorm';
 import { SpaceMembersService } from './space-members.service';
 import { SpacesService } from './spaces.service';
 import { SpaceInvitesService } from './space-invites.service';
+import { SpaceInviteDelivery } from './space-invite-delivery';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpaceMember } from '@entities/space-member.entity';
-import { SpaceRole } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { buildSpaceInvite, buildSpaceMember, buildUser } from '@testing';
 
@@ -21,7 +22,18 @@ describe('SpaceMembersService', () => {
   let spacesService: jest.Mocked<SpacesService>;
   let spaceInvitesService: jest.Mocked<SpaceInvitesService>;
 
+  const delivery = { describe: jest.fn() };
+
   beforeEach(async () => {
+    delivery.describe.mockImplementation(
+      async (invites: { id: number }[]) =>
+        new Map(
+          invites.map((invite) => [
+            invite.id,
+            { email_status: SpaceInviteEmailStatus.FAILED, resend_after_seconds: 0 },
+          ]),
+        ),
+    );
     spaceMemberRepositoryInTx = { update: jest.fn(), delete: jest.fn() };
     const manager = {
       getRepository: jest.fn((entity) => {
@@ -42,6 +54,7 @@ describe('SpaceMembersService', () => {
         { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
         { provide: SpacesService, useValue: { removeOwned: jest.fn() } },
         { provide: SpaceInvitesService, useValue: { getActive: jest.fn() } },
+        { provide: SpaceInviteDelivery, useValue: delivery },
       ],
     }).compile();
 
@@ -97,6 +110,9 @@ describe('SpaceMembersService', () => {
           email: 'me@example.com',
           role: SpaceRole.OWNER,
           can_remove: false,
+          email_status: null,
+          can_resend: false,
+          resend_after_seconds: null,
         },
         {
           type: 'member',
@@ -106,6 +122,9 @@ describe('SpaceMembersService', () => {
           email: 'them@example.com',
           role: SpaceRole.MEMBER,
           can_remove: true,
+          email_status: null,
+          can_resend: false,
+          resend_after_seconds: null,
         },
         {
           type: 'invite',
@@ -115,6 +134,9 @@ describe('SpaceMembersService', () => {
           email: 'pending@example.com',
           role: null,
           can_remove: true,
+          email_status: SpaceInviteEmailStatus.FAILED,
+          can_resend: true,
+          resend_after_seconds: 0,
         },
       ]);
     });
@@ -135,6 +157,28 @@ describe('SpaceMembersService', () => {
 
       expect(result).toHaveLength(2);
       expect(result.every((entry) => entry.can_remove === false)).toBe(true);
+      expect(result[1]).toMatchObject({ email_status: SpaceInviteEmailStatus.FAILED, can_resend: false });
+    });
+
+    it('offers resend to the owner only when no attempt runs and the cooldown is over', async () => {
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ role: SpaceRole.OWNER, user_id: 1 }));
+      spaceMemberRepository.find.mockResolvedValue([]);
+      spaceInvitesService.getActive.mockResolvedValue([3, 4, 5].map((id) => buildSpaceInvite({ id })));
+      delivery.describe.mockResolvedValue(
+        new Map([
+          [3, { email_status: SpaceInviteEmailStatus.SENDING, resend_after_seconds: 0 }],
+          [4, { email_status: SpaceInviteEmailStatus.SENT, resend_after_seconds: 42 }],
+          [5, { email_status: SpaceInviteEmailStatus.SENT, resend_after_seconds: 0 }],
+        ]),
+      );
+
+      const result = await service.getMembersWithInvites(1, 10);
+
+      expect(result.map(({ can_resend, resend_after_seconds }) => [can_resend, resend_after_seconds])).toEqual([
+        [false, 0],
+        [false, 42],
+        [true, 0],
+      ]);
     });
   });
 

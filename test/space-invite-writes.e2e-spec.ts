@@ -90,6 +90,15 @@ describe('Space invitation writes (e2e)', () => {
   const invitationsOf = (spaceId: number) =>
     testApp.dataSource.getRepository(SpaceInvite).findBy({ space_id: spaceId });
 
+  async function scheduledEmails(inviteId: number): Promise<number> {
+    const [{ count }] = await testApp.dataSource.query(
+      'SELECT COUNT(*) AS count FROM space_invite_emails WHERE invite_id = ?',
+      [inviteId],
+    );
+
+    return Number(count);
+  }
+
   const pauseLockSpace = (spaceId: number) =>
     pauseAfterFirstCall(testApp.app.get(SpaceAccessService), 'lockSpace', (_self, [id]) => id === spaceId);
   const pauseLockInvite = () =>
@@ -99,22 +108,27 @@ describe('Space invitation writes (e2e)', () => {
     it('gives two concurrent invitations of one address one row', async () => {
       const owner = await person('inv-dup-owner');
       const spaceId = await groupSpace(owner);
+      const twice = `twice-${process.pid}-${Date.now()}@example.com`;
       const checkpoint = pauseLockSpace(spaceId);
 
       const [first, second] = await overlap(
         testApp.dataSource,
         checkpoint,
         LOCK_SPACE,
-        () => api(owner).post(`/api/v1/spaces/${spaceId}/invites`).send({ email: 'Twice@Example.com' }),
-        () => api(owner).post(`/api/v1/spaces/${spaceId}/invites`).send({ email: 'twice@example.com' }),
+        () => api(owner).post(`/api/v1/spaces/${spaceId}/invites`).send({ email: twice.toUpperCase() }),
+        () => api(owner).post(`/api/v1/spaces/${spaceId}/invites`).send({ email: twice }),
       );
 
       expect([first.status, second.status]).toEqual([201, 201]);
-      expect(second.body).toEqual(first.body);
-      expect(first.body.email).toBe('twice@example.com');
-      expect(await invitationsOf(spaceId)).toEqual([
-        expect.objectContaining({ email: 'twice@example.com', email_status: 'queued', email_attempt_id: 0 }),
-      ]);
+      // the second answer shows the invitation's current email state, which the first one's send moves on
+      expect(second.body).toEqual({
+        ...first.body,
+        email_status: expect.stringMatching(/^(queued|sending|sent)$/),
+        resend_after_seconds: expect.any(Number),
+      });
+      expect(first.body.email).toBe(twice);
+      expect(await invitationsOf(spaceId)).toEqual([expect.objectContaining({ email: twice })]);
+      expect(await scheduledEmails(first.body.id)).toBe(1);
     });
 
     it('keeps an owner who is being removed from inviting once the removal committed', async () => {
@@ -151,7 +165,8 @@ describe('Space invitation writes (e2e)', () => {
   });
 
   describe('creating a space with an Idempotency-Key', () => {
-    const body = (name: string, invites = ['a@example.com']) => ({
+    const address = (label: string) => `e2e-${label}-${process.pid}-${Date.now()}@example.com`;
+    const body = (name: string, invites = [address('a')]) => ({
       name,
       currency_id: testApp.currencyId,
       type: 'group',
@@ -170,21 +185,22 @@ describe('Space invitation writes (e2e)', () => {
     it('replays the original space without a second space, invitation or email', async () => {
       const owner = await person('key-replay');
       const name = `Replay ${Date.now()}`;
-      const first = await api(owner).post('/api/v1/spaces').set('Idempotency-Key', 'create-1').send(body(name));
-      const repeat = await api(owner).post('/api/v1/spaces').set('Idempotency-Key', 'create-1').send(body(name));
+      const payload = body(name);
+      const first = await api(owner).post('/api/v1/spaces').set('Idempotency-Key', 'create-1').send(payload);
+      const repeat = await api(owner).post('/api/v1/spaces').set('Idempotency-Key', 'create-1').send(payload);
 
       expect([first.status, repeat.status]).toEqual([201, 201]);
       expect(repeat.body).toEqual(first.body);
       expect(Object.keys(first.body).sort()).toEqual(['created_at', 'currency', 'id', 'name', 'type', 'updated_at']);
       expect(await spacesNamed(owner.userId, name)).toEqual([first.body.id]);
-      expect(await invitationsOf(first.body.id)).toEqual([
-        expect.objectContaining({ email: 'a@example.com', email_status: 'queued', email_attempt_id: 0 }),
-      ]);
+      const [invite] = await invitationsOf(first.body.id);
+      expect(invite.email).toMatch(/^e2e-a-/);
+      expect(await scheduledEmails(invite.id)).toBe(1);
 
       const changed = await api(owner)
         .post('/api/v1/spaces')
         .set('Idempotency-Key', 'create-1')
-        .send(body(name, ['b@example.com']))
+        .send(body(name, [address('b')]))
         .expect(409);
       expect(changed.body.code).toBe('IDEMPOTENCY_KEY_REUSED');
       expect(await spacesNamed(owner.userId, name)).toEqual([first.body.id]);
@@ -198,7 +214,8 @@ describe('Space invitation writes (e2e)', () => {
         'getOne',
         (_self, args) => args[1] !== undefined,
       );
-      const send = () => api(owner).post('/api/v1/spaces').set('Idempotency-Key', 'create-race').send(body(name));
+      const payload = body(name);
+      const send = () => api(owner).post('/api/v1/spaces').set('Idempotency-Key', 'create-race').send(payload);
 
       const [first, second] = await overlap(testApp.dataSource, checkpoint, CLAIM_KEY, send, send);
 

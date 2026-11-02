@@ -6,7 +6,7 @@ import { SpaceMembersService } from './space-members.service';
 import { SpaceInvitesService } from './space-invites.service';
 import type { AuthedRequest } from '@shared/types';
 import { withRelations } from '@shared/utils';
-import { SpaceType } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceType } from '@shared/enums';
 import { buildCurrency, buildSpace } from '@testing';
 
 describe('SpacesController', () => {
@@ -34,6 +34,7 @@ describe('SpacesController', () => {
           useValue: {
             create: jest.fn(),
             revoke: jest.fn(),
+            resend: jest.fn(),
             accept: jest.fn(),
             acceptToken: jest.fn(),
             preview: jest.fn(),
@@ -69,11 +70,32 @@ describe('SpacesController', () => {
   });
 
   it('createInvite delegates to SpaceInvitesService.create', async () => {
-    const created = { id: 3, email: 'a@example.com', expires_at: new Date(), code: '123456' };
+    const created = {
+      id: 3,
+      email: 'a@example.com',
+      expires_at: new Date(),
+      code: '123456',
+      email_status: SpaceInviteEmailStatus.QUEUED,
+      resend_after_seconds: 60,
+    };
     spaceInvitesService.create.mockResolvedValue(created);
 
     await expect(controller.createInvite(req, 10, { email: 'a@example.com' })).resolves.toBe(created);
     expect(spaceInvitesService.create).toHaveBeenCalledWith(1, 10, 'a@example.com');
+  });
+
+  it('resendInvite delegates to SpaceInvitesService.resend', async () => {
+    const state = {
+      id: 3,
+      email: 'a@example.com',
+      expires_at: new Date(),
+      email_status: SpaceInviteEmailStatus.QUEUED,
+      resend_after_seconds: 60,
+    };
+    spaceInvitesService.resend.mockResolvedValue(state);
+
+    await expect(controller.resendInvite(req, 10, 3)).resolves.toBe(state);
+    expect(spaceInvitesService.resend).toHaveBeenCalledWith(1, 10, 3);
   });
 
   it('revokeInvite delegates to SpaceInvitesService.revoke and returns true', async () => {

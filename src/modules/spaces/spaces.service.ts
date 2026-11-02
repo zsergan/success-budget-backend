@@ -16,6 +16,7 @@ import { IdempotencyService } from '@modules/idempotency/idempotency.service';
 import { NO_SPACE_ID } from '@entities/idempotency-key.entity';
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
 import { newInvite, normalizeInviteEmail } from './space-invite-state';
+import { SpaceInviteDelivery } from './space-invite-delivery';
 
 export type SpaceWithCurrency = WithRelations<Space, 'currency'>;
 
@@ -39,12 +40,14 @@ export class SpacesService {
     private readonly dataSource: DataSource,
     private readonly spaceAccessService: SpaceAccessService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly delivery: SpaceInviteDelivery,
   ) {}
 
   // One write transaction: the space, its owner, categories, invitations and
-  // their queued emails commit together or not at all; nothing is sent from
-  // inside it. With a key, a repeat returns the stored result and writes
-  // nothing. The key is scoped to the user, as the space does not exist yet.
+  // their queued emails commit together or not at all; the emails are sent
+  // after the commit. With a key, a repeat returns the stored result and
+  // writes and sends nothing. The key is scoped to the user, as the space does
+  // not exist yet.
   async create(
     userId: number,
     dto: CreateSpaceDto,
@@ -60,7 +63,9 @@ export class SpacesService {
       throw new ApiException('SPACE_INVITE_LIMIT_REACHED', HttpStatus.BAD_REQUEST);
     }
 
-    return runWriteTransaction(this.dataSource, (manager) => {
+    let scheduled: number[] = [];
+    const created = await runWriteTransaction(this.dataSource, (manager) => {
+      scheduled = [];
       const work = async () => {
         const space = await createSpaceWithOwner(
           manager,
@@ -71,13 +76,18 @@ export class SpacesService {
 
         if (emails.length) {
           const now = new Date();
-          await manager.getRepository(SpaceInvite).insert(emails.map((email) => newInvite(space.id, email, now)));
+          await this.delivery.assertCanSchedule(manager, { senderId: userId, spaceId: null, emails }, now);
+          const rows = emails.map((email) => newInvite(space.id, email, now));
+          const { identifiers } = await manager.getRepository(SpaceInvite).insert(rows);
+          const invites = rows.map((row, index) => ({ ...row, id: identifiers[index].id as number }) as SpaceInvite);
+          await this.delivery.recordScheduled(manager, userId, invites, now);
+          scheduled = invites.map((invite) => invite.id);
         }
 
-        const created = await this.getOne(space.id, manager);
-        assertFound(created);
+        const result = await this.getOne(space.id, manager);
+        assertFound(result);
 
-        return created;
+        return result;
       };
 
       if (idempotencyKey === undefined) {
@@ -90,6 +100,9 @@ export class SpacesService {
         work,
       );
     });
+    this.delivery.deliverSoon(scheduled);
+
+    return created;
   }
 
   async getAllForUser(userId: number): Promise<SpaceListItem[]> {

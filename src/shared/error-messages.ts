@@ -28,6 +28,7 @@ export const ErrorMessages = {
   SPACE_INVITE_UNUSABLE: 'The invitation has expired or can no longer be used',
   SPACE_INVITE_EMAIL_MISMATCH: 'The invitation was sent to a different account',
   SPACE_ALREADY_MEMBER: 'You are already a member of this space',
+  SPACE_INVITE_RATE_LIMITED: 'Too many invitation emails were sent recently, please try again later',
   TRANSACTION_NOT_FOUND: 'Transaction not found',
   TRANSACTION_NOT_IN_FEED: 'The transaction does not match the period, search or filters',
   TRANSACTION_IS_SYSTEM: 'The initial balance cannot be edited or deleted',

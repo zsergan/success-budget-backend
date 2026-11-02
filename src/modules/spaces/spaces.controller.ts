@@ -23,11 +23,12 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiTooManyRequestsResponse,
 } from '@nestjs/swagger';
 
 import { SpacesService } from './spaces.service';
 import { SpaceMembersService, SpaceMemberView } from './space-members.service';
-import { SpaceInvitesService, CreatedSpaceInvite } from './space-invites.service';
+import { SpaceInvitesService, CreatedSpaceInvite, type SpaceInviteState } from './space-invites.service';
 import { CreateSpaceDto } from './dto/create-space.dto';
 import { CreateSpaceInviteDto } from './dto/create-space-invite.dto';
 import { AcceptSpaceInviteDto } from './dto/accept-space-invite.dto';
@@ -123,6 +124,8 @@ export class SpacesController {
     return true;
   }
 
+  @ApiBadRequestResponse({ description: 'VALIDATION_FAILED, SPACE_PERSONAL_NO_INVITES or SPACE_INVITE_LIMIT_REACHED.' })
+  @ApiTooManyRequestsResponse({ description: 'SPACE_INVITE_RATE_LIMITED with Retry-After, or TOO_MANY_REQUESTS.' })
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post(':id/invites')
   async createInvite(
@@ -131,6 +134,20 @@ export class SpacesController {
     @Body() createSpaceInviteDto: CreateSpaceInviteDto,
   ): Promise<CreatedSpaceInvite> {
     return this.spaceInvitesService.create(req.user.id, id, createSpaceInviteDto.email);
+  }
+
+  @ApiOperation({ summary: 'Schedule another email for an active invitation: same code, link and expiry.' })
+  @ApiNotFoundResponse({ description: 'NOT_FOUND: no active invitation with this id in the space.' })
+  @ApiTooManyRequestsResponse({ description: 'SPACE_INVITE_RATE_LIMITED with Retry-After: cooldown or limit.' })
+  @Throttle(INVITE_LINK_THROTTLE)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post(':id/invites/:inviteId/resend')
+  async resendInvite(
+    @Request() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('inviteId', ParseIntPipe) inviteId: number,
+  ): Promise<SpaceInviteState> {
+    return this.spaceInvitesService.resend(req.user.id, id, inviteId);
   }
 
   @Delete(':id/invites/:inviteId')

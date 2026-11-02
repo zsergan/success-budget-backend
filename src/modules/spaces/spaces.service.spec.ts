@@ -7,6 +7,8 @@ import { SpacesService } from './spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { IdempotencyService } from '@modules/idempotency/idempotency.service';
 import { NO_SPACE_ID } from '@entities/idempotency-key.entity';
+import { SpaceInviteDelivery } from './space-invite-delivery';
+import { RetryAfterException } from '@shared/retry-after.exception';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
@@ -25,6 +27,7 @@ describe('SpacesService', () => {
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let spaceInviteRepositoryInTx: { insert: jest.Mock };
   let idempotencyService: { run: jest.Mock };
+  let delivery: { assertCanSchedule: jest.Mock; recordScheduled: jest.Mock; deliverSoon: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership'>>;
@@ -52,7 +55,10 @@ describe('SpacesService', () => {
       findOne: jest.fn(),
     };
     spaceMemberRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
-    spaceInviteRepositoryInTx = { insert: jest.fn() };
+    spaceInviteRepositoryInTx = {
+      insert: jest.fn(async (rows: unknown[]) => ({ identifiers: rows.map((_row, index) => ({ id: 500 + index })) })),
+    };
+    delivery = { assertCanSchedule: jest.fn(), recordScheduled: jest.fn(), deliverSoon: jest.fn() };
     idempotencyService = { run: jest.fn((_manager, _request, work: () => unknown) => work()) };
     categoryRepositoryInTx = { save: jest.fn() };
     const manager = {
@@ -90,6 +96,7 @@ describe('SpacesService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: SpaceAccessService, useValue: spaceAccessService },
         { provide: IdempotencyService, useValue: idempotencyService },
+        { provide: SpaceInviteDelivery, useValue: delivery },
       ],
     }).compile();
 
@@ -158,6 +165,24 @@ describe('SpacesService', () => {
       ]);
       const [rows] = spaceInviteRepositoryInTx.insert.mock.calls[0] as [SpaceInvite[]];
       expect(rows[0].token_nonce).not.toBe(rows[1].token_nonce);
+      expect(delivery.assertCanSchedule).toHaveBeenCalledWith(
+        expect.anything(),
+        { senderId: 1, spaceId: null, emails: ['a@example.com', 'b@example.com'] },
+        expect.any(Date),
+      );
+      expect(delivery.recordScheduled).toHaveBeenCalledWith(
+        expect.anything(),
+        1,
+        [
+          expect.objectContaining({ id: 500, email: 'a@example.com' }),
+          expect.objectContaining({ id: 501, email: 'b@example.com' }),
+        ],
+        expect.any(Date),
+      );
+      expect(delivery.deliverSoon).toHaveBeenCalledWith([500, 501]);
+      expect(delivery.deliverSoon.mock.invocationCallOrder[0]).toBeGreaterThan(
+        dataSource.transaction.mock.invocationCallOrder[0],
+      );
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ space_id: 11, name: 'Initial balance', is_system: 1 })]),
       );
@@ -193,6 +218,18 @@ describe('SpacesService', () => {
       );
       expect(spaceRepositoryInTx.save).not.toHaveBeenCalled();
       expect(spaceInviteRepositoryInTx.insert).not.toHaveBeenCalled();
+      expect(delivery.deliverSoon).toHaveBeenCalledWith([]);
+    });
+
+    it('creates nothing when the inline invitations exceed a sending limit', async () => {
+      spaceRepositoryInTx.save.mockResolvedValue(buildSpace({ id: 11, type: SpaceType.GROUP }));
+      delivery.assertCanSchedule.mockRejectedValue(new RetryAfterException('SPACE_INVITE_RATE_LIMITED', 30));
+
+      await expect(
+        service.create(1, { name: 'Family', type: SpaceType.GROUP, currency_id: 1, invites: ['a@example.com'] }),
+      ).rejects.toMatchObject({ retryAfterSeconds: 30 });
+      expect(spaceInviteRepositoryInTx.insert).not.toHaveBeenCalled();
+      expect(delivery.deliverSoon).not.toHaveBeenCalled();
     });
 
     it('rejects invites on a personal space', async () => {
