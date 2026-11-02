@@ -753,8 +753,10 @@ them in the order above, so two writes never wait on each other crosswise:
 | Space create                                                                | key (with `Idempotency-Key`), then the new rows only                                                  |
 | Space delete                                                                | member rows (X), space (X); the space's invitations are deleted with it                               |
 | Invitation create                                                           | member (S), space (X), the new invitation                                                             |
+| Invitation resend                                                           | member (S), space (X), invitation (X)                                                                 |
 | Invitation revoke                                                           | member (S), invitation (X)                                                                            |
 | Invitation accept                                                           | space (X), invitation (X), the new member row; the recipient has no member row yet                    |
+| Invitation email attempt (background)                                       | invitation (X), one conditional update to claim and one to record the result; nothing held meanwhile  |
 | Member removal                                                              | member row (X)                                                                                        |
 | Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                     |
 | Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                  |

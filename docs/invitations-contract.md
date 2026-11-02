@@ -19,10 +19,10 @@ prefix and need no token.
 | ------------------------------------------------------------------------ | ----------- |
 | Invitations by owners, seven-day lifetime, six-digit code accept         | implemented |
 | `Idempotency-Key` on `POST /spaces`                                      | implemented |
-| Sending invitation emails, automatic retries                             | planned     |
-| `email_status`, `resend_after_seconds` on create; roster fields          | planned     |
+| Sending invitation emails, automatic retries, sending limits             | implemented |
+| `email_status`, `resend_after_seconds` on create; roster fields          | implemented |
 | Delivery state storage, signed link tokens, recorded acceptor            | implemented |
-| `POST /spaces/:id/invites/:inviteId/resend`                              | planned     |
+| `POST /spaces/:id/invites/:inviteId/resend`                              | implemented |
 | `POST /spaces/invites/preview`, `token` on `POST /spaces/invites/accept` | implemented |
 | `409 SPACE_ALREADY_MEMBER` and repeats on accept                         | implemented |
 | One active invitation per address, invitations stored as `queued`        | implemented |
@@ -69,8 +69,21 @@ invited address, verifies it, signs in and continues with step 4.
 | Who can join                | only an account whose email is the invitation's address in that form; a spelling that differs in more than case (`réview@` for `review@`) is another address             |
 | Ends when                   | accepted (by code or link), revoked, expired, or the space is deleted; both the code and the link stop working                                                           |
 | Resend cooldown             | 60 seconds after the invitation's last email was scheduled                                                                                                               |
-| Emails per invitation       | at most 5 in a 24-hour window that starts with the first email after the previous window ended                                                                           |
+| Emails per invitation       | at most 5 in the last 24 hours                                                                                                                                           |
+| Emails per address          | at most 10 in the last 24 hours, across all spaces and senders                                                                                                           |
+| Emails per space            | at most 30 in the last 24 hours                                                                                                                                          |
+| Emails per sender           | at most 50 in the last 24 hours, across the sender's spaces                                                                                                              |
 | Automatic delivery attempts | at most 5 per scheduled email                                                                                                                                            |
+
+Every scheduled email counts toward these limits: the first email of a new
+invitation, inline ones included, and every resend. The 24-hour windows
+roll: an email stops counting 24 hours after it was scheduled, also when
+its invitation or space was deleted since. A request that would exceed a
+limit is refused with `429 SPACE_INVITE_RATE_LIMITED` and creates or sends
+nothing; `Retry-After` is when the oldest counted email leaves the window.
+Requests in different spaces at the same moment can pass the address and
+sender limits by the number in flight; the limits of one space and one
+invitation are exact.
 
 An **active** invitation is one that is not accepted, not revoked and not
 expired. Only active invitations appear in the roster, can be resent, or
@@ -187,13 +200,14 @@ retry of that creation, including after an app restart. Without a key, a
 retry after a lost response creates a second space with its own
 invitations and emails.
 
-| Case                                                    | Response                         |
-| ------------------------------------------------------- | -------------------------------- |
-| Body invalid (as today), or `Idempotency-Key` malformed | `400 VALIDATION_FAILED`          |
-| `invites` on a personal space                           | `400 SPACE_PERSONAL_NO_INVITES`  |
-| More than 10 `invites`                                  | `400 SPACE_INVITE_LIMIT_REACHED` |
-| Key reused with another body                            | `409 IDEMPOTENCY_KEY_REUSED`     |
-| Created, or a repeat of a created space                 | `201`                            |
+| Case                                                        | Response                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------ |
+| Body invalid (as today), or `Idempotency-Key` malformed     | `400 VALIDATION_FAILED`                                            |
+| `invites` on a personal space                               | `400 SPACE_PERSONAL_NO_INVITES`                                    |
+| More than 10 `invites`                                      | `400 SPACE_INVITE_LIMIT_REACHED`                                   |
+| Key reused with another body                                | `409 IDEMPOTENCY_KEY_REUSED`                                       |
+| An invitation email would exceed an address or sender limit | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After`; nothing is created |
+| Created, or a repeat of a created space                     | `201`                                                              |
 
 ### `POST /spaces/:id/invites`
 
@@ -225,14 +239,15 @@ returned to the owner.
 `resend_after_seconds` is the time until `resend` is accepted (see
 [resend](#post-spacesidinvitesinviteidresend)).
 
-| Case                                              | Response                         |
-| ------------------------------------------------- | -------------------------------- |
-| `email` missing, not an email, over 255           | `400 VALIDATION_FAILED`          |
-| Not the owner, not a member, no such space        | `403 FORBIDDEN_SPACE`            |
-| Personal space                                    | `400 SPACE_PERSONAL_NO_INVITES`  |
-| 10 active invitations already                     | `400 SPACE_INVITE_LIMIT_REACHED` |
-| Too many calls (5 per minute per network address) | `429 TOO_MANY_REQUESTS`          |
-| Created                                           | `201`                            |
+| Case                                                     | Response                                                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------ |
+| `email` missing, not an email, over 255                  | `400 VALIDATION_FAILED`                                            |
+| Not the owner, not a member, no such space               | `403 FORBIDDEN_SPACE`                                              |
+| Personal space                                           | `400 SPACE_PERSONAL_NO_INVITES`                                    |
+| 10 active invitations already                            | `400 SPACE_INVITE_LIMIT_REACHED`                                   |
+| The email would exceed an address, space or sender limit | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After`; nothing is created |
+| Too many calls (5 per minute per network address)        | `429 TOO_MANY_REQUESTS`                                            |
+| Created, or the active invitation of the address         | `201`                                                              |
 
 ### `GET /spaces/:id/members`
 
@@ -310,20 +325,22 @@ What a resend does depends on the current state:
   fresh budget of 5 automatic attempts. It counts toward the 5 emails per
   24 hours. For a `not_sent` invitation this first email also creates its
   link.
-- `queued`: the waiting email is attempted now instead of at its scheduled
-  retry; no second email is added and nothing is counted.
+- `queued` (also an attempt whose lease ran out): the waiting email is
+  attempted now instead of at its scheduled retry; no second email is
+  added and nothing is counted. Its remaining attempts are kept.
 - `sending`: nothing changes; the answer shows `sending`.
 
 Checked in this order; the first match answers:
 
-| Case                                                          | Response                                                    |
-| ------------------------------------------------------------- | ----------------------------------------------------------- |
-| Not the owner, not a member, no such space                    | `403 FORBIDDEN_SPACE`                                       |
-| No such invitation in the space, or it is not active          | `404 NOT_FOUND`                                             |
-| Within 60 s of the last scheduled email                       | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After` = rest of it |
-| 5 emails already scheduled in the invitation's 24-hour window | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After` = window end |
-| Too many calls from the network address                       | `429 TOO_MANY_REQUESTS`, `Retry-After`                      |
-| Accepted                                                      | `202`                                                       |
+| Case                                                 | Response                                                                            |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Not the owner, not a member, no such space           | `403 FORBIDDEN_SPACE`                                                               |
+| No such invitation in the space, or it is not active | `404 NOT_FOUND`                                                                     |
+| Within 60 s of the last scheduled email              | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After` = rest of it                         |
+| 5 emails of the invitation in the last 24 hours      | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After` = until the oldest leaves the window |
+| An address, space or sender limit                    | `429 SPACE_INVITE_RATE_LIMITED`, `Retry-After` = until the oldest leaves the window |
+| Too many calls from the network address              | `429 TOO_MANY_REQUESTS`, `Retry-After`                                              |
+| Accepted                                             | `202`                                                                               |
 
 The cooldown and the 24-hour limit also cover a `queued` or `sending`
 invitation. A refused resend changes nothing. On `404 NOT_FOUND` the client
@@ -525,12 +542,12 @@ invitations, show each invitation's `email_status` from the roster. Show
 
 New codes:
 
-| Code                          | Status | When                                                      | Client action                                                     |
-| ----------------------------- | ------ | --------------------------------------------------------- | ----------------------------------------------------------------- |
-| `SPACE_INVITE_UNUSABLE`       | 404    | Link token unknown, or its invitation is no longer active | Explain the invitation is unavailable; suggest requesting another |
-| `SPACE_INVITE_EMAIL_MISMATCH` | 403    | Active invitation for another email                       | Offer account switching                                           |
-| `SPACE_INVITE_RATE_LIMITED`   | 429    | Resend during the cooldown or over the 24-hour limit      | Disable resend for `Retry-After` seconds                          |
-| `SPACE_ALREADY_MEMBER`        | 409    | Preview or accept by a member of the space                | Refresh spaces; offer to open the space                           |
+| Code                          | Status | When                                                                                          | Client action                                                         |
+| ----------------------------- | ------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `SPACE_INVITE_UNUSABLE`       | 404    | Link token unknown, or its invitation is no longer active                                     | Explain the invitation is unavailable; suggest requesting another     |
+| `SPACE_INVITE_EMAIL_MISMATCH` | 403    | Active invitation for another email                                                           | Offer account switching                                               |
+| `SPACE_INVITE_RATE_LIMITED`   | 429    | Resend during the cooldown, or an email over a 24-hour limit (resend, invite, space creation) | Disable the action for `Retry-After` seconds; a space was not created |
+| `SPACE_ALREADY_MEMBER`        | 409    | Preview or accept by a member of the space                                                    | Refresh spaces; offer to open the space                               |
 
 Used on new routes: `IDEMPOTENCY_KEY_REUSED` (409) on `POST /spaces`. Kept
 unchanged: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`, `NOT_FOUND`,
@@ -594,14 +611,21 @@ These do not change what the client sees.
 | `email_last_sent_at`     | when SMTP last accepted an email                                                                                                |
 
 `IDX_space_invites_email_due (email_status, email_next_attempt_at)` lets
-the delivery job find due rows. The resend cooldown and 24-hour limit add
-their columns with the resend route.
+the delivery job find due rows: a queued email and a running attempt both
+keep `email_next_attempt_at` at the time to look at them again (its retry
+time or its lease end).
+
+`space_invite_emails` (`CreateSpaceInviteEmails1791100000000`, entity
+`src/entities/space-invite-email.entity.ts`) has one row per scheduled
+email: `invite_id`, `space_id`, the normalized `email`, `sender_user_id`
+and `scheduled_at`. The cooldown and the limits count it; rows older than
+24 hours are purged by the delivery job. It has no foreign keys, so
+deleting an invitation, a space or an account does not reset the limits.
 
 The migration sends nothing: every existing row is `not_sent` without a
 nonce, as is any row the previous build inserts during the deploy. Such a
-row gets its nonce, and so its link, with its first email. Until the
-delivery stage ships, new invitations are stored as `queued` and wait for
-it; nothing is sent yet.
+row gets its nonce, and so its link, with its first email, and is emailed
+only when the owner resends it.
 
 ### Link tokens
 
@@ -626,20 +650,47 @@ links are never logged; send failures are logged without them.
 
 ### Delivery
 
-- Scheduling writes the outbox state in the same transaction as the
-  invitation, so a committed invitation always has its email pending and a
-  rolled-back one never sends.
-- After the commit the server tries the email right away; a background job
-  of the application picks up due `queued` rows and expired leases as the
-  safety net, on every instance.
-- An attempt claims the row with a conditional update that sets `sending`
-  and a lease (2 minutes, longer than the SMTP timeouts). Its result is
-  written only if it still holds the lease, so a stale attempt never
-  overwrites a newer state. In-flight sends are awaited on shutdown.
-- Mail goes through the existing SMTP configuration (Brevo in deployed
-  environments). Space and owner names in the email are HTML-escaped. The
-  email contains the owner's name, the space name, the link, the code and
-  the time left until expiry.
+`src/modules/spaces/space-invite-delivery.ts` (`SpaceInviteDelivery`);
+the invitation rows are the queue, so no queue service is needed.
+
+- **Scheduling** writes the row's delivery state and its send-log row in
+  the transaction that creates or resends the invitation, after the limits
+  were checked under that transaction's locks. A committed invitation
+  always has its email pending; a rolled-back one never sends. Nothing is
+  sent from inside a transaction, so an SMTP failure never undoes a write.
+- **After the commit** the request starts the attempt without waiting for
+  it. Every instance also runs the queue every 30 seconds: due `queued`
+  rows and attempts whose lease ran out, 20 at a time; ended invitations
+  leave the queue (`email_next_attempt_at` is cleared). It starts on
+  application bootstrap and stops on shutdown, which waits for attempts in
+  flight, as `IdempotencyKeyPurger` does.
+- **An attempt** claims the row with one conditional update: due, active,
+  not held by a live lease. It sets `sending`, a 2-minute lease and
+  increments `email_attempts` and `email_attempt_id`. Of competing workers
+  only one update matches. It then sends with no transaction open; SMTP
+  connection, greeting and socket timeouts (10 s, 10 s, 30 s) keep a send
+  within its lease.
+- **The result** is written only while the row still has that attempt id
+  and is `sending`: `sent`, or `queued` with the next retry time (1, 5, 30
+  minutes, 2 hours), or `failed` after the fifth attempt or an SMTP `5xx`
+  reply. A revocation or a resend moves the attempt id on, so a stale
+  result is dropped. A claimed attempt whose lease ran out (a crash, a
+  restart) is retried; one claimed more than 5 times becomes `failed`
+  without another send.
+- **Duplicates.** A crash after the SMTP server accepted the message but
+  before the result was written sends it again once the lease runs out.
+  Both emails carry the same link and code; acceptance creates one
+  membership either way.
+- **Email.** Through the existing SMTP configuration (Brevo in deployed
+  environments). Subject, HTML and plain-text body: the space name
+  (HTML-escaped, control characters removed, shortened in the subject), an
+  "Open invitation" button with the link, the six-digit code, the time left
+  until expiry, and that only the invited address can join. It names no
+  inviter and no other member.
+- **Logs** carry the invitation id, the attempt number and a sanitized
+  reason (error code, SMTP reply code and command, the message with
+  addresses, URLs and six-digit numbers removed). Never the code, the link
+  or the token.
 
 ### Lock order
 
@@ -647,14 +698,15 @@ Every invitation write runs in one `runWriteTransaction` (READ COMMITTED)
 and is checked again under its locks. The rows are part of the
 [lock order table](transactions-contract.md#one-db-transaction-per-write):
 
-| Operation                      | Locks, in order                                               |
-| ------------------------------ | ------------------------------------------------------------- |
-| Space create                   | key (with `Idempotency-Key`), then the new rows only          |
-| Invitation create              | member (S), space (X), then the new invitation                |
-| Invitation revoke              | member (S), invitation (X)                                    |
-| Invitation accept              | space (X), invitation (X), then the new member row            |
-| Space delete                   | member rows (X), space (X); its invitations go with the space |
-| Delivery attempt start, result | invitation (X) (delivery stage)                               |
+| Operation                      | Locks, in order                                                      |
+| ------------------------------ | -------------------------------------------------------------------- |
+| Space create                   | key (with `Idempotency-Key`), then the new rows only                 |
+| Invitation create              | member (S), space (X), then the new invitation                       |
+| Invitation resend              | member (S), space (X), invitation (X)                                |
+| Invitation revoke              | member (S), invitation (X)                                           |
+| Invitation accept              | space (X), invitation (X), then the new member row                   |
+| Space delete                   | member rows (X), space (X); its invitations go with the space        |
+| Delivery attempt start, result | invitation (X), one conditional update each; none held while sending |
 
 - **Acceptance** has no member row of the recipient to lock first, so it
   starts at the space. The space lock serializes accepts of one space: the
@@ -665,6 +717,8 @@ and is checked again under its locks. The rows are part of the
   invitations of one address in parallel find each other, and the limit of
   10 counts every committed invitation. A removal of the owner waits for an
   in-flight create, and a create after the removal committed is refused.
+- **Resend** takes the space lock like creation, so the space's limit
+  and the invitation's own cooldown and limit are exact.
 - **Space deletion** deletes the members, then the space, whose foreign key
   removes its invitations. It never locks an invitation before the space,
   so it cannot deadlock with an acceptance.

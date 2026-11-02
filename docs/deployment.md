@@ -120,6 +120,29 @@ no one; the previous build keeps working on the migrated table. Use a
 different `INVITE_TOKEN_SECRET` per environment, so a staging link never
 opens a production invitation.
 
+### Invitation emails
+
+Invitation emails go through the same SMTP settings as confirmation codes
+(Brevo in deployed environments). The app sends them itself after the
+request commits and retries for a while; there is no queue service to run.
+Every instance runs the queue every 30 seconds, so a crash or a redeploy
+mid-send is picked up by whichever instance is up once the 2-minute lease
+runs out. Unlike confirmation codes, a failed send never fails the request:
+the owner sees `email_status` `failed` in the roster and can resend.
+
+- **Link tracking must be off** for these emails in the Brevo account
+  (transactional click tracking). A rewritten link no longer opens the app
+  and may drop the `#token=` part.
+- **Logs**: `SpaceInviteDelivery` logs each attempt with the invitation id,
+  the attempt number and a sanitized reason, never the code or the link. A
+  run of `failed, will retry` lines for every invitation usually means the
+  SMTP settings or the provider are down; the emails go out once it
+  recovers, or after a resend once they reached `failed`.
+- **Duplicates**: a crash right after the provider accepted a message can
+  send it once more; both copies carry the same link and code.
+- Limits per address, space and sender are in
+  [the invitations contract](invitations-contract.md#rules).
+
 ## Deploy procedure
 
 1. **Build the image** (from CI or locally):
