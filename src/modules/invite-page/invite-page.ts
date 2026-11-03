@@ -6,10 +6,6 @@ import { ConfigService } from '@nestjs/config';
 import type { EnvironmentVariables } from '@config/env.validation';
 import { escapeHtml } from '@modules/mail/space-invite-email';
 
-// The custom scheme the iOS app registers; the page's Open button uses it,
-// as Safari does not follow a Universal Link to the page's own domain.
-export const APP_URL_SCHEME = 'successbudget';
-
 export interface AppleAppSiteAssociation {
   applinks: { details: { appIDs: string[]; components: { '/': string; comment: string }[] }[] };
 }
@@ -43,7 +39,7 @@ export function renderInvitePage(testFlightUrl?: string): string {
     : `<p>Success Budget is not publicly available yet. Ask the person who invited you how to get access.</p>`;
 
   return `<!doctype html>
-<html lang="en" data-app-scheme="${APP_URL_SCHEME}">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">

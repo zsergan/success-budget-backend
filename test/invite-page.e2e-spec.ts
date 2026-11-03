@@ -43,7 +43,7 @@ describe('Invitation page and association files (e2e)', () => {
   it('serves the script and the stylesheet with their content types', async () => {
     const script = await http().get('/invite/assets/invite.js').expect(200);
     expect(script.headers['content-type']).toBe('text/javascript; charset=utf-8');
-    expect(script.text).toContain("'://invite#token='");
+    expect(script.text).toContain("'successbudget://invite#token='");
 
     const css = await http().get('/invite/assets/invite.css').expect(200);
     expect(css.headers['content-type']).toBe('text/css; charset=utf-8');

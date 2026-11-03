@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 
-import { APP_URL_SCHEME, InvitePage, renderInvitePage } from './invite-page';
+import { InvitePage, renderInvitePage } from './invite-page';
 import { buildConfigService } from '@testing';
 
 const TOKEN = `42.${'aB3_-'.repeat(8)}abc`;
@@ -34,8 +34,7 @@ describe('InvitePage', () => {
   it('names no space, inviter or recipient', () => {
     const html = renderInvitePage();
 
-    expect(html).not.toMatch(/@|\{\{|token=/);
-    expect(html).toContain(`data-app-scheme="${APP_URL_SCHEME}"`);
+    expect(html).not.toMatch(/@|\{\{|token=|data-/);
   });
 
   it('serves the Apple association for the configured app id only, for /invite', () => {
@@ -65,7 +64,7 @@ describe('InvitePage', () => {
 describe('invite.js', () => {
   const script = readFileSync(join(__dirname, 'public', 'invite.js'), 'utf8');
 
-  // a minimal DOM: the two elements the script touches and the page root
+  // a minimal DOM: the two elements the script touches
   function run(hash: string) {
     const openApp = {
       hidden: true,
@@ -77,14 +76,14 @@ describe('invite.js', () => {
     const incomplete = { hidden: true };
     const elements: Record<string, object> = { 'open-app': openApp, 'link-incomplete': incomplete };
     const document = {
-      documentElement: { getAttribute: (name: string) => (name === 'data-app-scheme' ? APP_URL_SCHEME : null) },
       getElementById: (id: string) => elements[id],
     };
     const sent: unknown[] = [];
 
     runInNewContext(script, {
       document,
-      window: { location: { hash } },
+      // frozen: navigating anywhere throws in the script's strict mode
+      window: { location: Object.freeze({ hash }), open: (...args: unknown[]) => sent.push(['open', ...args]) },
       fetch: (...args: unknown[]) => sent.push(args),
       XMLHttpRequest: function () {
         sent.push('xhr');

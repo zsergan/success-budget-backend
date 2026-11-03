@@ -5,6 +5,9 @@
   'use strict';
 
   var TOKEN_PATTERN = /^[1-9][0-9]{0,9}\.[A-Za-z0-9_-]{43}$/;
+  // The scheme the iOS app registers: Safari does not follow a Universal
+  // Link to the page's own domain.
+  var APP_URL = 'successbudget://invite#token=';
 
   function readToken(hash) {
     var pairs = String(hash || '')
@@ -22,13 +25,12 @@
     return null;
   }
 
-  var scheme = document.documentElement.getAttribute('data-app-scheme');
   var token = readToken(window.location.hash);
   var openApp = document.getElementById('open-app');
   var incomplete = document.getElementById('link-incomplete');
 
-  if (token && scheme) {
-    openApp.setAttribute('href', scheme + '://invite#token=' + token);
+  if (token) {
+    openApp.setAttribute('href', APP_URL + token);
     openApp.hidden = false;
   } else {
     incomplete.hidden = false;
