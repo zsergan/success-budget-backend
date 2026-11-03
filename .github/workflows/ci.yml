@@ -80,6 +80,8 @@ jobs:
       SMTP_HOST: 127.0.0.1
       SMTP_PORT: 1025
       MAIL_FROM: 'Success Budget <no-reply@success-budget.local>'
+      PUBLIC_WEB_ORIGIN: http://localhost:3000
+      INVITE_TOKEN_SECRET: ci-e2e-invite-token-secret-value-0123456789
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -143,6 +145,9 @@ jobs:
       SMTP_HOST: 127.0.0.1
       SMTP_PORT: 1025
       MAIL_FROM: 'CI <no-reply@example.com>'
+      PUBLIC_WEB_ORIGIN: https://app.example.com
+      INVITE_TOKEN_SECRET: ci-docker-smoke-invite-token-secret-0123456789
+      APPLE_APP_ID: ABCDE12345.com.example.successbudget
       # Deliberately not 3000 (the Dockerfile's default/EXPOSE) - proves the
       # app actually listens on whatever PORT it's given rather than that
       # value being hardcoded somewhere.
@@ -168,7 +173,8 @@ jobs:
           set +e
           output=$(docker run --rm --network host \
             -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
-            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PORT -e NODE_ENV=production \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PUBLIC_WEB_ORIGIN -e INVITE_TOKEN_SECRET -e APPLE_APP_ID \
+            -e PORT -e NODE_ENV=production \
             success-budget-backend:ci 2>&1)
           status=$?
           set -e
@@ -204,14 +210,15 @@ jobs:
         run: |
           docker run --rm --network host \
             -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
-            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PUBLIC_WEB_ORIGIN -e INVITE_TOKEN_SECRET -e APPLE_APP_ID \
             success-budget-backend:ci \
             node dist/database/verify-reference-data.js
       - name: Start the container (production mode, non-default PORT) and check its health endpoint
         run: |
           docker run -d --network host --name api \
             -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
-            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PORT -e NODE_ENV=production \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PUBLIC_WEB_ORIGIN -e INVITE_TOKEN_SECRET -e APPLE_APP_ID \
+            -e PORT -e NODE_ENV=production \
             success-budget-backend:ci
           for i in $(seq 1 20); do
             curl -sf http://127.0.0.1:${PORT}/api/v1/health && exit 0

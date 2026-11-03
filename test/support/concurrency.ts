@@ -66,6 +66,7 @@ export async function waitForBlockedStatement(
 }
 
 export const LOCK_SPACE = '%FROM `spaces` `space`%FOR UPDATE%';
+export const LOCK_MEMBERS = '%FROM `space_members` `row`%FOR UPDATE%';
 export const LOCK_USER = '%FROM `users` `user`%FOR UPDATE%';
 export const INSERT_USER = 'INSERT INTO `users`%';
 

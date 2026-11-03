@@ -8,6 +8,7 @@ import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
+import { LockSetChanged } from '@shared/utils';
 import { buildSpaceMember } from '@testing';
 
 describe('SpaceAccessService', () => {
@@ -139,6 +140,98 @@ describe('SpaceAccessService', () => {
       await service.lockSpace(10, manager, 'shared');
 
       expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_read');
+    });
+  });
+
+  describe('lockMembers', () => {
+    const owner = buildSpaceMember({ id: 3, space_id: 10, user_id: 1, role: SpaceRole.OWNER });
+    const member = buildSpaceMember({ id: 8, space_id: 10, user_id: 2, role: SpaceRole.MEMBER });
+    const elsewhere = buildSpaceMember({ id: 5, space_id: 20, user_id: 1, role: SpaceRole.OWNER });
+
+    const managerWith = (reads: number[][], locked: SpaceMember[]) => {
+      const find = jest.fn();
+      reads.forEach((ids) => find.mockResolvedValueOnce(ids.map((id) => ({ id }))));
+      const queryBuilder = {
+        setLock: jest.fn().mockReturnThis(),
+        whereInIds: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(locked),
+      };
+      const manager = {
+        getRepository: jest.fn().mockReturnValue({ find }),
+        createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+      } as unknown as EntityManager;
+
+      return { manager, find, queryBuilder };
+    };
+
+    beforeEach(() => {
+      jest.spyOn(service, 'lockSpace').mockResolvedValue();
+    });
+
+    it('locks the space’s and the actor’s member rows, then the space, and reads the set again', async () => {
+      const { manager, find, queryBuilder } = managerWith(
+        [
+          [3, 5, 8],
+          [3, 5, 8],
+        ],
+        [owner, elsewhere, member],
+      );
+
+      await expect(service.lockMembers(10, 1, manager)).resolves.toEqual({
+        actor: owner,
+        members: [owner, member],
+        actorSpaces: 2,
+      });
+      expect(find).toHaveBeenCalledWith({
+        select: { id: true },
+        where: [{ space_id: 10 }, { user_id: 1 }],
+        order: { id: 'ASC' },
+      });
+      expect(manager.createQueryBuilder).toHaveBeenCalledWith(SpaceMember, 'row');
+      expect(queryBuilder.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(queryBuilder.whereInIds).toHaveBeenCalledWith([3, 5, 8]);
+      expect(service.lockSpace).toHaveBeenCalledWith(10, manager);
+
+      const [lockMembersOrder] = queryBuilder.getMany.mock.invocationCallOrder;
+      const [lockSpaceOrder] = (service.lockSpace as jest.Mock).mock.invocationCallOrder;
+      const [, rereadOrder] = find.mock.invocationCallOrder;
+      expect(lockMembersOrder).toBeLessThan(lockSpaceOrder);
+      expect(lockSpaceOrder).toBeLessThan(rereadOrder);
+    });
+
+    it('asks for a rerun when a member joined before the space lock', async () => {
+      const { manager } = managerWith(
+        [
+          [3, 5],
+          [3, 5, 8],
+        ],
+        [owner, elsewhere],
+      );
+
+      await expect(service.lockMembers(10, 1, manager)).rejects.toBeInstanceOf(LockSetChanged);
+    });
+
+    it('decides on the rows still there when one was removed before its lock', async () => {
+      const { manager } = managerWith(
+        [
+          [3, 5, 8],
+          [3, 5],
+        ],
+        [owner, elsewhere],
+      );
+
+      await expect(service.lockMembers(10, 1, manager)).resolves.toEqual({
+        actor: owner,
+        members: [owner],
+        actorSpaces: 2,
+      });
+    });
+
+    it('rejects an actor whose membership is gone', async () => {
+      const { manager } = managerWith([[8], [8]], [member]);
+
+      await expect(service.lockMembers(10, 1, manager)).rejects.toMatchObject(forbidden);
     });
   });
 });

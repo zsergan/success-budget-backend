@@ -2,6 +2,10 @@ import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 export const IDEMPOTENCY_KEY_SCOPE = 'UQ_idempotency_keys_scope';
 
+// space_id of operations that run before their space exists (spaces.create):
+// such keys are scoped to the user alone. No space has id 0.
+export const NO_SPACE_ID = 0;
+
 // No foreign keys: rows expire within a day, and an FK would make every
 // claim lock the user and space rows too.
 @Entity('idempotency_keys')

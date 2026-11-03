@@ -7,7 +7,7 @@ const sendMail = jest.fn();
 const createTransport = jest.fn<{ sendMail: jest.Mock }, unknown[]>(() => ({ sendMail }));
 jest.mock('nodemailer', () => ({ createTransport: (...args: unknown[]) => createTransport(...args) }));
 
-import { MailService } from './mail.service';
+import { MailDeliveryError, MailService, SMTP_TIMEOUTS_MS, toMailDeliveryError } from './mail.service';
 import { buildConfigService } from '@testing';
 
 describe('MailService', () => {
@@ -124,6 +124,79 @@ describe('MailService', () => {
       expect(logError).toHaveBeenCalledWith(
         'Failed to send password reset email to user@example.com: connection refused',
       );
+    });
+  });
+
+  it('bounds every SMTP wait', () => {
+    service = new MailService(buildConfigService(baseEnv));
+
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionTimeout: SMTP_TIMEOUTS_MS.connection,
+        greetingTimeout: SMTP_TIMEOUTS_MS.greeting,
+        socketTimeout: SMTP_TIMEOUTS_MS.socket,
+      }),
+    );
+  });
+
+  describe('sendSpaceInvite', () => {
+    const details = {
+      to: 'anna@example.com',
+      spaceName: 'Family <b>',
+      link: 'https://app.example.com/invite#token=5.abc',
+      code: '042917',
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60_000),
+    };
+
+    it('sends the rendered invitation from the configured address', async () => {
+      service = new MailService(buildConfigService(baseEnv));
+      sendMail.mockResolvedValue(undefined);
+
+      await service.sendSpaceInvite(details);
+
+      expect(sendMail).toHaveBeenCalledWith({
+        from: baseEnv.MAIL_FROM,
+        to: 'anna@example.com',
+        subject: 'You are invited to "Family <b>" in Success Budget',
+        text: expect.stringContaining(details.link),
+        html: expect.stringContaining('Family &lt;b&gt;'),
+      });
+    });
+
+    it('turns an SMTP failure into a MailDeliveryError', async () => {
+      service = new MailService(buildConfigService(baseEnv));
+      sendMail.mockRejectedValue(Object.assign(new Error('Connection timeout'), { code: 'ETIMEDOUT' }));
+
+      await expect(service.sendSpaceInvite(details)).rejects.toEqual(
+        new MailDeliveryError(false, 'ETIMEDOUT | Connection timeout'),
+      );
+    });
+  });
+
+  describe('toMailDeliveryError', () => {
+    it('treats an SMTP 5xx reply as permanent and anything else as temporary', () => {
+      expect(toMailDeliveryError(Object.assign(new Error('rejected'), { responseCode: 550 })).permanent).toBe(true);
+      expect(toMailDeliveryError(Object.assign(new Error('busy'), { responseCode: 421 })).permanent).toBe(false);
+      expect(toMailDeliveryError(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' })).permanent).toBe(false);
+      expect(toMailDeliveryError('boom').permanent).toBe(false);
+    });
+
+    it('keeps addresses, links and codes out of the reason', () => {
+      const error = Object.assign(
+        new Error(
+          'Message failed: 550 5.1.1 <anna@example.com>: unknown user; ' +
+            'body had https://app.example.com/invite#token=5.secretproof and code 042917',
+        ),
+        { code: 'EENVELOPE', responseCode: 550, command: 'RCPT TO' },
+      );
+
+      const { reason } = toMailDeliveryError(error);
+
+      expect(reason).toContain('EENVELOPE | smtp 550 | RCPT TO');
+      expect(reason).not.toContain('anna@example.com');
+      expect(reason).not.toContain('secretproof');
+      expect(reason).not.toContain('042917');
+      expect(reason.length).toBeLessThanOrEqual(260);
     });
   });
 });

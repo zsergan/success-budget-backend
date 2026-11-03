@@ -88,5 +88,6 @@ export async function deleteUsers(dataSource: DataSource, userIds: number[]): Pr
   }
 
   await dataSource.query('DELETE FROM idempotency_keys WHERE user_id IN (?)', [userIds]);
+  await dataSource.query('DELETE FROM space_invite_emails WHERE sender_user_id IN (?)', [userIds]);
   await dataSource.query('DELETE FROM users WHERE id IN (?)', [userIds]);
 }

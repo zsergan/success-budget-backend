@@ -4,6 +4,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Post,
@@ -11,15 +13,39 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  ApiAcceptedResponse,
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiHeader,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+  ApiTooManyRequestsResponse,
+} from '@nestjs/swagger';
 
 import { SpacesService } from './spaces.service';
 import { SpaceMembersService, SpaceMemberView } from './space-members.service';
-import { SpaceInvitesService, CreatedSpaceInvite } from './space-invites.service';
+import { SpaceInvitesService, CreatedSpaceInvite, type SpaceInviteState } from './space-invites.service';
 import { CreateSpaceDto } from './dto/create-space.dto';
 import { CreateSpaceInviteDto } from './dto/create-space-invite.dto';
 import { AcceptSpaceInviteDto } from './dto/accept-space-invite.dto';
+import { PreviewSpaceInviteDto } from './dto/preview-space-invite.dto';
+import {
+  CreatedSpaceInviteResponse,
+  SpaceInvitePreviewResponse,
+  SpaceInviteStateResponse,
+  SpaceMemberViewResponse,
+} from './dto/space-invite-responses';
 import type { AuthedRequest } from '@shared/types';
+import { ParseIdempotencyKeyPipe } from '@shared/pipes/parse-idempotency-key.pipe';
+import { RequestHeader } from '@shared/decorators/request-header.decorator';
+
+const INVITE_LINK_THROTTLE = { default: { limit: 10, ttl: 60000 } };
 
 @ApiTags('spaces')
 @ApiBearerAuth()
@@ -31,10 +57,23 @@ export class SpacesController {
     private readonly spaceInvitesService: SpaceInvitesService,
   ) {}
 
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description:
+      'A client-generated key, e.g. a UUID, per creation. A repeat with the same key and body within 24 hours ' +
+      'returns the original space without creating another one or sending more invitation emails.',
+  })
+  @ApiBadRequestResponse({ description: 'VALIDATION_FAILED, SPACE_PERSONAL_NO_INVITES or SPACE_INVITE_LIMIT_REACHED.' })
+  @ApiConflictResponse({ description: 'IDEMPOTENCY_KEY_REUSED: the key was used with a different body.' })
   @UseInterceptors(ClassSerializerInterceptor)
   @Post()
-  async create(@Request() req: AuthedRequest, @Body() createSpaceDto: CreateSpaceDto) {
-    return this.spacesService.create(req.user.id, createSpaceDto);
+  async create(
+    @Request() req: AuthedRequest,
+    @Body() createSpaceDto: CreateSpaceDto,
+    @RequestHeader('Idempotency-Key', ParseIdempotencyKeyPipe) idempotencyKey?: string,
+  ) {
+    return this.spacesService.create(req.user.id, createSpaceDto, { idempotencyKey });
   }
 
   @Get()
@@ -42,9 +81,36 @@ export class SpacesController {
     return this.spacesService.getAllForUser(req.user.id);
   }
 
+  @ApiOperation({ summary: 'Show the space of an invitation link before joining; changes nothing.' })
+  @ApiOkResponse({ type: SpaceInvitePreviewResponse })
+  @ApiNotFoundResponse({ description: 'SPACE_INVITE_UNUSABLE: unknown token, or the invitation has ended.' })
+  @ApiForbiddenResponse({ description: 'SPACE_INVITE_EMAIL_MISMATCH: the invitation is for another account.' })
+  @ApiConflictResponse({ description: 'SPACE_ALREADY_MEMBER, with spaceId: the caller is a member already.' })
+  @Throttle(INVITE_LINK_THROTTLE)
+  @HttpCode(HttpStatus.OK)
+  @Post('invites/preview')
+  async previewInvite(
+    @Request() req: AuthedRequest,
+    @Body() previewSpaceInviteDto: PreviewSpaceInviteDto,
+  ): Promise<SpaceInvitePreviewResponse> {
+    return this.spaceInvitesService.preview(req.user.id, previewSpaceInviteDto.token);
+  }
+
+  @ApiOperation({
+    summary: 'Join a space with exactly one of code or token. A repeat by the account that joined returns the space.',
+  })
+  @ApiBadRequestResponse({ description: 'VALIDATION_FAILED or SPACE_MEMBER_LIMIT_REACHED.' })
+  @ApiNotFoundResponse({ description: 'NOT_FOUND (code) or SPACE_INVITE_UNUSABLE (token).' })
+  @ApiForbiddenResponse({ description: 'SPACE_INVITE_EMAIL_MISMATCH (token only).' })
+  @ApiConflictResponse({ description: 'SPACE_ALREADY_MEMBER, with spaceId.' })
+  @Throttle(INVITE_LINK_THROTTLE)
   @Post('invites/accept')
   async acceptInvite(@Request() req: AuthedRequest, @Body() acceptSpaceInviteDto: AcceptSpaceInviteDto) {
-    return this.spaceInvitesService.accept(req.user.id, acceptSpaceInviteDto.code);
+    const { code, token } = acceptSpaceInviteDto;
+
+    return token === undefined
+      ? this.spaceInvitesService.accept(req.user.id, code as string)
+      : this.spaceInvitesService.acceptToken(req.user.id, token);
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
@@ -53,6 +119,7 @@ export class SpacesController {
     return this.spacesService.getForMember(req.user.id, id);
   }
 
+  @ApiOkResponse({ type: [SpaceMemberViewResponse] })
   @Get(':id/members')
   async getMembers(@Request() req: AuthedRequest, @Param('id', ParseIntPipe) id: number): Promise<SpaceMemberView[]> {
     return this.spaceMembersService.getMembersWithInvites(req.user.id, id);
@@ -65,6 +132,12 @@ export class SpacesController {
     return true;
   }
 
+  @ApiBadRequestResponse({ description: 'VALIDATION_FAILED, SPACE_PERSONAL_NO_INVITES or SPACE_INVITE_LIMIT_REACHED.' })
+  @ApiCreatedResponse({
+    type: CreatedSpaceInviteResponse,
+    description: 'The new invitation, or the active invitation of the same address; its email is sent afterwards.',
+  })
+  @ApiTooManyRequestsResponse({ description: 'SPACE_INVITE_RATE_LIMITED with Retry-After, or TOO_MANY_REQUESTS.' })
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post(':id/invites')
   async createInvite(
@@ -73,6 +146,21 @@ export class SpacesController {
     @Body() createSpaceInviteDto: CreateSpaceInviteDto,
   ): Promise<CreatedSpaceInvite> {
     return this.spaceInvitesService.create(req.user.id, id, createSpaceInviteDto.email);
+  }
+
+  @ApiOperation({ summary: 'Schedule another email for an active invitation: same code, link and expiry.' })
+  @ApiAcceptedResponse({ type: SpaceInviteStateResponse })
+  @ApiNotFoundResponse({ description: 'NOT_FOUND: no active invitation with this id in the space.' })
+  @ApiTooManyRequestsResponse({ description: 'SPACE_INVITE_RATE_LIMITED with Retry-After: cooldown or limit.' })
+  @Throttle(INVITE_LINK_THROTTLE)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post(':id/invites/:inviteId/resend')
+  async resendInvite(
+    @Request() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('inviteId', ParseIntPipe) inviteId: number,
+  ): Promise<SpaceInviteState> {
+    return this.spaceInvitesService.resend(req.user.id, id, inviteId);
   }
 
   @Delete(':id/invites/:inviteId')

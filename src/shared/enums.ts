@@ -63,6 +63,15 @@ export enum ConfirmationCodeSendStatus {
   FAILED = 'failed',
 }
 
+// the latest invitation email; see docs/invitations-contract.md#delivery-states
+export enum SpaceInviteEmailStatus {
+  NOT_SENT = 'not_sent',
+  QUEUED = 'queued',
+  SENDING = 'sending',
+  SENT = 'sent',
+  FAILED = 'failed',
+}
+
 export enum LimitType {
   CATEGORY = 'category',
   OTHERS = 'others',

@@ -1,6 +1,6 @@
 import { QueryFailedError, type DataSource } from 'typeorm';
 
-import { runWriteTransaction } from './write-transaction';
+import { LockSetChanged, runWriteTransaction } from './write-transaction';
 
 const deadlock = () =>
   new QueryFailedError('SQL', [], Object.assign(new Error('Deadlock'), { code: 'ER_LOCK_DEADLOCK' }));
@@ -44,5 +44,35 @@ describe('runWriteTransaction', () => {
 
     await expect(runWriteTransaction(dataSource, work)).rejects.toThrow('boom');
     expect(work).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the work again after its lock set changed', async () => {
+    const { dataSource } = dataSourceRunning();
+    const work = jest.fn().mockRejectedValueOnce(new LockSetChanged()).mockResolvedValue('done');
+
+    await expect(runWriteTransaction(dataSource, work)).resolves.toBe('done');
+    expect(work).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after three lock set changes', async () => {
+    const { dataSource } = dataSourceRunning();
+    const work = jest.fn().mockRejectedValue(new LockSetChanged());
+
+    await expect(runWriteTransaction(dataSource, work)).rejects.toBeInstanceOf(LockSetChanged);
+    expect(work).toHaveBeenCalledTimes(3);
+  });
+
+  it('bounds deadlocks and lock set changes separately', async () => {
+    const { dataSource } = dataSourceRunning();
+    const work = jest
+      .fn()
+      .mockRejectedValueOnce(deadlock())
+      .mockRejectedValueOnce(new LockSetChanged())
+      .mockRejectedValueOnce(deadlock())
+      .mockRejectedValueOnce(new LockSetChanged())
+      .mockResolvedValue('done');
+
+    await expect(runWriteTransaction(dataSource, work)).resolves.toBe('done');
+    expect(work).toHaveBeenCalledTimes(5);
   });
 });

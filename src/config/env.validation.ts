@@ -25,7 +25,51 @@ export interface EnvironmentVariables {
   SMTP_USER?: string;
   SMTP_PASSWORD?: string;
   MAIL_FROM: string;
+  PUBLIC_WEB_ORIGIN: string;
+  INVITE_TOKEN_SECRET: string;
+  APPLE_APP_ID?: string;
+  TESTFLIGHT_URL?: string;
 }
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+// An origin only (scheme, host, port), so links never take a path, a query
+// or the request's Host header. Plain http is for a loopback host outside
+// production.
+const publicOrigin = Joi.string().custom((value: string, helpers) => {
+  let url: URL;
+
+  try {
+    url = new URL(value);
+  } catch {
+    return helpers.error('any.invalid');
+  }
+
+  const production = (helpers.state.ancestors[0] as { NODE_ENV?: string }).NODE_ENV === 'production';
+  const allowedHttp = url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname) && !production;
+
+  if (url.origin !== value || (url.protocol !== 'https:' && !allowedHttp)) {
+    return helpers.error('any.invalid');
+  }
+
+  return value;
+});
+
+const testFlightUrl = Joi.string().custom((value: string, helpers) => {
+  let url: URL;
+
+  try {
+    url = new URL(value);
+  } catch {
+    return helpers.error('any.invalid');
+  }
+
+  if (url.protocol !== 'https:' || url.hostname !== 'testflight.apple.com' || url.username || url.password) {
+    return helpers.error('any.invalid');
+  }
+
+  return value;
+});
 
 export const envValidationSchema = Joi.object<EnvironmentVariables>({
   DB_HOST: Joi.string().required(),
@@ -57,4 +101,21 @@ export const envValidationSchema = Joi.object<EnvironmentVariables>({
   SMTP_USER: Joi.string().allow('').optional(),
   SMTP_PASSWORD: Joi.string().allow('').optional(),
   MAIL_FROM: Joi.string().required(),
+  // origin of the invitation links and the /invite page, e.g. https://app.example.com
+  PUBLIC_WEB_ORIGIN: publicOrigin.required().messages({
+    'any.invalid': '"PUBLIC_WEB_ORIGIN" must be an https origin without a path, such as https://app.example.com',
+  }),
+  // signs invitation links only; never the JWT secret, so neither leaks the other
+  INVITE_TOKEN_SECRET: Joi.string()
+    .min(32)
+    .required()
+    .invalid(Joi.ref('JWT_SECRET'))
+    .messages({ 'any.invalid': '"INVITE_TOKEN_SECRET" must differ from JWT_SECRET' }),
+  // <Team ID>.<bundle ID> of the iOS app the invitation links open
+  APPLE_APP_ID: Joi.string()
+    .pattern(/^[A-Z0-9]{10}\.[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/)
+    .when('NODE_ENV', { is: 'production', then: Joi.required(), otherwise: Joi.optional() }),
+  TESTFLIGHT_URL: testFlightUrl
+    .optional()
+    .messages({ 'any.invalid': '"TESTFLIGHT_URL" must be an https://testflight.apple.com link' }),
 }).unknown(true);

@@ -3,6 +3,46 @@ import { ConfigService } from '@nestjs/config';
 import { createTransport, type Transporter } from 'nodemailer';
 
 import type { EnvironmentVariables } from '@config/env.validation';
+import { renderSpaceInviteEmail, type SpaceInviteEmailDetails } from './space-invite-email';
+
+// Bounded, so a hung SMTP server fails an attempt well within its delivery
+// lease (SPACE_INVITE_EMAIL.LEASE_MS).
+export const SMTP_TIMEOUTS_MS = { connection: 10_000, greeting: 10_000, socket: 30_000 } as const;
+
+// A failed invitation email. `permanent` is an SMTP 5xx reply: retrying
+// cannot help. `reason` is safe to log: no addresses, links or codes.
+export class MailDeliveryError extends Error {
+  constructor(
+    readonly permanent: boolean,
+    readonly reason: string,
+  ) {
+    super(reason);
+    this.name = 'MailDeliveryError';
+  }
+}
+
+export function toMailDeliveryError(error: unknown): MailDeliveryError {
+  const details = (error ?? {}) as { code?: unknown; responseCode?: unknown; command?: unknown; message?: unknown };
+  const responseCode = typeof details.responseCode === 'number' ? details.responseCode : undefined;
+  const message = typeof details.message === 'string' ? details.message : String(error);
+  const sanitized = message
+    .replace(/https?:\/\/\S+/gi, '<url>')
+    .replace(/[^\s<>"']+@[^\s<>"']+/g, '<address>')
+    .replace(/\b\d{6}\b/g, '<digits>')
+    .replace(/\s+/g, ' ')
+    .slice(0, 200);
+  const parts = [
+    typeof details.code === 'string' ? details.code : undefined,
+    responseCode !== undefined ? `smtp ${responseCode}` : undefined,
+    typeof details.command === 'string' ? details.command : undefined,
+    sanitized,
+  ].filter(Boolean);
+
+  return new MailDeliveryError(
+    responseCode !== undefined && responseCode >= 500 && responseCode < 600,
+    parts.join(' | '),
+  );
+}
 
 @Injectable()
 export class MailService {
@@ -17,6 +57,9 @@ export class MailService {
       port: configService.getOrThrow('SMTP_PORT', { infer: true }),
       secure: configService.get('SMTP_SECURE', { infer: true }) === 'true',
       auth: this.buildAuth(configService),
+      connectionTimeout: SMTP_TIMEOUTS_MS.connection,
+      greetingTimeout: SMTP_TIMEOUTS_MS.greeting,
+      socketTimeout: SMTP_TIMEOUTS_MS.socket,
     });
   }
 
@@ -60,6 +103,18 @@ export class MailService {
       },
       'password reset',
     );
+  }
+
+  // Throws MailDeliveryError; the caller decides whether to retry and logs
+  // the outcome with the invitation id.
+  async sendSpaceInvite(details: SpaceInviteEmailDetails): Promise<void> {
+    const { subject, text, html } = renderSpaceInviteEmail(details);
+
+    try {
+      await this.transporter.sendMail({ from: this.from, to: details.to, subject, text, html });
+    } catch (error) {
+      throw toMailDeliveryError(error);
+    }
   }
 
   // A resent code keeps its original expiry, so this is the time actually

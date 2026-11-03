@@ -6,9 +6,10 @@ import { DataSource, Repository } from 'typeorm';
 import { SpaceMembersService } from './space-members.service';
 import { SpacesService } from './spaces.service';
 import { SpaceInvitesService } from './space-invites.service';
+import { SpaceInviteDelivery } from './space-invite-delivery';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpaceMember } from '@entities/space-member.entity';
-import { SpaceRole } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceRole } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { buildSpaceInvite, buildSpaceMember, buildUser } from '@testing';
 
@@ -21,7 +22,18 @@ describe('SpaceMembersService', () => {
   let spacesService: jest.Mocked<SpacesService>;
   let spaceInvitesService: jest.Mocked<SpaceInvitesService>;
 
+  const delivery = { describe: jest.fn() };
+
   beforeEach(async () => {
+    delivery.describe.mockImplementation(
+      async (invites: { id: number }[]) =>
+        new Map(
+          invites.map((invite) => [
+            invite.id,
+            { email_status: SpaceInviteEmailStatus.FAILED, resend_after_seconds: 0 },
+          ]),
+        ),
+    );
     spaceMemberRepositoryInTx = { update: jest.fn(), delete: jest.fn() };
     const manager = {
       getRepository: jest.fn((entity) => {
@@ -29,19 +41,22 @@ describe('SpaceMembersService', () => {
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     };
-    dataSource = { transaction: jest.fn((callback) => callback(manager)) };
+    dataSource = {
+      transaction: jest.fn((...args: unknown[]) => (args[args.length - 1] as (m: unknown) => unknown)(manager)),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SpaceMembersService,
         {
           provide: getRepositoryToken(SpaceMember),
-          useValue: { find: jest.fn(), findOne: jest.fn(), delete: jest.fn() },
+          useValue: { find: jest.fn() },
         },
         { provide: DataSource, useValue: dataSource },
-        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn() } },
+        { provide: SpaceAccessService, useValue: { assertMembership: jest.fn(), lockMembers: jest.fn() } },
         { provide: SpacesService, useValue: { removeOwned: jest.fn() } },
         { provide: SpaceInvitesService, useValue: { getActive: jest.fn() } },
+        { provide: SpaceInviteDelivery, useValue: delivery },
       ],
     }).compile();
 
@@ -97,6 +112,9 @@ describe('SpaceMembersService', () => {
           email: 'me@example.com',
           role: SpaceRole.OWNER,
           can_remove: false,
+          email_status: null,
+          can_resend: false,
+          resend_after_seconds: null,
         },
         {
           type: 'member',
@@ -106,6 +124,9 @@ describe('SpaceMembersService', () => {
           email: 'them@example.com',
           role: SpaceRole.MEMBER,
           can_remove: true,
+          email_status: null,
+          can_resend: false,
+          resend_after_seconds: null,
         },
         {
           type: 'invite',
@@ -115,6 +136,9 @@ describe('SpaceMembersService', () => {
           email: 'pending@example.com',
           role: null,
           can_remove: true,
+          email_status: SpaceInviteEmailStatus.FAILED,
+          can_resend: true,
+          resend_after_seconds: 0,
         },
       ]);
     });
@@ -135,83 +159,139 @@ describe('SpaceMembersService', () => {
 
       expect(result).toHaveLength(2);
       expect(result.every((entry) => entry.can_remove === false)).toBe(true);
+      expect(result[1]).toMatchObject({ email_status: SpaceInviteEmailStatus.FAILED, can_resend: false });
+    });
+
+    it('offers resend to the owner only when no attempt runs and the cooldown is over', async () => {
+      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ role: SpaceRole.OWNER, user_id: 1 }));
+      spaceMemberRepository.find.mockResolvedValue([]);
+      spaceInvitesService.getActive.mockResolvedValue([3, 4, 5].map((id) => buildSpaceInvite({ id })));
+      delivery.describe.mockResolvedValue(
+        new Map([
+          [3, { email_status: SpaceInviteEmailStatus.SENDING, resend_after_seconds: 0 }],
+          [4, { email_status: SpaceInviteEmailStatus.SENT, resend_after_seconds: 42 }],
+          [5, { email_status: SpaceInviteEmailStatus.SENT, resend_after_seconds: 0 }],
+        ]),
+      );
+
+      const result = await service.getMembersWithInvites(1, 10);
+
+      expect(result.map(({ can_resend, resend_after_seconds }) => [can_resend, resend_after_seconds])).toEqual([
+        [false, 0],
+        [false, 42],
+        [true, 0],
+      ]);
     });
   });
 
   describe('leaveOrRemove', () => {
-    it('rejects an outsider before touching any membership', async () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 10, 1, 10, minute));
+    const owner = buildSpaceMember({ id: 1, user_id: 1, space_id: 10, role: SpaceRole.OWNER, created_at: at(0) });
+    const plain = (id: number, userId: number, minute: number) =>
+      buildSpaceMember({ id, user_id: userId, space_id: 10, role: SpaceRole.MEMBER, created_at: at(minute) });
+    const lockedAs = (actor: SpaceMember, others: SpaceMember[] = [], actorSpaces = 2) => {
+      spaceAccessService.assertMembership.mockResolvedValue(actor);
+      spaceAccessService.lockMembers.mockResolvedValue({ actor, members: [actor, ...others], actorSpaces });
+    };
+
+    it('rejects an outsider before taking any lock', async () => {
       const forbidden = new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403);
       spaceAccessService.assertMembership.mockRejectedValue(forbidden);
 
       await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(forbidden);
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1);
-      expect(spaceMemberRepository.findOne).not.toHaveBeenCalled();
-      expect(spaceMemberRepository.delete).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(spaceAccessService.lockMembers).not.toHaveBeenCalled();
     });
 
-    it('lets an owner remove another member', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
-      spaceMemberRepository.findOne.mockResolvedValueOnce(buildSpaceMember({ id: 2, role: SpaceRole.MEMBER }));
+    it('decides under the member and space locks, in one write transaction', async () => {
+      lockedAs(owner, [plain(2, 2, 1)]);
 
       await service.leaveOrRemove(10, 1, 2);
 
-      expect(spaceMemberRepository.delete).toHaveBeenCalledWith(2);
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(dataSource.transaction).toHaveBeenCalledWith('READ COMMITTED', expect.any(Function));
+      expect(spaceAccessService.lockMembers).toHaveBeenCalledWith(10, 1, expect.anything());
+    });
+
+    it('lets an owner remove another member', async () => {
+      lockedAs(owner, [plain(2, 2, 1)]);
+
+      await service.leaveOrRemove(10, 1, 2);
+
+      expect(spaceMemberRepositoryInTx.delete).toHaveBeenCalledWith(2);
+      expect(spaceMemberRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
     it('returns 404 when the member to remove is not in the space', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
-      spaceMemberRepository.findOne.mockResolvedValueOnce(null);
+      lockedAs(owner, [plain(2, 2, 1)]);
 
-      await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(
+      await expect(service.leaveOrRemove(10, 1, 3)).rejects.toMatchObject(
         new HttpException(ErrorMessages.NOT_FOUND, 404),
       );
-      expect(spaceMemberRepository.delete).not.toHaveBeenCalled();
+      expect(spaceMemberRepositoryInTx.delete).not.toHaveBeenCalled();
     });
 
     it('rejects a plain member trying to remove someone else', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.MEMBER }));
+      lockedAs(plain(2, 2, 1), [owner]);
+
+      await expect(service.leaveOrRemove(10, 2, 1)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
+      );
+      expect(spaceMemberRepositoryInTx.delete).not.toHaveBeenCalled();
+    });
+
+    it('checks the role under the locks, not the one read before them', async () => {
+      spaceAccessService.assertMembership.mockResolvedValue(owner);
+      spaceAccessService.lockMembers.mockResolvedValue({
+        actor: { ...owner, role: SpaceRole.MEMBER },
+        members: [{ ...owner, role: SpaceRole.MEMBER }, plain(2, 2, 1)],
+        actorSpaces: 2,
+      });
 
       await expect(service.leaveOrRemove(10, 1, 2)).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
       );
-      expect(spaceMemberRepository.delete).not.toHaveBeenCalled();
+      expect(spaceMemberRepositoryInTx.delete).not.toHaveBeenCalled();
     });
 
     it('lets a plain member leave on their own', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.MEMBER }));
+      lockedAs(plain(2, 2, 1), [owner]);
 
-      await service.leaveOrRemove(10, 1, 1);
+      await service.leaveOrRemove(10, 2, 2);
 
-      expect(spaceMemberRepository.delete).toHaveBeenCalledWith(1);
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(spaceMemberRepositoryInTx.delete).toHaveBeenCalledWith(2);
+      expect(spaceMemberRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
-    it('transfers ownership to the next member by created_at when the owner leaves', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
-      spaceMemberRepository.findOne.mockResolvedValueOnce(buildSpaceMember({ id: 5 }));
+    it('transfers ownership to the earliest member, then the lowest id, when the owner leaves', async () => {
+      lockedAs(owner, [plain(7, 7, 5), plain(6, 6, 9), plain(5, 5, 9), plain(4, 4, 5)]);
 
       await service.leaveOrRemove(10, 1, 1);
 
-      expect(dataSource.transaction).toHaveBeenCalled();
       expect(spaceMemberRepositoryInTx.delete).toHaveBeenCalledWith(1);
-      expect(spaceMemberRepositoryInTx.update).toHaveBeenCalledWith(5, { role: SpaceRole.OWNER });
+      expect(spaceMemberRepositoryInTx.update).toHaveBeenCalledTimes(1);
+      expect(spaceMemberRepositoryInTx.update).toHaveBeenCalledWith(4, { role: SpaceRole.OWNER });
       expect(spacesService.removeOwned).not.toHaveBeenCalled();
     });
 
-    it('delegates to SpacesService.removeOwned() without re-checking membership when the owner is the sole member', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
-      spaceMemberRepository.findOne.mockResolvedValueOnce(null);
+    it('deletes the space in the same transaction when the owner is the sole member under the locks', async () => {
+      lockedAs(owner);
 
       await service.leaveOrRemove(10, 1, 1);
 
-      expect(spacesService.removeOwned).toHaveBeenCalledWith(1, 10);
-      expect(spaceAccessService.assertMembership).toHaveBeenCalledTimes(1);
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(spacesService.removeOwned).toHaveBeenCalledWith(expect.anything(), {
+        actor: owner,
+        members: [owner],
+        actorSpaces: 2,
+      });
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(spaceMemberRepositoryInTx.delete).not.toHaveBeenCalled();
+      expect(spaceMemberRepositoryInTx.update).not.toHaveBeenCalled();
     });
 
     it('propagates the "last remaining space" rejection from SpacesService.removeOwned()', async () => {
-      spaceAccessService.assertMembership.mockResolvedValue(buildSpaceMember({ id: 1, role: SpaceRole.OWNER }));
-      spaceMemberRepository.findOne.mockResolvedValueOnce(null);
+      lockedAs(owner, [], 1);
       spacesService.removeOwned.mockRejectedValue(new HttpException(ErrorMessages.SPACE_LAST_REMAINING, 400));
 
       await expect(service.leaveOrRemove(10, 1, 1)).rejects.toMatchObject(

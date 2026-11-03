@@ -31,7 +31,9 @@ export function okResponseSchema(
 ): Schema {
   const path = Object.keys(document.paths).find((candidate) => candidate.endsWith(pathSuffix));
   const responses = document.paths[path!][method]!.responses;
-  const response = (responses['200'] ?? responses['201']) as { content: Record<string, { schema: Schema }> };
+  const response = (responses['200'] ?? responses['201'] ?? responses['202']) as {
+    content: Record<string, { schema: Schema }>;
+  };
 
   return response.content['application/json'].schema;
 }

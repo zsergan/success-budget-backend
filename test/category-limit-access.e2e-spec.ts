@@ -4,7 +4,7 @@ import { CategoriesService } from '@modules/categories/categories.service';
 import { LimitsService } from '@modules/limits/limits.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
-import { overlap, pauseAfterFirstCall } from './support/concurrency';
+import { LOCK_MEMBERS, overlap, pauseAfterFirstCall } from './support/concurrency';
 
 describe('Category and limit write access (e2e)', () => {
   let testApp: TestApp;
@@ -75,7 +75,7 @@ describe('Category and limit write access (e2e)', () => {
     const [updated, removed] = await overlap(
       testApp.dataSource,
       checkpoint,
-      'DELETE FROM `space_members`%',
+      LOCK_MEMBERS,
       () =>
         kind === 'category'
           ? api(s.guest, s.owner.spaceId).put(`/categories/${s.categoryId}`).send({ name: 'Renamed' })
@@ -123,7 +123,7 @@ describe('Category and limit write access (e2e)', () => {
     const [written, removed] = await overlap(
       testApp.dataSource,
       checkpoint,
-      'DELETE FROM `space_members`%',
+      LOCK_MEMBERS,
       () => write(s),
       () => api(s.owner).delete(`/members/${s.guest.userId}`),
     );

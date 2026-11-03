@@ -88,6 +88,7 @@ describe('Boundary type contract (e2e)', () => {
       }
 
       for (const id of [userId, ...extraUserIds].filter(Boolean)) {
+        await dataSource.query('DELETE FROM space_invite_emails WHERE sender_user_id = ?', [id]);
         await dataSource.query('DELETE FROM users WHERE id = ?', [id]);
       }
     } finally {
@@ -903,10 +904,54 @@ describe('Boundary type contract (e2e)', () => {
       expect(keys(list.body[0])).toEqual(['created_at', 'currency', 'id', 'member_count', 'name', 'role', 'type']);
 
       const members = await api().get(`${base()}/members`).expect(200);
-      expect(keys(members.body[0])).toEqual(['can_remove', 'email', 'id', 'name', 'role', 'type', 'user_id']);
+      expect(keys(members.body[0])).toEqual([
+        'can_remove',
+        'can_resend',
+        'email',
+        'email_status',
+        'id',
+        'name',
+        'resend_after_seconds',
+        'role',
+        'type',
+        'user_id',
+      ]);
 
       const profile = await api().get('/api/v1/users/profile').expect(200);
       expect(keys(profile.body)).toEqual(['created_at', 'email', 'id', 'name', 'updated_at']);
+    });
+
+    it('invitation create, roster and resend', async () => {
+      const document = createOpenApiDocument(app);
+      const group = await api()
+        .post('/api/v1/spaces')
+        .send({ name: 'Contract group', currency_id: currencyId, type: 'group' })
+        .expect(201);
+      extraSpaceIds.push(group.body.id);
+      const invites = `/api/v1/spaces/${group.body.id}/invites`;
+
+      const created = await api()
+        .post(invites)
+        .send({ email: `e2e-contract-${process.pid}-${Date.now()}@example.com` })
+        .expect(201);
+      expect(keys(created.body)).toEqual(['code', 'email', 'email_status', 'expires_at', 'id', 'resend_after_seconds']);
+      expect(schemaErrors(document, okResponseSchema(document, '/spaces/{id}/invites', 'post'), created.body)).toEqual(
+        [],
+      );
+
+      const roster = await api().get(`/api/v1/spaces/${group.body.id}/members`).expect(200);
+      expect(roster.body.map((row: { type: string }) => row.type)).toEqual(['member', 'invite']);
+      expect(schemaErrors(document, okResponseSchema(document, '/spaces/{id}/members'), roster.body)).toEqual([]);
+
+      await dataSource.query(
+        'UPDATE space_invite_emails SET scheduled_at = scheduled_at - INTERVAL 2 MINUTE WHERE invite_id = ?',
+        [created.body.id],
+      );
+      const resent = await api().post(`${invites}/${created.body.id}/resend`).expect(202);
+      expect(keys(resent.body)).toEqual(['email', 'email_status', 'expires_at', 'id', 'resend_after_seconds']);
+      expect(
+        schemaErrors(document, okResponseSchema(document, '/invites/{inviteId}/resend', 'post'), resent.body),
+      ).toEqual([]);
     });
   });
 });

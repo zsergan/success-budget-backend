@@ -3,9 +3,8 @@ import request from 'supertest';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
-import { overlap, pauseAfterFirstCall } from './support/concurrency';
+import { LOCK_MEMBERS, overlap, pauseAfterFirstCall } from './support/concurrency';
 
-const REMOVE_MEMBER = 'DELETE FROM `space_members`%';
 const LOCK_WALLET = '%FROM `wallets` `row`%FOR UPDATE%';
 
 describe('Wallet writes (e2e)', () => {
@@ -100,7 +99,7 @@ describe('Wallet writes (e2e)', () => {
       const [written, removed] = await overlap(
         testApp.dataSource,
         checkpoint,
-        REMOVE_MEMBER,
+        LOCK_MEMBERS,
         () => write(s),
         () => removeGuest(s),
       );

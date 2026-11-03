@@ -4,12 +4,11 @@ import { TransactionQueriesService } from '@modules/transaction-queries/transact
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { IdempotencyKeyPurger } from '@modules/idempotency/idempotency-key-purger';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
-import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
+import { LOCK_MEMBERS, LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
 
 const LOCK_WALLET = '%FROM `wallets` `row`%FOR UPDATE%';
 const LOCK_TRANSACTION = '%FROM `transactions` `row`%FOR UPDATE%';
 const CLAIM_KEY = 'INSERT INTO `idempotency_keys`%';
-const REMOVE_MEMBER = 'DELETE FROM `space_members`%';
 
 describe('Transaction writes (e2e)', () => {
   let testApp: TestApp;
@@ -506,7 +505,7 @@ describe('Transaction writes (e2e)', () => {
       const [created, removed] = await overlap(
         testApp.dataSource,
         checkpoint,
-        REMOVE_MEMBER,
+        LOCK_MEMBERS,
         () => createWithKey(s.guest, 'in-flight', expense(s), s.member.spaceId),
         () => removeGuest(s),
       );
@@ -526,7 +525,7 @@ describe('Transaction writes (e2e)', () => {
       const [deleted, removed] = await overlap(
         testApp.dataSource,
         checkpoint,
-        REMOVE_MEMBER,
+        LOCK_MEMBERS,
         () =>
           api(s.guest)
             .delete(`${base(s.guest, s.member.spaceId)}/transactions/${created.body.transaction.id}`)

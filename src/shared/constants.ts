@@ -25,6 +25,23 @@ export const SPACE_LIMITS = {
 
 export const SPACE_INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
+// Invitation emails: see docs/invitations-contract.md#rules and #delivery-states.
+// The lease outlasts the SMTP timeouts in MailService, so a live attempt is
+// never taken over.
+export const SPACE_INVITE_EMAIL = {
+  MAX_ATTEMPTS: 5,
+  RETRY_DELAYS_MS: [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000],
+  LEASE_MS: 2 * 60_000,
+  POLL_INTERVAL_MS: 30_000,
+  POLL_BATCH: 20,
+  RESEND_COOLDOWN_MS: 60_000,
+  LIMIT_WINDOW_MS: 24 * 60 * 60_000,
+  PER_INVITE: 5,
+  PER_RECIPIENT: 10,
+  PER_SPACE: 30,
+  PER_SENDER: 50,
+} as const;
+
 // device clocks drift; a slightly early server must not reject the client's now
 export const CLOCK_SKEW_MS = 60_000;
 

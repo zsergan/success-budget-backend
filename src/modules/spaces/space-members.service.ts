@@ -1,15 +1,16 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Not, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { SpaceMember } from '@entities/space-member.entity';
-import { SpaceRole } from '@shared/enums';
+import { SpaceInviteEmailStatus, SpaceRole } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
-import { withRelations } from '@shared/utils';
+import { runWriteTransaction, withRelations } from '@shared/utils';
 import { ApiException } from '@shared/api.exception';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
 import { SpaceInvitesService } from './space-invites.service';
+import { SpaceInviteDelivery } from './space-invite-delivery';
 
 export interface SpaceMemberView {
   type: 'member' | 'invite';
@@ -23,6 +24,10 @@ export interface SpaceMemberView {
   email: string;
   role: SpaceRole | null;
   can_remove: boolean;
+  // invitation rows only; null/false on member rows
+  email_status: SpaceInviteEmailStatus | null;
+  can_resend: boolean;
+  resend_after_seconds: number | null;
 }
 
 @Injectable()
@@ -34,6 +39,7 @@ export class SpaceMembersService {
     private readonly spaceAccessService: SpaceAccessService,
     private readonly spacesService: SpacesService,
     private readonly spaceInvitesService: SpaceInvitesService,
+    private readonly delivery: SpaceInviteDelivery,
   ) {}
 
   async getAll(spaceId: number): Promise<WithRelations<SpaceMember, 'user'>[]> {
@@ -51,6 +57,7 @@ export class SpaceMembersService {
     const isOwner = caller.role === SpaceRole.OWNER;
 
     const [members, invites] = await Promise.all([this.getAll(spaceId), this.spaceInvitesService.getActive(spaceId)]);
+    const deliveries = await this.delivery.describe(invites);
 
     const memberViews: SpaceMemberView[] = members.map((member) => ({
       type: 'member',
@@ -60,61 +67,75 @@ export class SpaceMembersService {
       email: member.user.email,
       role: member.role,
       can_remove: isOwner && member.user_id !== userId,
+      email_status: null,
+      can_resend: false,
+      resend_after_seconds: null,
     }));
 
-    const inviteViews: SpaceMemberView[] = invites.map((invite) => ({
-      type: 'invite',
-      id: invite.id,
-      user_id: null,
-      name: null,
-      email: invite.email,
-      role: null,
-      can_remove: isOwner,
-    }));
+    const inviteViews: SpaceMemberView[] = invites.map((invite) => {
+      const { email_status, resend_after_seconds } = deliveries.get(invite.id) as {
+        email_status: SpaceInviteEmailStatus;
+        resend_after_seconds: number;
+      };
+
+      return {
+        type: 'invite',
+        id: invite.id,
+        user_id: null,
+        name: null,
+        email: invite.email,
+        role: null,
+        can_remove: isOwner,
+        email_status,
+        can_resend: isOwner && email_status !== SpaceInviteEmailStatus.SENDING && resend_after_seconds === 0,
+        resend_after_seconds,
+      };
+    });
 
     return [...memberViews, ...inviteViews];
   }
 
+  // Locks: lockMembers(), so the decision to transfer ownership or delete
+  // the space is made on the membership that the write commits against.
   async leaveOrRemove(spaceId: number, actingUserId: number, targetUserId: number): Promise<void> {
-    const actingMember = await this.spaceAccessService.assertMembership(spaceId, actingUserId);
+    await this.spaceAccessService.assertMembership(spaceId, actingUserId);
 
-    if (targetUserId !== actingUserId) {
-      if (actingMember.role !== SpaceRole.OWNER) {
-        throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+    await runWriteTransaction(this.dataSource, async (manager) => {
+      const locked = await this.spaceAccessService.lockMembers(spaceId, actingUserId, manager);
+      const { actor, members } = locked;
+      const repository = manager.getRepository(SpaceMember);
+
+      if (targetUserId !== actingUserId) {
+        if (actor.role !== SpaceRole.OWNER) {
+          throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+        }
+
+        const target = members.find((member) => member.user_id === targetUserId);
+
+        if (!target) {
+          throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
+        }
+
+        await repository.delete(target.id);
+        return;
       }
 
-      const targetMember = await this.spaceMemberRepository.findOne({
-        where: { space_id: spaceId, user_id: targetUserId },
-      });
-
-      if (!targetMember) {
-        throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
+      if (actor.role !== SpaceRole.OWNER) {
+        await repository.delete(actor.id);
+        return;
       }
 
-      await this.spaceMemberRepository.delete(targetMember.id);
-      return;
-    }
+      const [successor] = members
+        .filter((member) => member.id !== actor.id)
+        .sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id - b.id);
 
-    if (actingMember.role !== SpaceRole.OWNER) {
-      await this.spaceMemberRepository.delete(actingMember.id);
-      return;
-    }
+      if (!successor) {
+        await this.spacesService.removeOwned(manager, locked);
+        return;
+      }
 
-    const nextOwner = await this.spaceMemberRepository.findOne({
-      where: { space_id: spaceId, user_id: Not(actingUserId) },
-      order: { created_at: 'ASC' },
-    });
-
-    if (!nextOwner) {
-      // sole remaining member of the space - leaving is equivalent to
-      // deleting it (also carries the "not your last remaining space" guard)
-      await this.spacesService.removeOwned(actingUserId, spaceId);
-      return;
-    }
-
-    await this.dataSource.transaction(async (manager) => {
-      await manager.getRepository(SpaceMember).delete(actingMember.id);
-      await manager.getRepository(SpaceMember).update(nextOwner.id, { role: SpaceRole.OWNER });
+      await repository.delete(actor.id);
+      await repository.update(successor.id, { role: SpaceRole.OWNER });
     });
   }
 }
