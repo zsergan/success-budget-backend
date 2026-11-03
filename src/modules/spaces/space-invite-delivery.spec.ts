@@ -1,4 +1,4 @@
-import type { DataSource, EntityManager } from 'typeorm';
+import { In, IsNull, LessThanOrEqual, MoreThan, type DataSource, type EntityManager } from 'typeorm';
 
 import { SpaceInviteDelivery, effectiveStatus } from './space-invite-delivery';
 import { SpaceInviteLinks } from './space-invite-links';
@@ -71,12 +71,15 @@ describe('SpaceInviteDelivery', () => {
     if (entity === Space) return { findOne: async () => buildSpace({ id: 3, name: 'Family' }) };
     throw new Error(`Unexpected entity: ${String(entity)}`);
   };
+  let builderUpdates: { set: unknown; where: unknown[] }[];
   const updateBuilder = () => {
+    const recorded = { set: undefined as unknown, where: [] as unknown[] };
+    builderUpdates.push(recorded);
     const builder = {
       update: () => builder,
-      set: () => builder,
-      where: () => builder,
-      andWhere: () => builder,
+      set: (values: unknown) => ((recorded.set = values), builder),
+      where: (condition: unknown) => (recorded.where.push(condition), builder),
+      andWhere: (condition: unknown) => (recorded.where.push(condition), builder),
       execute: async () => ({ affected: claimAffected }),
     };
 
@@ -88,6 +91,7 @@ describe('SpaceInviteDelivery', () => {
     invite = claimed();
     claimAffected = 1;
     updates = [];
+    builderUpdates = [];
     logRows = [];
     sendSpaceInvite = jest.fn();
     const dataSource = {
@@ -112,7 +116,14 @@ describe('SpaceInviteDelivery', () => {
         expiresAt: invite.expires_at,
       });
       expect(lastPatch()).toEqual({
-        criteria: { id: 7, email_attempt_id: 4, email_status: SpaceInviteEmailStatus.SENDING },
+        criteria: {
+          id: 7,
+          email_attempt_id: 4,
+          email_status: SpaceInviteEmailStatus.SENDING,
+          accepted_at: IsNull(),
+          revoked_at: IsNull(),
+          expires_at: MoreThan(expect.any(Date)),
+        },
         patch: {
           email_status: SpaceInviteEmailStatus.SENT,
           email_lease_expires_at: null,
@@ -190,6 +201,35 @@ describe('SpaceInviteDelivery', () => {
 
       await expect(delivery.attempt(7)).resolves.toBe('skipped');
       expect(sendSpaceInvite).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('processDue', () => {
+    it('first takes ended invitations out of the queue, then picks only active due ones', async () => {
+      await expect(delivery.processDue(NOW)).resolves.toBe(0);
+
+      expect(builderUpdates).toEqual([
+        {
+          set: { email_next_attempt_at: null, email_lease_expires_at: null },
+          where: [
+            'email_status IN (:...pending)',
+            '(email_next_attempt_at IS NOT NULL OR email_lease_expires_at IS NOT NULL)',
+            '(accepted_at IS NOT NULL OR revoked_at IS NOT NULL OR expires_at <= :now)',
+          ],
+        },
+      ]);
+      expect(inviteRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            email_status: In([SpaceInviteEmailStatus.QUEUED, SpaceInviteEmailStatus.SENDING]),
+            email_next_attempt_at: LessThanOrEqual(NOW),
+            accepted_at: IsNull(),
+            revoked_at: IsNull(),
+            expires_at: MoreThan(NOW),
+          },
+          take: SPACE_INVITE_EMAIL.POLL_BATCH,
+        }),
+      );
     });
   });
 

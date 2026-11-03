@@ -1,7 +1,9 @@
 import request from 'supertest';
+import { In } from 'typeorm';
 
 import { MailDeliveryError, MailService } from '@modules/mail/mail.service';
 import { SpaceInviteDelivery } from '@modules/spaces/space-invite-delivery';
+import { newInviteTokenNonce } from '@modules/spaces/space-invite-links';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { SPACE_INVITE_EMAIL } from '@shared/constants';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
@@ -116,18 +118,19 @@ describe('Space invitation emails (e2e)', () => {
     throw new Error(`No email to ${to} appeared in MailDev within 10s`);
   }
 
-  // holds every send until release(); resolves sent() once the first one started
+  // holds every send until release() or fail(); sent resolves once the first one started
   function holdSends() {
     let release!: () => void;
+    let fail!: (error: Error) => void;
     let started!: () => void;
-    const gate = new Promise<void>((resolve) => (release = resolve));
+    const gate = new Promise<void>((resolve, reject) => ((release = resolve), (fail = reject)));
     const sent = new Promise<void>((resolve) => (started = resolve));
     const spy = jest.spyOn(mail(), 'sendSpaceInvite').mockImplementation(async () => {
       started();
       await gate;
     });
 
-    return { spy, sent, release };
+    return { spy, sent, release, fail };
   }
 
   describe('delivery', () => {
@@ -251,6 +254,95 @@ describe('Space invitation emails (e2e)', () => {
       expect(stored).toMatchObject({ email_status: 'sending', email_last_sent_at: null, email_next_attempt_at: null });
     });
 
+    it.each([
+      [
+        'fails temporarily',
+        (held: ReturnType<typeof holdSends>) => held.fail(new MailDeliveryError(false, 'ECONNRESET')),
+      ],
+      ['is accepted by SMTP', (held: ReturnType<typeof holdSends>) => held.release()],
+    ])('keeps an accepted invitation out of the queue when its running attempt then %s', async (_case, complete) => {
+      const owner = await person('mail-accepted');
+      const recipient = await person('mail-accepted-to');
+      const spaceId = await groupSpace(owner);
+      const held = holdSends();
+      const created = await invite(owner, spaceId, recipient.email);
+      await held.sent;
+      const running = await row(created.id);
+      expect(running).toMatchObject({ email_status: 'sending', email_attempts: 1 });
+
+      await api(recipient).post('/api/v1/spaces/invites/accept').send({ code: created.code }).expect(201);
+      complete(held);
+      await delivery().settle();
+
+      const ended = {
+        accepted_by_user_id: recipient.userId,
+        email_status: 'sending',
+        email_attempts: 1,
+        email_attempt_id: running.email_attempt_id + 1,
+        email_next_attempt_at: null,
+        email_lease_expires_at: null,
+        email_last_sent_at: null,
+      };
+      const stored = await row(created.id);
+      expect(stored.accepted_at).toBeInstanceOf(Date);
+      expect(stored).toMatchObject(ended);
+
+      held.spy.mockClear();
+      await delivery().processDue();
+      await delivery(other).attempt(created.id);
+      expect(held.spy).not.toHaveBeenCalledWith(expect.objectContaining({ to: recipient.email }));
+      await expect(row(created.id)).resolves.toMatchObject(ended);
+    });
+
+    it('clears ended invitations that fill a whole batch and still sends the active one behind them', async () => {
+      const owner = await person('mail-poisoned');
+      const spaceId = await groupSpace(owner);
+      const days = (count: number) => count * 24 * 60 * 60_000;
+      const ended = Array.from({ length: SPACE_INVITE_EMAIL.POLL_BATCH + 3 }, (_, i) => {
+        const end = [
+          { accepted_at: ago(days(1)), email_status: 'queued' },
+          { revoked_at: ago(days(1)), email_status: 'sending', email_lease_expires_at: ago(days(10)) },
+          { expires_at: ago(days(1)), email_status: 'sending', email_lease_expires_at: new Date(Date.now() + 60_000) },
+        ][i % 3];
+
+        return {
+          space_id: spaceId,
+          email: address(`poisoned-${i}`),
+          code: '000000',
+          expires_at: new Date(Date.now() + days(1)),
+          token_nonce: newInviteTokenNonce(),
+          email_next_attempt_at: ago(days(10) + i * 1000),
+          ...end,
+        };
+      });
+      const active = {
+        space_id: spaceId,
+        email: address('behind'),
+        code: '000001',
+        expires_at: new Date(Date.now() + days(1)),
+        token_nonce: newInviteTokenNonce(),
+        email_status: 'queued',
+        email_next_attempt_at: ago(days(9)),
+      };
+      const repository = testApp.dataSource.getRepository(SpaceInvite);
+      await repository.insert([...ended, active] as Partial<SpaceInvite>[]);
+      const send = jest.spyOn(mail(), 'sendSpaceInvite').mockResolvedValue(undefined);
+
+      await delivery().processDue();
+
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: active.email }));
+      await expect(repository.findOneByOrFail({ email: active.email })).resolves.toMatchObject({
+        email_status: 'sent',
+        email_attempts: 1,
+      });
+      const cleared = await repository.findBy({ space_id: spaceId, email: In(ended.map((entry) => entry.email)) });
+      expect(cleared).toHaveLength(ended.length);
+      for (const entry of cleared) {
+        expect(entry).toMatchObject({ email_next_attempt_at: null, email_lease_expires_at: null, email_attempts: 0 });
+        expect(['queued', 'sending']).toContain(entry.email_status);
+      }
+    });
+
     it('sends nothing for revoked, accepted or expired invitations and drops them from the queue', async () => {
       const owner = await person('mail-ended');
       const spaceId = await groupSpace(owner);
@@ -270,7 +362,9 @@ describe('Space invitation emails (e2e)', () => {
       await Promise.all(ids.map((id) => delivery().attempt(id)));
 
       expect(send).not.toHaveBeenCalled();
-      await expect(row(ids[2])).resolves.toMatchObject({ email_status: 'queued', email_next_attempt_at: null });
+      for (const id of ids) {
+        await expect(row(id)).resolves.toMatchObject({ email_status: 'queued', email_next_attempt_at: null });
+      }
     });
   });
 

@@ -699,8 +699,10 @@ the invitation rows are the queue, so no queue service is needed.
   sent from inside a transaction, so an SMTP failure never undoes a write.
 - **After the commit** the request starts the attempt without waiting for
   it. Every instance also runs the queue every 30 seconds: due `queued`
-  rows and attempts whose lease ran out, 20 at a time; ended invitations
-  leave the queue (`email_next_attempt_at` is cleared). It starts on
+  rows and attempts whose lease ran out of active invitations, 20 at a
+  time. Before picking them it clears the schedule and lease of every
+  accepted, revoked or expired invitation, so ended rows never fill a
+  batch and leave the queue for good. It starts on
   application bootstrap and stops on shutdown, which waits for attempts in
   flight, as `IdempotencyKeyPurger` does.
 - **An attempt** claims the row with one conditional update: due, active,
@@ -709,11 +711,13 @@ the invitation rows are the queue, so no queue service is needed.
   only one update matches. It then sends with no transaction open; SMTP
   connection, greeting and socket timeouts (10 s, 10 s, 30 s) keep a send
   within its lease.
-- **The result** is written only while the row still has that attempt id
-  and is `sending`: `sent`, or `queued` with the next retry time (1, 5, 30
-  minutes, 2 hours), or `failed` after the fifth attempt or an SMTP `5xx`
-  reply. A revocation or a resend moves the attempt id on, so a stale
-  result is dropped. A claimed attempt whose lease ran out (a crash, a
+- **The result** is written only while the row still has that attempt id,
+  is `sending` and its invitation is active: `sent`, or `queued` with the
+  next retry time (1, 5, 30 minutes, 2 hours), or `failed` after the fifth
+  attempt or an SMTP `5xx` reply. Acceptance, revocation and resend move
+  the attempt id on, so a stale result is dropped. An email already being
+  sent can still arrive after the invitation was accepted or revoked; it
+  never queues another one. A claimed attempt whose lease ran out (a crash, a
   restart) is retried; one claimed more than 5 times becomes `failed`
   without another send.
 - **Duplicates.** A crash after the SMTP server accepted the message but

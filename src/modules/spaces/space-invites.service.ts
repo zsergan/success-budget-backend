@@ -288,6 +288,7 @@ export class SpaceInvitesService {
         accepted_by_user_id: recipient.id,
         email_next_attempt_at: null,
         email_lease_expires_at: null,
+        email_attempt_id: () => 'email_attempt_id + 1',
       });
 
       return this.loadSpace(manager, invite.space_id);

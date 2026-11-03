@@ -5,7 +5,7 @@ import {
   type OnApplicationBootstrap,
   type OnModuleDestroy,
 } from '@nestjs/common';
-import { Brackets, DataSource, EntityManager, In, LessThanOrEqual, MoreThan } from 'typeorm';
+import { Brackets, DataSource, EntityManager, In, IsNull, LessThanOrEqual, MoreThan } from 'typeorm';
 
 import { Space } from '@entities/space.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
@@ -46,6 +46,7 @@ const {
   PER_SENDER,
 } = SPACE_INVITE_EMAIL;
 const PURGE_BATCH = 1000;
+const PENDING = [SpaceInviteEmailStatus.QUEUED, SpaceInviteEmailStatus.SENDING];
 
 const seconds = (ms: number) => Math.max(0, Math.ceil(ms / 1000));
 
@@ -222,7 +223,8 @@ export class SpaceInviteDelivery implements OnApplicationBootstrap, OnModuleDest
   }
 
   // One pass over due work: queued emails whose time has come and attempts
-  // whose lease ran out. Ended invitations leave the queue.
+  // whose lease ran out. Ended invitations leave the queue first, so they
+  // never fill a batch.
   async processDue(now = new Date()): Promise<number> {
     if (this.polling || this.stopped) {
       return 0;
@@ -231,20 +233,21 @@ export class SpaceInviteDelivery implements OnApplicationBootstrap, OnModuleDest
     this.polling = true;
 
     try {
-      const invites = this.dataSource.getRepository(SpaceInvite);
-      await invites.update(
-        {
-          email_status: In([SpaceInviteEmailStatus.QUEUED, SpaceInviteEmailStatus.SENDING]),
-          email_next_attempt_at: LessThanOrEqual(now),
-          expires_at: LessThanOrEqual(now),
-        },
-        { email_next_attempt_at: null },
-      );
-      const due = await invites.find({
+      await this.dataSource
+        .createQueryBuilder()
+        .update(SpaceInvite)
+        .set({ email_next_attempt_at: null, email_lease_expires_at: null })
+        .where('email_status IN (:...pending)', { pending: PENDING })
+        .andWhere('(email_next_attempt_at IS NOT NULL OR email_lease_expires_at IS NOT NULL)')
+        .andWhere('(accepted_at IS NOT NULL OR revoked_at IS NOT NULL OR expires_at <= :now)', { now })
+        .execute();
+      const due = await this.dataSource.getRepository(SpaceInvite).find({
         select: { id: true },
         where: {
-          email_status: In([SpaceInviteEmailStatus.QUEUED, SpaceInviteEmailStatus.SENDING]),
+          email_status: In(PENDING),
           email_next_attempt_at: LessThanOrEqual(now),
+          accepted_at: IsNull(),
+          revoked_at: IsNull(),
           expires_at: MoreThan(now),
         },
         order: { email_next_attempt_at: 'ASC' },
@@ -378,11 +381,19 @@ export class SpaceInviteDelivery implements OnApplicationBootstrap, OnModuleDest
     return invite && isActiveInvite(invite, now) ? invite : null;
   }
 
-  // Writes the result only while the row is still this attempt's.
+  // Writes the result only while the row is still this attempt's and its
+  // invitation is active, so a late result never queues an ended invitation.
   private async finish(invite: SpaceInvite, status: SpaceInviteEmailStatus, retryInMs?: number): Promise<boolean> {
     const now = new Date();
     const { affected } = await this.dataSource.getRepository(SpaceInvite).update(
-      { id: invite.id, email_attempt_id: invite.email_attempt_id, email_status: SpaceInviteEmailStatus.SENDING },
+      {
+        id: invite.id,
+        email_attempt_id: invite.email_attempt_id,
+        email_status: SpaceInviteEmailStatus.SENDING,
+        accepted_at: IsNull(),
+        revoked_at: IsNull(),
+        expires_at: MoreThan(now),
+      },
       {
         email_status: status,
         email_lease_expires_at: null,

@@ -521,8 +521,13 @@ describe('SpaceInvitesService', () => {
   });
 
   describe('acceptToken', () => {
-    it('joins under the space and invitation locks and ends the invitation', async () => {
-      const row = invite({ email_next_attempt_at: later(), email_status: SpaceInviteEmailStatus.QUEUED });
+    it('joins under the space and invitation locks, ends the invitation and cancels its email', async () => {
+      const row = invite({
+        email_status: SpaceInviteEmailStatus.SENDING,
+        email_attempt_id: 4,
+        email_next_attempt_at: later(),
+        email_lease_expires_at: later(),
+      });
 
       await expect(service.acceptToken(RECIPIENT_ID, links.token(row))).resolves.toBe(space);
 
@@ -533,7 +538,10 @@ describe('SpaceInvitesService', () => {
       expect(row).toMatchObject({
         accepted_at: expect.any(Date),
         accepted_by_user_id: RECIPIENT_ID,
+        email_status: SpaceInviteEmailStatus.SENDING,
         email_next_attempt_at: null,
+        email_lease_expires_at: null,
+        email_attempt_id: 5,
       });
     });
 
