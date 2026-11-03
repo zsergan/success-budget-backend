@@ -54,7 +54,9 @@ for a field (for example `email_status`) rather than assuming it.
 The invitation belongs to its email address, not to an account. The same
 invitation, response and email are produced whether or not that address
 already has an account. A recipient without an account registers with the
-invited address, verifies it, signs in and continues with step 4.
+invited address, verifies it, signs in and continues with step 4; the app
+keeps the [pending invitation](#pending-invitation) on the device
+meanwhile.
 
 ## Rules
 
@@ -545,21 +547,52 @@ prefix and the bearer token.
 
 On opening an invitation link:
 
-1. Not signed in: keep the token in memory, sign in or register (with the
-   invited email), then continue. Never persist the token across app
-   restarts, log it or send it anywhere other than the two routes above.
-2. Call preview and show the space name, currency and expiry with "Join"
-   and "Not now". "Not now" changes nothing; the link keeps working until
-   the invitation ends.
-3. On "Join", call accept with the token.
+1. Keep the token as the pending invitation (below), whether or not the
+   user is signed in.
+2. Not signed in: sign in or register with the invited email, verifying
+   the email if asked, then continue with the pending invitation, also
+   after the app was closed or restarted in between.
+3. Call preview and show the space name, currency and expiry with "Join"
+   and "Not now". "Not now" clears the pending invitation and changes
+   nothing on the server; the link in the email keeps working until the
+   invitation ends.
+4. On "Join", call accept with the token. Never join without that tap,
+   also not for a restored pending invitation.
 
-| Response                          | Client action                                                                                   |
-| --------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `404 SPACE_INVITE_UNUSABLE`       | Say the invitation is no longer available and suggest asking the owner for a new one            |
-| `403 SPACE_INVITE_EMAIL_MISMATCH` | Say the invitation is for another account; offer to sign out and sign in with the invited email |
-| `409 SPACE_ALREADY_MEMBER`        | Refresh `GET /spaces` and offer to open the space                                               |
-| `400 SPACE_MEMBER_LIMIT_REACHED`  | Say the space is full; the owner has to remove someone first                                    |
-| `201` (accept)                    | Add the space and open it                                                                       |
+| Response                          | Client action                                                                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `404 SPACE_INVITE_UNUSABLE`       | Clear the pending invitation; say it is no longer available and suggest asking the owner for a new one                              |
+| `403 SPACE_INVITE_EMAIL_MISMATCH` | Say the invitation is for another account; offer to switch to the invited email, keeping the pending invitation through that switch |
+| `409 SPACE_ALREADY_MEMBER`        | Clear the pending invitation; refresh `GET /spaces` and offer to open the space                                                     |
+| `400 SPACE_MEMBER_LIMIT_REACHED`  | Say the space is full; the owner has to remove someone first                                                                        |
+| `201` (accept)                    | Clear the pending invitation; add the space and open it                                                                             |
+
+### Pending invitation
+
+The pending invitation is the intent to answer one invitation, kept on
+the device until it is answered. It is the token and the time it was
+stored, nothing else.
+
+- **Storage.** Platform-protected storage only (Keychain on iOS, for
+  example through Expo SecureStore), never ordinary app storage such as
+  AsyncStorage. Never put the token in navigation parameters, logs, crash
+  or analytics reports, or send it anywhere but preview and accept.
+- **Survives** sign-in, registration, email verification, an app restart,
+  and an explicit account switch started from the
+  `SPACE_INVITE_EMAIL_MISMATCH` answer. Opening another invitation link
+  replaces it.
+- **Cleared** after a successful accept (`201`), `409 SPACE_ALREADY_MEMBER`,
+  "Not now" or any other cancellation, `404 SPACE_INVITE_UNUSABLE`, and an
+  ordinary sign-out (not the account switch above). Also delete it seven
+  days after it was stored, the longest an invitation can stay active.
+- **Only an intent.** A restored pending invitation proves nothing: the
+  user signs in, preview validates it, and joining needs the "Join" tap.
+  Keeping it never extends the server's expiry or undoes a revocation;
+  the server answers `404 SPACE_INVITE_UNUSABLE` then.
+- **No second copy of server state.** Preview's space name, currency and
+  expiry stay in the app's usual server-data cache like other responses;
+  they are not stored with the pending invitation. After a restart the
+  client calls preview again.
 
 On the manual path the client keeps its current handling and adds the
 `409 SPACE_ALREADY_MEMBER` row above.
