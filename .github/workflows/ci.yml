@@ -210,7 +210,7 @@ jobs:
         run: |
           docker run --rm --network host \
             -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE -e JWT_SECRET \
-            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PUBLIC_WEB_ORIGIN -e INVITE_TOKEN_SECRET \
+            -e SMTP_HOST -e SMTP_PORT -e MAIL_FROM -e PUBLIC_WEB_ORIGIN -e INVITE_TOKEN_SECRET -e APPLE_APP_ID \
             success-budget-backend:ci \
             node dist/database/verify-reference-data.js
       - name: Start the container (production mode, non-default PORT) and check its health endpoint
