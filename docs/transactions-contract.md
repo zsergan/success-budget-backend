@@ -751,13 +751,12 @@ them in the order above, so two writes never wait on each other crosswise:
 | Transaction `POST` / `PATCH` / `DELETE`                                     | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
 | Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                            |
 | Space create                                                                | key (with `Idempotency-Key`), then the new rows only                                                  |
-| Space delete                                                                | member rows (X), space (X); the space's invitations are deleted with it                               |
+| Space delete, leave, member removal                                         | member rows (X, ascending id), space (X), then the set is checked; see below                          |
 | Invitation create                                                           | member (S), space (X), the new invitation                                                             |
 | Invitation resend                                                           | member (S), space (X), invitation (X)                                                                 |
 | Invitation revoke                                                           | member (S), invitation (X)                                                                            |
 | Invitation accept                                                           | space (X), invitation (X), the new member row; the recipient has no member row yet                    |
 | Invitation email attempt (background)                                       | invitation (X), one conditional update to claim and one to record the result; nothing held meanwhile  |
-| Member removal                                                              | member row (X)                                                                                        |
 | Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                     |
 | Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
 | Password reset request                                                      | user (S) if the email has one, password reset challenge (X)                                           |
@@ -788,6 +787,16 @@ them in the order above, so two writes never wait on each other crosswise:
 - Invitation acceptance starts at the space row because the recipient
   has no member row yet; see
   [the invitations contract](invitations-contract.md#lock-order).
+- Space deletion, leaving and member removal lock every member row of the
+  space and the actor's member rows in other spaces (exclusive, ascending
+  id), then the space (exclusive), and read that set again. An acceptance
+  adds a member under the space lock alone, and no write locks a member row
+  after a space, so a set that changed in between rolls the transaction
+  back and runs it again with the new set, up to three times before
+  answering `500`. Ownership, the successor of a leaving owner (earliest
+  `created_at`, then lowest id), whether the owner is the last member, and
+  the actor's space count for `SPACE_LAST_REMAINING` are all read under
+  these locks, and the resulting writes commit with them.
 - Login signs its token under the user's shared lock after checking that
   the password and `auth_version` are still the ones it verified. A
   password reset holds the user exclusively, so a login racing it either

@@ -11,7 +11,7 @@ import { SPACE_LIMITS } from '@shared/constants';
 import { ApiException } from '@shared/api.exception';
 import { assertFound, runWriteTransaction, withRelations } from '@shared/utils';
 import type { WithRelations } from '@shared/types';
-import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { type LockedMembers, SpaceAccessService } from '@modules/space-access/space-access.service';
 import { IdempotencyService } from '@modules/idempotency/idempotency.service';
 import { NO_SPACE_ID } from '@entities/idempotency-key.entity';
 import { createDefaultCategories, createSpaceWithOwner } from './space-setup';
@@ -164,23 +164,28 @@ export class SpacesService {
 
   async remove(userId: number, spaceId: number): Promise<void> {
     await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
-    await this.removeOwned(userId, spaceId);
+    await runWriteTransaction(this.dataSource, async (manager) => {
+      const locked = await this.spaceAccessService.lockMembers(spaceId, userId, manager);
+
+      if (locked.actor.role !== SpaceRole.OWNER) {
+        throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+      }
+
+      await this.removeOwned(manager, locked);
+    });
   }
 
-  // the caller must already have verified that userId owns spaceId
-  async removeOwned(userId: number, spaceId: number): Promise<void> {
-    const spaceCount = await this.spaceMemberRepository.count({ where: { user_id: userId } });
-
-    if (spaceCount <= 1) {
+  // Runs in the caller's transaction, which holds lockMembers() and has
+  // verified that the actor owns the space.
+  async removeOwned(manager: EntityManager, { actor, actorSpaces }: LockedMembers): Promise<void> {
+    if (actorSpaces <= 1) {
       throw new ApiException('SPACE_LAST_REMAINING', HttpStatus.BAD_REQUEST);
     }
 
     // members, then the space, whose deletion cascades to its invitations:
     // invitation acceptance locks the space before the invitation
-    await this.dataSource.transaction(async (manager) => {
-      await manager.getRepository(SpaceMember).delete({ space_id: spaceId });
-      await manager.getRepository(Space).delete(spaceId);
-    });
+    await manager.getRepository(SpaceMember).delete({ space_id: actor.space_id });
+    await manager.getRepository(Space).delete(actor.space_id);
   }
 
   private async getExisting(spaceId: number): Promise<SpaceWithCurrency> {

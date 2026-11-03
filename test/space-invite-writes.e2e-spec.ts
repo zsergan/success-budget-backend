@@ -7,11 +7,10 @@ import { SpaceInviteLinks } from '@modules/spaces/space-invite-links';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { SPACE_LIMITS } from '@shared/constants';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
-import { LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
+import { LOCK_MEMBERS, LOCK_SPACE, overlap, pauseAfterFirstCall } from './support/concurrency';
 
 const LOCK_INVITE = '%FROM `space_invites` `row`%FOR UPDATE%';
 const CLAIM_KEY = 'INSERT INTO `idempotency_keys`%';
-const REMOVE_MEMBER = 'DELETE FROM `space_members`%';
 
 describe('Space invitation writes (e2e)', () => {
   let testApp: TestApp;
@@ -146,7 +145,7 @@ describe('Space invitation writes (e2e)', () => {
       const [created, left] = await overlap(
         testApp.dataSource,
         checkpoint,
-        REMOVE_MEMBER,
+        LOCK_MEMBERS,
         () => api(owner).post(`/api/v1/spaces/${spaceId}/invites`).send({ email: 'during-leave@example.com' }),
         () => api(owner).delete(`/api/v1/spaces/${spaceId}/members/${owner.userId}`),
       );
@@ -424,6 +423,159 @@ describe('Space invitation writes (e2e)', () => {
       expect([first.status, second.status]).toEqual([201, 400]);
       expect(second.body.code).toBe('SPACE_MEMBER_LIMIT_REACHED');
       expect(await memberships(spaceId)).toBe(SPACE_LIMITS.MAX_MEMBERS_PER_SPACE);
+    });
+  });
+
+  describe('leaving and deleting a space', () => {
+    const leave = (member: Member, spaceId: number, userId = member.userId) =>
+      api(member).delete(`/api/v1/spaces/${spaceId}/members/${userId}`);
+
+    const roles = (spaceId: number): Promise<{ user_id: number; role: string }[]> =>
+      testApp.dataSource.query('SELECT user_id, role FROM space_members WHERE space_id = ? ORDER BY id', [spaceId]);
+
+    async function spaceExists(spaceId: number): Promise<boolean> {
+      const rows: unknown[] = await testApp.dataSource.query('SELECT id FROM spaces WHERE id = ?', [spaceId]);
+
+      return rows.length === 1;
+    }
+
+    async function joined(owner: Member, spaceId: number, prefix: string): Promise<Person> {
+      const member = await person(prefix);
+      await accept(member, { token: tokenOf(await inviteTo(owner, spaceId, member.email)) }).expect(201);
+
+      return member;
+    }
+
+    async function spaceData(owner: Member, spaceId: number) {
+      const wallet = await api(owner)
+        .post(`/api/v1/spaces/${spaceId}/wallets`)
+        .send({ wallet_name: 'Card', initial_balance: '100', design: 'slate' })
+        .expect(201);
+      const categories = await api(owner).get(`/api/v1/spaces/${spaceId}/categories`).expect(200);
+      const transaction = await api(owner)
+        .post(`/api/v1/spaces/${spaceId}/transactions`)
+        .send({
+          wallet_id: wallet.body.wallet.id,
+          category_id: categories.body.expenses[0].id,
+          transaction_type: 'expense',
+          amount: '12.30',
+          timestamp: '2026-09-15T10:00:00.000Z',
+        })
+        .expect(201);
+
+      return {
+        walletId: wallet.body.wallet.id as number,
+        categoryId: categories.body.expenses[0].id as number,
+        transactionId: transaction.body.transaction.id as number,
+      };
+    }
+
+    it('transfers ownership to a member whose acceptance commits first, and keeps the space and its data', async () => {
+      const owner = await person('leave-accept-owner');
+      const recipient = await person('leave-accept-recipient');
+      const spaceId = await groupSpace(owner);
+      const token = tokenOf(await inviteTo(owner, spaceId, recipient.email));
+      const data = await spaceData(owner, spaceId);
+      const lockMembers = jest.spyOn(testApp.app.get(SpaceAccessService), 'lockMembers');
+
+      const [accepted, left] = await overlap(
+        testApp.dataSource,
+        pauseLockSpace(spaceId),
+        LOCK_SPACE,
+        () => accept(recipient, { token }),
+        () => leave(owner, spaceId),
+      );
+
+      expect([accepted.status, left.status]).toEqual([201, 200]);
+      expect(lockMembers).toHaveBeenCalledTimes(2);
+      expect(await roles(spaceId)).toEqual([{ user_id: recipient.userId, role: 'owner' }]);
+
+      const [stored] = await testApp.dataSource.query(
+        `SELECT w.id AS wallet_id, t.id AS transaction_id, t.category_id
+         FROM wallets w JOIN transactions t ON t.wallet_id = w.id
+         WHERE w.space_id = ? AND t.id = ?`,
+        [spaceId, data.transactionId],
+      );
+      expect(stored).toEqual({
+        wallet_id: data.walletId,
+        transaction_id: data.transactionId,
+        category_id: data.categoryId,
+      });
+      await api(recipient).get(`/api/v1/spaces/${spaceId}`).expect(200);
+      await api(owner).get(`/api/v1/spaces/${spaceId}`).expect(403);
+    });
+
+    it('deletes the space of a sole owner whose departure locks it first, and the acceptance finds nothing', async () => {
+      const owner = await person('leave-first-owner');
+      const recipient = await person('leave-first-recipient');
+      const spaceId = await groupSpace(owner);
+      const invite = await inviteTo(owner, spaceId, recipient.email);
+      await spaceData(owner, spaceId);
+
+      const [left, accepted] = await overlap(
+        testApp.dataSource,
+        pauseLockSpace(spaceId),
+        LOCK_SPACE,
+        () => leave(owner, spaceId),
+        () => accept(recipient, { token: tokenOf(invite) }),
+      );
+
+      expect(left.status).toBe(200);
+      expect([accepted.status, accepted.body.code]).toEqual([404, 'SPACE_INVITE_UNUSABLE']);
+      expect(await spaceExists(spaceId)).toBe(false);
+      expect(await memberships(spaceId)).toBe(0);
+      expect(await invitationsOf(spaceId)).toEqual([]);
+      expect((await accept(recipient, { code: invite.code }).expect(404)).body.code).toBe('NOT_FOUND');
+      await api(recipient).get(`/api/v1/spaces/${spaceId}`).expect(403);
+    });
+
+    it.each([
+      ['the owner leaves first', 'owner', 'leaves', [200, 200], ['last']],
+      ['the successor leaves first', 'successor', 'leaves', [200, 200], ['last']],
+      ['the owner leaves before removing the successor', 'owner', 'is removed', [200, 403], ['successor', 'last']],
+      ['the owner removes the successor before leaving', 'successor', 'is removed', [200, 200], ['last']],
+    ] as const)(
+      'leaves exactly one owner when %s',
+      async (_case, first, successorChange, [departureStatus, changeStatus], remaining) => {
+        const owner = await person('leave-race-owner');
+        const spaceId = await groupSpace(owner);
+        const successor = await joined(owner, spaceId, 'leave-race-successor');
+        const last = await joined(owner, spaceId, 'leave-race-last');
+        const departure = () => leave(owner, spaceId);
+        const change = () =>
+          successorChange === 'leaves' ? leave(successor, spaceId) : leave(owner, spaceId, successor.userId);
+
+        const [departed, changed] =
+          first === 'owner'
+            ? await overlap(testApp.dataSource, pauseLockSpace(spaceId), LOCK_MEMBERS, departure, change)
+            : (await overlap(testApp.dataSource, pauseLockSpace(spaceId), LOCK_MEMBERS, change, departure)).reverse();
+
+        expect([departed.status, changed.status]).toEqual([departureStatus, changeStatus]);
+        const people = { successor, last };
+        expect(await roles(spaceId)).toEqual(
+          remaining.map((who, index) => ({ user_id: people[who].userId, role: index === 0 ? 'owner' : 'member' })),
+        );
+      },
+    );
+
+    it('keeps one of two spaces deleted at the same time, and the last one', async () => {
+      const owner = await person('last-space-owner');
+      const groupId = await groupSpace(owner);
+
+      const [first, second] = await overlap(
+        testApp.dataSource,
+        pauseLockSpace(owner.spaceId),
+        LOCK_MEMBERS,
+        () => api(owner).delete(`/api/v1/spaces/${owner.spaceId}`),
+        () => api(owner).delete(`/api/v1/spaces/${groupId}`),
+      );
+
+      expect([first.status, second.status, second.body.code]).toEqual([200, 400, 'SPACE_LAST_REMAINING']);
+      expect(await spaceExists(groupId)).toBe(true);
+
+      const left = await leave(owner, groupId).expect(400);
+      expect(left.body.code).toBe('SPACE_LAST_REMAINING');
+      expect(await roles(groupId)).toEqual([{ user_id: owner.userId, role: 'owner' }]);
     });
   });
 });

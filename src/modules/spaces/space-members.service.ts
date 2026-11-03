@@ -1,11 +1,11 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Not, Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInviteEmailStatus, SpaceRole } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
-import { withRelations } from '@shared/utils';
+import { runWriteTransaction, withRelations } from '@shared/utils';
 import { ApiException } from '@shared/api.exception';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { SpacesService } from './spaces.service';
@@ -95,46 +95,47 @@ export class SpaceMembersService {
     return [...memberViews, ...inviteViews];
   }
 
+  // Locks: lockMembers(), so the decision to transfer ownership or delete
+  // the space is made on the membership that the write commits against.
   async leaveOrRemove(spaceId: number, actingUserId: number, targetUserId: number): Promise<void> {
-    const actingMember = await this.spaceAccessService.assertMembership(spaceId, actingUserId);
+    await this.spaceAccessService.assertMembership(spaceId, actingUserId);
 
-    if (targetUserId !== actingUserId) {
-      if (actingMember.role !== SpaceRole.OWNER) {
-        throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+    await runWriteTransaction(this.dataSource, async (manager) => {
+      const locked = await this.spaceAccessService.lockMembers(spaceId, actingUserId, manager);
+      const { actor, members } = locked;
+      const repository = manager.getRepository(SpaceMember);
+
+      if (targetUserId !== actingUserId) {
+        if (actor.role !== SpaceRole.OWNER) {
+          throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+        }
+
+        const target = members.find((member) => member.user_id === targetUserId);
+
+        if (!target) {
+          throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
+        }
+
+        await repository.delete(target.id);
+        return;
       }
 
-      const targetMember = await this.spaceMemberRepository.findOne({
-        where: { space_id: spaceId, user_id: targetUserId },
-      });
-
-      if (!targetMember) {
-        throw new ApiException('NOT_FOUND', HttpStatus.NOT_FOUND);
+      if (actor.role !== SpaceRole.OWNER) {
+        await repository.delete(actor.id);
+        return;
       }
 
-      await this.spaceMemberRepository.delete(targetMember.id);
-      return;
-    }
+      const [successor] = members
+        .filter((member) => member.id !== actor.id)
+        .sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id - b.id);
 
-    if (actingMember.role !== SpaceRole.OWNER) {
-      await this.spaceMemberRepository.delete(actingMember.id);
-      return;
-    }
+      if (!successor) {
+        await this.spacesService.removeOwned(manager, locked);
+        return;
+      }
 
-    const nextOwner = await this.spaceMemberRepository.findOne({
-      where: { space_id: spaceId, user_id: Not(actingUserId) },
-      order: { created_at: 'ASC' },
-    });
-
-    if (!nextOwner) {
-      // sole remaining member of the space - leaving is equivalent to
-      // deleting it (also carries the "not your last remaining space" guard)
-      await this.spacesService.removeOwned(actingUserId, spaceId);
-      return;
-    }
-
-    await this.dataSource.transaction(async (manager) => {
-      await manager.getRepository(SpaceMember).delete(actingMember.id);
-      await manager.getRepository(SpaceMember).update(nextOwner.id, { role: SpaceRole.OWNER });
+      await repository.delete(actor.id);
+      await repository.update(successor.id, { role: SpaceRole.OWNER });
     });
   }
 }

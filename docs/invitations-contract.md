@@ -748,7 +748,7 @@ and is checked again under its locks. The rows are part of the
 | Invitation resend              | member (S), space (X), invitation (X)                                |
 | Invitation revoke              | member (S), invitation (X)                                           |
 | Invitation accept              | space (X), invitation (X), then the new member row                   |
-| Space delete                   | member rows (X), space (X); its invitations go with the space        |
+| Space delete, leave, removal   | member rows (X, ascending id), space (X), then the set is checked    |
 | Delivery attempt start, result | invitation (X), one conditional update each; none held while sending |
 
 - **Acceptance** has no member row of the recipient to lock first, so it
@@ -762,6 +762,13 @@ and is checked again under its locks. The rows are part of the
   in-flight create, and a create after the removal committed is refused.
 - **Resend** takes the space lock like creation, so the space's limit
   and the invitation's own cooldown and limit are exact.
-- **Space deletion** deletes the members, then the space, whose foreign key
-  removes its invitations. It never locks an invitation before the space,
-  so it cannot deadlock with an acceptance.
+- **Space deletion, leaving and member removal** lock the space's member
+  rows and the actor's member rows in other spaces (ascending id), then the
+  space, and read the member set again. If an acceptance added a member in
+  between, the transaction rolls back and runs again with the new set
+  (at most three times); no member row is locked after the space. So an
+  owner who leaves either sees the new member and hands ownership over, or
+  deletes the space before the acceptance gets the space lock, which then
+  finds no invitation (`404`). Deletion removes the members, then the
+  space, whose foreign key removes its invitations; it never locks an
+  invitation before the space, so it cannot deadlock with an acceptance.

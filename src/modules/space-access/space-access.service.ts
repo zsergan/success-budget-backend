@@ -6,6 +6,15 @@ import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceRole } from '@shared/enums';
 import { ApiException } from '@shared/api.exception';
+import { LockSetChanged, lockRows } from '@shared/utils';
+
+export interface LockedMembers {
+  actor: SpaceMember;
+  // every member of the space, ascending id
+  members: SpaceMember[];
+  // the spaces the actor belongs to, this one included
+  actorSpaces: number;
+}
 
 @Injectable()
 export class SpaceAccessService {
@@ -60,5 +69,41 @@ export class SpaceAccessService {
       .setLock(mode === 'exclusive' ? 'pessimistic_write' : 'pessimistic_read')
       .where('space.id = :spaceId', { spaceId })
       .getOne();
+  }
+
+  // For writes that remove members or the space. Locks every member row of
+  // the space and the actor's member rows in other spaces (X, ascending id),
+  // then the space (X), and reads the set again. An acceptance adds a member
+  // under the space lock alone, and no member row may be locked after the
+  // space, so a set that changed in between runs the whole unit again.
+  async lockMembers(spaceId: number, userId: number, manager: EntityManager): Promise<LockedMembers> {
+    const memberIds = async () =>
+      (
+        await manager.getRepository(SpaceMember).find({
+          select: { id: true },
+          where: [{ space_id: spaceId }, { user_id: userId }],
+          order: { id: 'ASC' },
+        })
+      ).map((member) => member.id);
+
+    const locked = await lockRows(manager, SpaceMember, await memberIds(), 'exclusive');
+    await this.lockSpace(spaceId, manager);
+    const current = await memberIds();
+
+    if (current.length !== locked.length || current.some((id, index) => id !== locked[index].id)) {
+      throw new LockSetChanged();
+    }
+
+    const actor = locked.find((member) => member.space_id === spaceId && member.user_id === userId);
+
+    if (!actor) {
+      throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+    }
+
+    return {
+      actor,
+      members: locked.filter((member) => member.space_id === spaceId),
+      actorSpaces: locked.filter((member) => member.user_id === userId).length,
+    };
   }
 }
