@@ -12,6 +12,7 @@ import {
   toSearchPattern,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { AppColor, CategoryIcon, TransactionKind, TransactionType } from '@shared/enums';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import { createTestApp, createVerifiedMember, deleteUsers, type Member, type TestApp } from './support/app';
 
 // The selection the feed pages and totals share, against MySQL: the search
@@ -105,6 +106,9 @@ describe('Transaction feed selection (e2e)', () => {
     ) => {
       const saved = await transactions.save(
         transactions.create({
+          space_id: member.spaceId,
+          ...recordedAuthor(member.userId),
+          ...SPACE_ASSIGNMENT,
           wallet_id: wallet.id,
           category_id: category.id,
           transaction_type: category.transaction_type,

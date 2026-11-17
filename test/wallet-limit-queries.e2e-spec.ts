@@ -20,9 +20,10 @@ import { LimitsService } from '@modules/limits/limits.service';
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { LimitsController } from '@modules/limits/limits.controller';
 
-import { AppColor, CategoryIcon, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
+import { AppColor, AuthorSource, CategoryIcon, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import type { AuthedRequest } from '@shared/types';
+import { SPACE_ASSIGNMENT } from '@shared/transaction-ownership';
 
 // These exercise the SQL aggregation queries added in Stages 2-4
 // (TransactionQueriesService.getPeriodTotals/getExpensesByCategory,
@@ -81,8 +82,8 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
 
   afterAll(async () => {
     // Same ordering as app.e2e-spec.ts and for the same reason: limit_categories
-    // -> categories is RESTRICT, and transactions have no space_id of their own,
-    // so both must be cleared before the space cascade runs.
+    // -> categories is RESTRICT, so both must be cleared before the space
+    // cascade runs.
     try {
       if (spaceIds.length) {
         await dataSource.query(
@@ -90,10 +91,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
           [spaceIds],
         );
         await dataSource.query('DELETE FROM limits WHERE space_id IN (?)', [spaceIds]);
-        await dataSource.query(
-          'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id IN (?)',
-          [spaceIds],
-        );
+        await dataSource.query('DELETE FROM transactions WHERE space_id IN (?)', [spaceIds]);
         await dataSource.query('DELETE FROM space_members WHERE space_id IN (?)', [spaceIds]);
         await dataSource.query('DELETE FROM spaces WHERE id IN (?)', [spaceIds]);
       }
@@ -164,8 +162,22 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
     amount: string,
     timestamp: Date,
   ): Promise<Transaction> {
+    const { space_id } = await walletRepository.findOneByOrFail({ id: wallet_id });
+    // some spaces here have no member; the author is not what these tests read
+    const member = await spaceMemberRepository.findOneBy({ space_id });
+
     return transactionRepository.save(
-      transactionRepository.create({ wallet_id, category_id, transaction_type, amount, timestamp }),
+      transactionRepository.create({
+        space_id,
+        author_user_id: member?.user_id ?? null,
+        author_source: AuthorSource.RECORDED,
+        ...SPACE_ASSIGNMENT,
+        wallet_id,
+        category_id,
+        transaction_type,
+        amount,
+        timestamp,
+      }),
     );
   }
 

@@ -4,6 +4,7 @@ import type { Repository } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { TransactionType } from '@shared/enums';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 
 interface FeedBody {
@@ -63,6 +64,9 @@ describe('Transactions feed at the last stored second (e2e)', () => {
     const add = async (key: string, timestamp: string, type: TransactionType, amount: string) => {
       const saved = await transactions.save(
         transactions.create({
+          space_id: owner.spaceId,
+          ...recordedAuthor(owner.userId),
+          ...SPACE_ASSIGNMENT,
           wallet_id: wallet.body.wallet.id,
           category_id: (type === TransactionType.INCOME ? categories.body.incomes : categories.body.expenses)[0].id,
           transaction_type: type,

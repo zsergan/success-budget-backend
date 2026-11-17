@@ -3,7 +3,9 @@ import { Exclude } from 'class-transformer';
 
 import { Wallet } from './wallet.entity';
 import { Category } from './category.entity';
-import { TransactionType } from '@shared/enums';
+import { Space } from './space.entity';
+import { User } from './user.entity';
+import { AssignmentKind, AuthorSource, TransactionType } from '@shared/enums';
 
 @Entity('transactions')
 @Index('IDX_transactions_wallet_id_timestamp_id', [
@@ -14,10 +16,28 @@ import { TransactionType } from '@shared/enums';
   'transaction_type',
   'amount',
 ])
+@Index('IDX_transactions_space_timestamp_id', [
+  'space_id',
+  'timestamp',
+  'id',
+  'category_id',
+  'transaction_type',
+  'amount',
+  'assignment_kind',
+  'assigned_user_id',
+])
+@Index('IDX_transactions_space_assignment', ['space_id', 'assignment_kind', 'assigned_user_id', 'timestamp', 'id'])
+@Index('IDX_transactions_author_user', ['author_user_id'])
+@Index('IDX_transactions_assigned_user', ['assigned_user_id'])
 export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
+  @Exclude()
+  @Column({ type: 'int' })
+  space_id!: number;
+
+  // Release A only: v1 clients read every record through a wallet
   @Exclude()
   @Column({ type: 'int' })
   wallet_id!: number;
@@ -44,6 +64,28 @@ export class Transaction {
   @VersionColumn({ type: 'int', unsigned: true, default: 1 })
   version!: number;
 
+  // always set on create; null only after the account was deleted
+  @Exclude()
+  @Column({ type: 'int', nullable: true })
+  author_user_id!: number | null;
+
+  @Exclude()
+  @Column({ type: 'enum', enum: AuthorSource })
+  author_source!: AuthorSource;
+
+  @Exclude()
+  @Column({ type: 'enum', enum: AssignmentKind })
+  assignment_kind!: AssignmentKind;
+
+  // set only for a member assignment; null there after the account was deleted
+  @Exclude()
+  @Column({ type: 'int', nullable: true })
+  assigned_user_id!: number | null;
+
+  @ManyToOne(() => Space, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'space_id', foreignKeyConstraintName: 'FK_transactions_space' })
+  space?: Space;
+
   @ManyToOne(() => Wallet, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'wallet_id' })
   wallet?: Wallet;
@@ -51,4 +93,12 @@ export class Transaction {
   @ManyToOne(() => Category, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'category_id' })
   category?: Category;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'author_user_id', foreignKeyConstraintName: 'FK_transactions_author_user' })
+  author?: User | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'assigned_user_id', foreignKeyConstraintName: 'FK_transactions_assigned_user' })
+  assignedUser?: User | null;
 }

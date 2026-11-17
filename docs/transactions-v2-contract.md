@@ -25,7 +25,7 @@ Until then every v1 route answers as before, except where
 
 | Part                                                                      | Status      |
 | ------------------------------------------------------------------------- | ----------- |
-| Schema: `space_id`, author, assignment, attribution source; history moved | planned     |
+| Schema: `space_id`, author, assignment, attribution source; history moved | implemented |
 | v2 create, edit, delete, details, latest, operation lookup                | planned     |
 | v2 feed and count with the `assignment` filter, `assignees`               | planned     |
 | v2 statistics summary, trend, breakdown `by_assignment`                   | planned     |

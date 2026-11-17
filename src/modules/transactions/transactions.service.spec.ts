@@ -10,7 +10,7 @@ import { Transaction } from '@entities/transaction.entity';
 import { TRANSACTION_OPERATION_SCOPE, TransactionOperation } from '@entities/transaction-operation.entity';
 import { Category } from '@entities/category.entity';
 import { Wallet } from '@entities/wallet.entity';
-import { TransactionType } from '@shared/enums';
+import { AssignmentKind, AuthorSource, TransactionType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { withRelations } from '@shared/utils';
 import {
@@ -293,10 +293,15 @@ describe('TransactionsService', () => {
       expect(transactionRepository.save).not.toHaveBeenCalled();
     });
 
-    it('saves the transaction and returns it as the read view', async () => {
+    it('saves the transaction, by the caller for the whole space, and returns it as the read view', async () => {
       await service.create(userId, spaceId, dto({ description: 'Lunch' }));
 
       expect(transactionRepository.create).toHaveBeenCalledWith({
+        space_id: spaceId,
+        author_user_id: userId,
+        author_source: AuthorSource.RECORDED,
+        assignment_kind: AssignmentKind.SPACE,
+        assigned_user_id: null,
         wallet_id: 1,
         category_id: 5,
         transaction_type: TransactionType.INCOME,

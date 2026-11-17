@@ -6,7 +6,15 @@ import { SpacesService } from '@modules/spaces/spaces.service';
 import { UsersService } from '@modules/users/users.service';
 import { DEFAULT_CATEGORIES } from '@shared/constants';
 import { SpaceType } from '@shared/enums';
-import { PASSWORD, type TestApp, createTestApp, createVerifiedMember, deleteUsers, uniqueEmail } from './support/app';
+import {
+  PASSWORD,
+  type TestApp,
+  createTestApp,
+  createVerifiedMember,
+  deleteUsers,
+  insertLegacyTransaction,
+  uniqueEmail,
+} from './support/app';
 
 type Type = 'income' | 'expense';
 
@@ -143,19 +151,16 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
   let day = 0;
   async function insertTransaction(walletId: number, categoryId: number, type: Type, amount: string) {
     day = (day % 27) + 1;
-    await query(
-      `INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp, description, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 3)`,
-      [
-        randomUUID(),
-        walletId,
-        categoryId,
-        type,
-        amount,
-        new Date(Date.UTC(2026, 8, day, 9, 30, 0, 123)),
-        `note ${day}`,
-      ],
-    );
+    await insertLegacyTransaction(testApp.dataSource, {
+      id: randomUUID(),
+      walletId,
+      categoryId,
+      type,
+      amount,
+      timestamp: new Date(Date.UTC(2026, 8, day, 9, 30, 0, 123)),
+      description: `note ${day}`,
+      version: 3,
+    });
   }
 
   async function insertLimit(spaceId: number, name: string | null, amount: string, categoryIds: number[]) {

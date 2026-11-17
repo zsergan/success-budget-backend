@@ -10,6 +10,8 @@ import { User } from '@entities/user.entity';
 import { Wallet } from '@entities/wallet.entity';
 import {
   AppColor,
+  AssignmentKind,
+  AuthorSource,
   CategoryIcon,
   ConfirmationCodeSendStatus,
   SpaceInviteEmailStatus,
@@ -153,6 +155,7 @@ export function buildTransaction(overrides: Partial<Transaction> = {}): Transact
     new Transaction(),
     {
       id: '1',
+      space_id: 1,
       wallet_id: 1,
       category_id: 1,
       transaction_type: TransactionType.EXPENSE,
@@ -160,6 +163,10 @@ export function buildTransaction(overrides: Partial<Transaction> = {}): Transact
       timestamp: CREATED_AT,
       description: null,
       version: 1,
+      author_user_id: 1,
+      author_source: AuthorSource.RECORDED,
+      assignment_kind: AssignmentKind.SPACE,
+      assigned_user_id: null,
     },
     overrides,
   );

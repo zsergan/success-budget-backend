@@ -1,6 +1,13 @@
 import request from 'supertest';
 
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import {
+  type Member,
+  type TestApp,
+  createTestApp,
+  createVerifiedMember,
+  deleteUsers,
+  insertLegacyTransaction,
+} from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
 // A fixed as_of in the past keeps these independent of the real clock:
@@ -46,10 +53,13 @@ describe('Statistics blocks (e2e)', () => {
     await add(cash, transport.id, 'expense', '120', '2026-09-05T10:00:00.000Z');
     await add(oldCard, grocery.id, 'expense', '80', '2026-09-12T17:00:00.000Z');
     // a legacy zero amount: refused by the API since the transactions contract
-    await testApp.dataSource.query(
-      "INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp) VALUES (UUID(), ?, ?, 'expense', 0, ?)",
-      [card, transport.id, new Date('2026-09-21T06:00:00.000Z')],
-    );
+    await insertLegacyTransaction(testApp.dataSource, {
+      walletId: card,
+      categoryId: transport.id,
+      type: 'expense',
+      amount: '0',
+      timestamp: new Date('2026-09-21T06:00:00.000Z'),
+    });
     // 00:30 on Sep 28 in Moscow, still Sep 27 in UTC
     await add(cash, housing.id, 'expense', '10', '2026-09-27T21:30:00.000Z');
     // after as_of
@@ -256,10 +266,13 @@ describe('Statistics blocks (e2e)', () => {
           .send({ wallet_id: walletId, category_id: categoryId, transaction_type: type, amount, timestamp })
           .expect(201);
       const insert = (walletId: number, categoryId: number, amount: string, timestamp: string) =>
-        testApp.dataSource.query(
-          "INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp) VALUES (UUID(), ?, ?, 'income', ?, ?)",
-          [walletId, categoryId, amount, new Date(timestamp)],
-        );
+        insertLegacyTransaction(testApp.dataSource, {
+          walletId,
+          categoryId,
+          type: 'income',
+          amount,
+          timestamp: new Date(timestamp),
+        });
 
       await add(card, salary.id, 'income', '3000', '2026-09-01T07:00:00.000Z');
       await add(oldCard, freelance.id, 'income', '200', '2026-09-05T07:00:00.000Z');
@@ -856,10 +869,13 @@ describe('Statistics blocks (e2e)', () => {
 
         await add(card, mixed.id, 'expense', '100');
         // a legacy income on an expense category, refused by the API since the transactions contract
-        await testApp.dataSource.query(
-          "INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp) VALUES (UUID(), ?, ?, 'income', 20, ?)",
-          [card, mixed.id, new Date('2026-09-10T09:00:00.000Z')],
-        );
+        await insertLegacyTransaction(testApp.dataSource, {
+          walletId: card,
+          categoryId: mixed.id,
+          type: 'income',
+          amount: '20',
+          timestamp: new Date('2026-09-10T09:00:00.000Z'),
+        });
         // under 3%: a child of Other in both groupings
         await add(cash, small.id, 'expense', '1');
 

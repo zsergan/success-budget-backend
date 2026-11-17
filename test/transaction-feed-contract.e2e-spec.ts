@@ -8,6 +8,7 @@ import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
 import { Wallet } from '@entities/wallet.entity';
 import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
@@ -226,7 +227,8 @@ describe('Transactions feed against a control selection (e2e)', () => {
       });
     }
 
-    const saved = await transactions.save(rows.map((row) => transactions.create(row)));
+    const owned = { space_id: owner.spaceId, ...recordedAuthor(owner.userId), ...SPACE_ASSIGNMENT };
+    const saved = await transactions.save(rows.map((row) => transactions.create({ ...row, ...owned })));
 
     await wallets.update(cash.id, { is_deleted: 1, deleted_at: new Date() });
     await categories.update(archived.id, { is_active: 0, archived_at: new Date() });

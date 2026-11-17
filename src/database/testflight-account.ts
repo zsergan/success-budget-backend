@@ -12,6 +12,7 @@ import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/s
 import { IsNewPassword } from '@shared/decorators/is-new-password.decorator';
 import { AppColor, LimitType, SpaceType, TransactionType } from '@shared/enums';
 import { isDuplicateKey, runWriteTransaction } from '@shared/utils';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 
 export const TESTFLIGHT_USER_NAME = 'TestFlight Demo';
 
@@ -166,7 +167,10 @@ async function createAccount(manager: EntityManager, input: TestFlightAccountInp
   await transactionRepository.save(
     SAMPLE_TRANSACTIONS.map((sample) =>
       transactionRepository.create({
+        space_id: space.id,
         wallet_id: wallet.id,
+        ...recordedAuthor(user.id),
+        ...SPACE_ASSIGNMENT,
         category_id: categoryId(sample.type, sample.category),
         transaction_type: sample.type,
         amount: sample.amount,

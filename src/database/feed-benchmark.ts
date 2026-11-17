@@ -143,9 +143,10 @@ async function fill(dataSource: DataSource, fixture: Fixture, count: number, ext
   for (let start = 0; start < rows.length; start += 2_000) {
     const batch = rows.slice(start, start + 2_000);
     await dataSource.query(
-      'INSERT INTO transactions (id, wallet_id, category_id, transaction_type, amount, timestamp, description) VALUES ' +
-        batch.map(() => '(UUID(), ?, ?, ?, ?, ?, ?)').join(', '),
-      batch.flat(),
+      'INSERT INTO transactions (id, space_id, author_user_id, author_source, assignment_kind, wallet_id, ' +
+        'category_id, transaction_type, amount, timestamp, description) VALUES ' +
+        batch.map(() => "(UUID(), ?, ?, 'recorded', 'space', ?, ?, ?, ?, ?, ?)").join(', '),
+      batch.flatMap((values) => [fixture.spaceId, fixture.userId, ...values]),
     );
   }
 }

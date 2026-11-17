@@ -78,10 +78,7 @@ export async function deleteUsers(dataSource: DataSource, userIds: number[]): Pr
       [spaceIds],
     );
     await dataSource.query('DELETE FROM limits WHERE space_id IN (?)', [spaceIds]);
-    await dataSource.query(
-      'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id IN (?)',
-      [spaceIds],
-    );
+    await dataSource.query('DELETE FROM transactions WHERE space_id IN (?)', [spaceIds]);
     await dataSource.query('DELETE FROM wallets WHERE space_id IN (?)', [spaceIds]);
     await dataSource.query('DELETE FROM space_members WHERE space_id IN (?)', [spaceIds]);
     await dataSource.query('DELETE FROM spaces WHERE id IN (?)', [spaceIds]);
@@ -90,4 +87,39 @@ export async function deleteUsers(dataSource: DataSource, userIds: number[]): Pr
   await dataSource.query('DELETE FROM idempotency_keys WHERE user_id IN (?)', [userIds]);
   await dataSource.query('DELETE FROM space_invite_emails WHERE sender_user_id IN (?)', [userIds]);
   await dataSource.query('DELETE FROM users WHERE id IN (?)', [userIds]);
+}
+
+export interface LegacyTransaction {
+  id?: string;
+  walletId: number;
+  categoryId: number;
+  type: 'income' | 'expense';
+  amount: string;
+  timestamp: Date;
+  description?: string | null;
+  version?: number;
+}
+
+// A record written under rules the API no longer accepts, owned the way
+// AddTransactionSpaceOwnership1791200000000 left the existing history: the
+// wallet's space, the earliest member as the imported author, the whole space.
+export async function insertLegacyTransaction(dataSource: DataSource, row: LegacyTransaction): Promise<void> {
+  await dataSource.query(
+    `INSERT INTO transactions (id, wallet_id, space_id, category_id, transaction_type, amount, timestamp,
+       description, version, author_user_id, author_source, assignment_kind, assigned_user_id)
+     SELECT COALESCE(?, UUID()), w.id, w.space_id, ?, ?, ?, ?, ?, ?,
+       (SELECT m.user_id FROM space_members m WHERE m.space_id = w.space_id ORDER BY m.created_at, m.id LIMIT 1),
+       'imported', 'space', NULL
+     FROM wallets w WHERE w.id = ?`,
+    [
+      row.id ?? null,
+      row.categoryId,
+      row.type,
+      row.amount,
+      row.timestamp,
+      row.description ?? null,
+      row.version ?? 1,
+      row.walletId,
+    ],
+  );
 }

@@ -37,6 +37,7 @@ import {
 } from './transaction-checks';
 import { ApiException } from '@shared/api.exception';
 import { TransactionOperationStatus } from '@shared/enums';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import {
   assertFound,
   formatMoney,
@@ -151,7 +152,10 @@ export class TransactionsService {
       const transactionRepository = manager.getRepository(Transaction);
       const saved = await transactionRepository.save(
         transactionRepository.create({
+          space_id: spaceId,
           wallet_id: wallet.id,
+          ...recordedAuthor(userId),
+          ...SPACE_ASSIGNMENT,
           category_id: category.id,
           transaction_type: createTransactionDto.transaction_type,
           amount: createTransactionDto.amount,
