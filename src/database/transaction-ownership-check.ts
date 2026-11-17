@@ -16,6 +16,8 @@ import {
 //   snapshot <file>  writes the ledger of the history as it is now
 //   verify <file>    compares the history with a snapshot taken before the
 //                    migration and checks the new columns; exits 1 on a difference
+// A <file> of "-" is stdout for snapshot and stdin for verify, so a
+// container needs no volume; messages then go to stderr.
 const USAGE = 'Usage: transaction-ownership-check (preflight | snapshot <file> | verify <file>)';
 
 async function preflight(): Promise<boolean> {
@@ -31,15 +33,26 @@ async function preflight(): Promise<boolean> {
   return false;
 }
 
+const STANDARD_STREAM = '-';
+
 async function snapshot(file: string): Promise<boolean> {
   const ledger = await readTransactionLedger(dataSource);
-  writeFileSync(file, JSON.stringify(ledger, null, 2));
-  console.log(`Snapshot of ${ledger.transactions} transactions in ${ledger.spaces.length} spaces written to ${file}.`);
+  const json = JSON.stringify(ledger, null, 2);
+
+  if (file === STANDARD_STREAM) {
+    process.stdout.write(`${json}\n`);
+  } else {
+    writeFileSync(file, json);
+  }
+
+  console.error(
+    `Snapshot of ${ledger.transactions} transactions in ${ledger.spaces.length} spaces written to ${file}.`,
+  );
   return true;
 }
 
 async function verify(file: string): Promise<boolean> {
-  const before = JSON.parse(readFileSync(file, 'utf8')) as TransactionLedger;
+  const before = JSON.parse(readFileSync(file === STANDARD_STREAM ? 0 : file, 'utf8')) as TransactionLedger;
   const after = await readTransactionLedger(dataSource);
   const differences = compareLedgers(before, after);
   const invariants = await readOwnershipInvariants(dataSource);

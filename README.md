@@ -23,8 +23,10 @@ password reset, currencies, health check, the invitation page).
 | ---------------------- | --------------------------------------------------------------------- |
 | `users`                | Registration, email verification, login, profile                    |
 | `spaces`               | Shared/personal budget spaces - membership, emailed invitations, single space-level currency |
-| `wallets`              | Space-owned wallets, derived balance, soft-delete                   |
-| `transactions`         | Income/expense entries against a wallet                             |
+| `wallets`              | Space-owned wallets, derived balance, soft-delete (v1 only, kept for older app builds) |
+| `transactions`         | Income/expense entries of a space, with an author and an assignment (v1 by wallet, v2 by assignment) |
+| `transaction-queries`  | The reads behind history, statistics, limits and balances (internal) |
+| `statistics`           | Summary, trend and breakdown of a period (v1 by wallet, v2 by assignment) |
 | `categories`           | Income/expense categories - user-defined plus defaults on signup    |
 | `limits`               | Monthly spending limits, per category or overall                    |
 | `currencies`           | Read-only list of supported currencies (public)                     |
@@ -41,6 +43,12 @@ all scoped under the space they belong to, e.g.
 automatically at registration, and can create or be invited into additional
 shared ones. See "Breaking changes" below if you're integrating against an
 older version of this API.
+
+Transactions and statistics also have `/api/v2` routes: records belong to
+their space directly, with the user who created them and an assignment to a
+member, the whole space or nobody, and no wallets. v1 keeps serving the
+installed app builds until wallets are removed; see
+[`docs/transactions-v2-contract.md`](docs/transactions-v2-contract.md).
 
 ## Breaking changes
 
@@ -296,6 +304,12 @@ the exact build → migrate → verify → start → health-check → smoke-test
 sequence, what to do when a deploy fails, and the backup/restore procedure
 (`scripts/db-backup.sh` / `scripts/db-restore.sh`) - lives in
 [`docs/deployment.md`](docs/deployment.md).
+
+The release that moves transactions to their spaces (v2) needs a short write
+pause and a reconciliation: deploy it with
+[Rolling out space-owned transactions](docs/deployment.md#rolling-out-space-owned-transactions)
+(`npm run ownership:check -- preflight | snapshot <file> | verify <file>`,
+`:prod` variant in the image).
 
 The release that replaces the starter categories rewrites existing tester
 data and cannot be reverted, only restored from a backup. Deploy it with

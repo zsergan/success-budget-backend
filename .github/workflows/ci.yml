@@ -206,6 +206,16 @@ jobs:
             -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE \
             success-budget-backend:ci \
             node dist/database/check-schema.js
+      - name: The transaction ownership checks run from the image
+        run: |
+          run() {
+            docker run --rm -i --network host \
+              -e DB_HOST -e DB_PORT -e DB_USERNAME -e DB_PASSWORD -e DB_DATABASE \
+              success-budget-backend:ci node dist/database/transaction-ownership-check.js "$@"
+          }
+          run preflight
+          run snapshot - > ledger.json
+          run verify - < ledger.json
       - name: Verify reference data landed
         run: |
           docker run --rm --network host \
@@ -265,6 +275,19 @@ jobs:
 
           curl -sf "http://127.0.0.1:${PORT}/api/v1/users/profile" \
             -H "Authorization: Bearer ${token}" | grep -q "${email}"
+
+          # a v2 record of the new personal space, read back through v1
+          auth="Authorization: Bearer ${token}"
+          space=$(curl -sf "http://127.0.0.1:${PORT}/api/v1/spaces" -H "$auth" | jq '.[0].id')
+          category=$(curl -sf "http://127.0.0.1:${PORT}/api/v1/spaces/${space}/categories" -H "$auth" | jq '.expenses[0].id')
+          id=$(curl -sf -X POST "http://127.0.0.1:${PORT}/api/v2/spaces/${space}/transactions" \
+            -H "$auth" -H 'Content-Type: application/json' \
+            -d "{\"category_id\":${category},\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"assignment\":{\"kind\":\"space\"}}" \
+            | jq -r '.transaction.id')
+          curl -sf "http://127.0.0.1:${PORT}/api/v1/spaces/${space}/transactions/${id}" -H "$auth" \
+            | jq -e '.wallet.wallet_name == "Shared transactions"' > /dev/null
+          curl -sf -X DELETE "http://127.0.0.1:${PORT}/api/v2/spaces/${space}/transactions/${id}" \
+            -H "$auth" -H 'If-Match: "1"' > /dev/null
       - name: Container stops cleanly on SIGTERM
         run: |
           docker stop -t 10 api

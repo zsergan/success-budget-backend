@@ -64,6 +64,7 @@ manager, etc.), never in a committed file.
 | `INVITE_TOKEN_SECRET` | Yes | Signs invitation links. At least 32 characters and different from `JWT_SECRET`; generate it (`openssl rand -base64 48`) and keep it secret. Rotating it makes every emailed invitation link unusable; six-digit codes keep working. |
 | `APPLE_APP_ID` | **Yes, with `NODE_ENV=production`** | The iOS app invitation links open, as `<Team ID>.<bundle ID>` (e.g. `ABCDE12345.com.zsergan.successbudget`). |
 | `TESTFLIGHT_URL` | No | An `https://testflight.apple.com/join/...` link offered on the `/invite` page. |
+| `LEGACY_WRITES` | No | `enabled` (default) or `retired`: retired refuses the v1 transaction and wallet writes of app builds older than the v2 transactions API with `410 LEGACY_API_RETIRED`. See "Rolling out space-owned transactions" below. |
 | `TESTFLIGHT_USER_EMAIL`, `TESTFLIGHT_USER_PASSWORD` | Only for `seed-testflight.js` | Not read by the app. Pass them to that one command (see "TestFlight demo account" below), never keep them in the app's environment. |
 
 ### Reverse proxy / client IP
@@ -209,6 +210,10 @@ signing certificate fingerprints are confirmed.
 
    `ReplaceCategoryCatalog1790900000000` rewrites tester data: deploy it
    with "Rolling out the starter category catalog" below.
+
+   `AddTransactionSpaceOwnership1791200000000` moves every transaction to
+   its space and needs a write pause: deploy it with "Rolling out
+   space-owned transactions" below.
 
 3. **Check the schema** matches the build - the same check the app makes on
    boot, as a step of its own, so a pipeline can stop before switching
@@ -579,6 +584,115 @@ over plain SMTP and a desktop browser):
       same `appIDs` as the host itself.
 - [ ] Android links stay off: `/.well-known/assetlinks.json` is `404`.
 
+### Rolling out space-owned transactions
+
+Release A of the [v2 transactions contract](transactions-v2-contract.md):
+`AddTransactionSpaceOwnership1791200000000` gives every transaction its
+own space, author and assignment, and `AddCompatibilityWallet1791300000000`
+marks the wallet that holds v2 records for older builds. The new image
+serves `/api/v2` next to every `/api/v1` route; installed app builds keep
+working and the deploy changes nothing they show.
+
+**The previous image cannot write after the migration.** Its transaction
+inserts (a create, or a wallet with a starting balance) lack the new NOT
+NULL columns and fail, and while the migration runs they would leave
+records without an owner. The migration needs a **write pause**: no
+instance of the previous image may run from the snapshot (step 4) until the
+new image starts (step 8). Measured locally on 500,000 transactions: the
+preflight takes 4 s, the migration 25 s, the snapshot and the
+reconciliation about 80 s each, so the pause lasts a few minutes at most.
+
+1. **Back up** the database (see [Backup & restore](#backup--restore)) and
+   build the new image.
+2. **Preflight**, while the previous image still serves traffic (it only
+   reads):
+
+   ```bash
+   docker run --rm --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js preflight
+   # Preflight OK: every transaction has a wallet, a space and a member to be attributed to.
+   ```
+
+   It exits with `1` and lists, by id, transactions without a wallet,
+   wallets with transactions whose space is gone, and spaces with
+   transactions but no member. The migration would refuse to change
+   anything in that state. Resolve each case by hand (add the right member
+   back, or remove an abandoned space's data after checking it with its
+   owner) and run the preflight again. The rule for authors: the space's
+   earliest current member (`created_at`, then membership id), since no
+   creator of a space is stored; it is the creator whenever the creator is
+   still a member.
+3. **Pause writes**: stop every instance of the previous image (the
+   invitation-email queue runs inside it too). Requests fail during the
+   pause; the installed app keeps unsent writes and retries them.
+4. **Snapshot** the history:
+
+   ```bash
+   docker run --rm --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js snapshot - > ledger-before.json
+   ```
+
+5. **Migrate** with the usual step 2 command. A run stopped midway resumes
+   from where it stopped. A run that ends with "N transactions were written
+   without an owner while this migration ran" means an old instance is
+   still writing: stop it and run the migrations again.
+6. **Check the schema** (step 3) and the reference data (step 4).
+7. **Reconcile** the history with the snapshot:
+
+   ```bash
+   docker run --rm -i --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js verify - < ledger-before.json
+   # Reconciliation OK: <n> transactions in <m> spaces match -.
+   ```
+
+   It compares every record's id, space, wallet, category, type, amount,
+   timestamp, description and version, the ordinary income and expense of
+   every space and month, and the starting balances, and checks that every
+   record's `space_id` is its wallet's space and has an author. On any
+   difference, do not start the new image: keep the pause, investigate,
+   and restore the backup if history changed.
+8. **Start the new image** and run the health check and the smoke tests
+   (steps 5 to 7), then the v2 smoke test below.
+9. **Release the mobile v2 build**.
+
+v2 smoke test, with the token of the smoke-test account: a create on its
+personal space, read through both versions, then deleted.
+
+```bash
+space=$(curl -sf http://<host>:3000/api/v1/spaces -H "Authorization: Bearer $token" | jq '.[0].id')
+category=$(curl -sf http://<host>:3000/api/v1/spaces/$space/categories -H "Authorization: Bearer $token" | jq '.expenses[0].id')
+id=$(curl -sf -X POST http://<host>:3000/api/v2/spaces/$space/transactions \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d "{\"category_id\":$category,\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"assignment\":{\"kind\":\"space\"}}" \
+  | jq -r .transaction.id)
+curl -sf http://<host>:3000/api/v1/spaces/$space/transactions/$id -H "Authorization: Bearer $token" | jq .wallet.wallet_name
+# "Shared transactions"
+curl -sf -X DELETE http://<host>:3000/api/v2/spaces/$space/transactions/$id -H "Authorization: Bearer $token" -H 'If-Match: "1"'
+```
+
+**Rollback limits.**
+
+- This release is the earliest image that may run on the migrated
+  database. An older image starts there (its schema check only warns about
+  migrations it does not know) but cannot create transactions and would
+  write records without an owner: never start one after step 5.
+- Before step 8, a failed rollout is undone by restoring the backup of
+  step 1; nothing was written meanwhile.
+- After step 8, roll the application back only to another image of this
+  release or later, and fix forward. `migration:revert` (twice) is
+  possible but discards every author and assignment, also those of v2
+  records, which then stay in their space's "Shared transactions" wallet;
+  restoring the backup discards every write since the deploy. Treat both
+  as a last resort, decided separately.
+
+**Retiring v1 writes** (before the release that removes wallets): set
+`LEGACY_WRITES=retired` and restart every instance together. Builds older
+than the v2 API then get `410 LEGACY_API_RETIRED` on every transaction and
+wallet write and keep reading; email verification stops creating the
+"Cash" wallet. Setting it back to `enabled` undoes it. The removal release
+itself, and its readiness checks, are in the
+[contract](transactions-v2-contract.md#release-b-readiness).
+
 ### Schema check
 
 On boot the app compares the migrations compiled into its build
@@ -597,7 +711,9 @@ schema (see "Roll back" below): migrations here only add columns, tables
 and indexes (or replace an index with a wider one), so the previous build
 keeps working. A migration that breaks the
 previous build has to say so in its PR, and then a rollback needs the schema
-reverted as well.
+reverted as well. `AddTransactionSpaceOwnership1791200000000` is one: images
+before it cannot write on the migrated schema (see
+[Rolling out space-owned transactions](#rolling-out-space-owned-transactions)).
 
 `REQUIRED_MIGRATION` is kept equal to the newest file in `src/migrations`
 by a unit test, so adding a migration without updating it fails CI. CI's

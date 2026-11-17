@@ -241,6 +241,33 @@ describe('Transactions v2 next to v1 (e2e)', () => {
     });
   });
 
+  describe('a new space', () => {
+    it('takes v2 records right away, without any wallet to set up', async () => {
+      const owner = await createVerifiedMember(testApp, 'v2-new-space');
+      userIds.push(owner.userId);
+      const space = await api(owner)
+        .post('/api/v1/spaces')
+        .send({ name: 'Trip', type: 'group', currency_id: testApp.currencyId })
+        .expect(201);
+      const categories = await api(owner)
+        .get(`${v1(space.body.id)}/categories`)
+        .expect(200);
+
+      await api(owner)
+        .post(v2(space.body.id))
+        .send({
+          category_id: categories.body.expenses[0].id,
+          transaction_type: 'expense',
+          amount: '5',
+          timestamp: '2026-09-15T10:00:00.000Z',
+          assignment: forMember(owner),
+        })
+        .expect(201);
+
+      expect(await compatibilityWallets(space.body.id)).toHaveLength(1);
+    });
+  });
+
   describe('author and assignment on edit', () => {
     it('keeps them through a v1 edit of the amount, the date, the category and the wallet', async () => {
       const s = await setup();

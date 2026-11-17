@@ -6,7 +6,7 @@ import { buildDataSourceOptions } from './database.config';
 
 // No-op if there's no .env file (e.g. a hosting platform that injects real
 // env vars directly) - dotenv only fills in values that aren't already set.
-loadEnv();
+loadEnv({ quiet: true });
 
 const { DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_DATABASE } = process.env;
 

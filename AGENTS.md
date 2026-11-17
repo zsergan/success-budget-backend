@@ -94,6 +94,11 @@ specs locally.
 
 - Currency belongs to `Space` only. Wallets and transactions have no
   currency, and there is no FX conversion.
+- A transaction belongs to its space (`space_id`), has a server-set author
+  that no edit changes, and is assigned to a member, the whole space or
+  nobody (`docs/transactions-v2-contract.md`). Until wallets are removed,
+  every record also keeps a wallet: v2 creates use the space's
+  compatibility wallet, which v2 never shows.
 - Wallet balance is derived (the sum of its transactions), never stored.
   An initial balance is an `income` transaction in the system category
   `Initial balance` (`Category.is_system`). It shows in history, cannot be
