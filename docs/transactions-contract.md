@@ -15,6 +15,12 @@ Out of scope: several currencies in one space, moving a transaction to
 another space, transfers between wallets as one operation, and scheduled or
 recurring transactions.
 
+**API v2.** Transactions that belong directly to a space, with an author
+and an assignment instead of a wallet, are specified in the
+[v2 contract](transactions-v2-contract.md). This document stays the
+contract of the `/api/v1` transaction routes, which keep working until
+Release B, and of every rule v2 takes over unchanged.
+
 ## Implementation status
 
 | Part                                                                | Status      |
