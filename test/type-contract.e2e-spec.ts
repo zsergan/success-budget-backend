@@ -382,18 +382,26 @@ describe('Boundary type contract (e2e)', () => {
     });
 
     it('converts query from/to to Date, and defaults absent ones to the current month', async () => {
-      const spy = jest.spyOn(transactionQueriesService, 'countForAllWallets');
+      const spy = jest.spyOn(transactionQueriesService, 'countSelection');
+      const filters = { searchesWallets: true };
 
       await api().get(`${base()}/transactions/count?from=2026-01-01&to=2026-01-31T23:59:59.999`).expect(200);
-      expect(spy).toHaveBeenLastCalledWith(spaceId, new Date(2026, 0, 1), new Date(2026, 0, 31, 23, 59, 59, 999), {});
+      expect(spy).toHaveBeenLastCalledWith({
+        spaceId,
+        from: new Date(2026, 0, 1),
+        to: new Date(2026, 0, 31, 23, 59, 59, 999),
+        filters,
+      });
 
       await api().get(`${base()}/transactions/count`).expect(200);
       const now = new Date();
       expect(spy.mock.lastCall).toEqual([
-        spaceId,
-        new Date(now.getFullYear(), now.getMonth(), 1),
-        new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
-        {},
+        {
+          spaceId,
+          from: new Date(now.getFullYear(), now.getMonth(), 1),
+          to: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+          filters,
+        },
       ]);
     });
 

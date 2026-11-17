@@ -1,6 +1,13 @@
 import { ApiExtraModels, ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
-import { AppColor, CategoryIcon, StatisticsPeriodType, TransactionType } from '@shared/enums';
+import {
+  AppColor,
+  AssignmentKind,
+  CategoryIcon,
+  PersonStatus,
+  StatisticsPeriodType,
+  TransactionType,
+} from '@shared/enums';
 import { nullableObject } from '@shared/swagger';
 import type {
   CategoryBreakdown as CategoryBreakdownShape,
@@ -15,9 +22,15 @@ import type {
   StatisticsPeriod as StatisticsPeriodShape,
 } from '../statistics-period';
 import type {
+  AssignmentBreakdown as AssignmentBreakdownShape,
+  AssignmentItem as AssignmentItemShape,
+  AssignmentOtherItem as AssignmentOtherItemShape,
+} from '../assignment-breakdown';
+import type {
   Change as ChangeShape,
   MoneyCount as MoneyCountShape,
   StatisticsBreakdown as StatisticsBreakdownShape,
+  StatisticsBreakdownV2 as StatisticsBreakdownV2Shape,
   StatisticsSummary as StatisticsSummaryShape,
   StatisticsTrend as StatisticsTrendShape,
   TrendBucket as TrendBucketShape,
@@ -375,4 +388,97 @@ export class StatisticsBreakdown extends StatisticsBlock implements StatisticsBr
 
   @ApiProperty({ type: () => WalletBreakdown })
   by_wallet!: WalletBreakdown;
+}
+
+const ASSIGNMENT_ITEM_KINDS = [...Object.values(AssignmentKind), 'deleted_member'];
+
+export class AssignmentItem extends BreakdownItemFields implements AssignmentItemShape {
+  @ApiProperty({
+    enum: ASSIGNMENT_ITEM_KINDS,
+    enumName: 'AssignmentItemKind',
+    description: 'member: one user, a former member too; deleted_member: every deleted account together.',
+  })
+  kind!: AssignmentItemShape['kind'];
+
+  @ApiProperty({
+    example: 'member:31',
+    description: 'member:<user_id>, space, unassigned or deleted_member: the feed assignment filter value.',
+  })
+  key!: string;
+
+  @ApiProperty({ type: 'integer', nullable: true, description: 'member only.' })
+  user_id!: number | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'member only: the current name.' })
+  name!: string | null;
+
+  @ApiProperty({
+    enum: [PersonStatus.MEMBER, PersonStatus.FORMER_MEMBER, null],
+    nullable: true,
+    description: 'member only.',
+  })
+  status!: PersonStatus.MEMBER | PersonStatus.FORMER_MEMBER | null;
+
+  @ApiProperty({ enum: [true], description: 'Always true: opens the feed filtered by assignment={key}.' })
+  opens_history!: true;
+}
+
+export class AssignmentOtherItem implements AssignmentOtherItemShape {
+  @ApiProperty({ enum: ['other'] })
+  kind!: 'other';
+
+  @ApiProperty({ enum: ['other'] })
+  key!: 'other';
+
+  @ApiProperty(MONEY)
+  amount!: string;
+
+  @ApiProperty({ ...PERCENT, description: 'Of total_amount, one decimal.' })
+  percent!: number;
+
+  @ApiProperty({ enum: [false] })
+  opens_history!: false;
+
+  @ApiProperty({
+    type: () => AssignmentItem,
+    isArray: true,
+    description: 'The folded members, former members and deleted accounts; never space or unassigned.',
+  })
+  children!: AssignmentItem[];
+}
+
+@ApiExtraModels(AssignmentOtherItem)
+export class AssignmentBreakdown implements AssignmentBreakdownShape {
+  @ApiProperty(MONEY)
+  total_amount!: string;
+
+  @ApiProperty({ type: 'integer', description: 'Groups with a positive sum.' })
+  source_count!: number;
+
+  @ApiProperty({
+    type: () => AssignmentItem,
+    isArray: true,
+    description: 'By amount, descending; space and unassigned are here whenever positive.',
+  })
+  primary_items!: AssignmentItem[];
+
+  @ApiProperty(nullableObject(AssignmentOtherItem))
+  other!: AssignmentOtherItem | null;
+}
+
+export class StatisticsBreakdownV2 extends StatisticsBlock implements StatisticsBreakdownV2Shape {
+  @ApiProperty({ enum: TransactionType, enumName: 'TransactionType', description: 'The applied transaction_type.' })
+  transaction_type!: TransactionType;
+
+  @ApiProperty({
+    type: () => MoneyCount,
+    description: 'Control sum, equal to the summary income or expense (by transaction_type) of the same cycle.',
+  })
+  total!: MoneyCount;
+
+  @ApiProperty({ type: () => CategoryBreakdown })
+  by_category!: CategoryBreakdown;
+
+  @ApiProperty({ type: () => AssignmentBreakdown })
+  by_assignment!: AssignmentBreakdown;
 }

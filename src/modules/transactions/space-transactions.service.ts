@@ -1,31 +1,65 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpStatus, Injectable } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { Wallet } from '@entities/wallet.entity';
 import type { CreateTransactionV2Dto, UpdateTransactionV2Dto } from './dto/transaction-v2.dto';
+import type { TransactionCountQueryV2Dto, TransactionFeedQueryV2Dto } from './dto/transaction-feed-query-v2.dto';
+import type { TransactionCount } from './dto/transaction-responses';
 import type {
+  AssigneeOption,
+  TransactionAssignees,
+  TransactionFeedV2,
   TransactionOperationViewV2,
   TransactionResultV2,
   TransactionViewV2,
 } from './dto/transaction-v2-responses';
 import { toTransactionViewV2 } from './transaction-view';
 import { normalizeDescription } from './transaction-rules';
-import { assertNotSystem, assertVersion } from './transaction-checks';
+import { assertNotSystem, assertUserCategory, assertVersion } from './transaction-checks';
 import { assertNewValues, changedFields } from './transaction-changes';
 import { assertAssigneeIsMember, assigneeOf, toAssignmentColumns } from './transaction-assignment';
 import { TransactionWrites, type WriteOptions, requireVersion } from './transaction-writes';
 import { lockCompatibilityWallet } from './compatibility-wallet';
+import { TransactionFeedReader } from './transaction-feed-reader';
 import { ApiException } from '@shared/api.exception';
-import { TransactionOperationStatus } from '@shared/enums';
+import { AssignmentKind, PersonStatus, TransactionOperationStatus } from '@shared/enums';
 import { recordedAuthor } from '@shared/transaction-ownership';
-import { assertFound, lockRows, readSnapshot, toDate } from '@shared/utils';
+import { assertFound, lockRows, readSnapshot, resolveTimeZone, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
+  type SpacePerson,
+  type TransactionSelection,
 } from '@modules/transaction-queries/transaction-queries.service';
+import { memberKey, parseAssignmentFilter } from '@modules/transaction-queries/assignment-filter';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
+import { CategoriesService } from '@modules/categories/categories.service';
+
+function toSelection(spaceId: number, query: TransactionCountQueryV2Dto): TransactionSelection {
+  return {
+    spaceId,
+    from: toDate(query.from),
+    to: toDate(query.to),
+    filters: {
+      transactionType: query.transaction_type,
+      kind: query.kind,
+      categoryId: query.category_id,
+      assignment: query.assignment === undefined ? undefined : parseAssignmentFilter(query.assignment)!,
+      search: query.q,
+    },
+  };
+}
+
+const toOption =
+  (status: PersonStatus.MEMBER | PersonStatus.FORMER_MEMBER) =>
+  (person: SpacePerson): AssigneeOption => ({
+    key: memberKey(person.userId),
+    user_id: person.userId,
+    name: person.name,
+    status,
+  });
 
 // The v2 transactions API (docs/transactions-v2-contract.md): records of a
 // space with an author and an assignment, no wallet. Shares its write unit,
@@ -35,7 +69,9 @@ export class SpaceTransactionsService {
   constructor(
     private readonly transactionQueriesService: TransactionQueriesService,
     private readonly spaceAccessService: SpaceAccessService,
+    private readonly categoriesService: CategoriesService,
     private readonly writes: TransactionWrites,
+    private readonly feedReader: TransactionFeedReader,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -152,6 +188,53 @@ export class SpaceTransactionsService {
     });
   }
 
+  // The v1 feed over the v2 selection: summary and day totals cover exactly
+  // the filtered records, the assignment included, and a cursor carries it.
+  async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryV2Dto): Promise<TransactionFeedV2> {
+    const selection = toSelection(spaceId, query);
+
+    return this.feedReader.read(
+      {
+        selection,
+        timeZone: resolveTimeZone(query.time_zone)!,
+        limit: query.limit,
+        cursor: query.cursor,
+        aroundId: query.around_id,
+        version: 2,
+      },
+      () => this.checkHistoryQuery(userId, selection),
+      (items, manager) => this.toViews(manager, spaceId, items),
+    );
+  }
+
+  // the summary.count of the feed for the same query, initial balances included
+  async count(userId: number, spaceId: number, query: TransactionCountQueryV2Dto): Promise<TransactionCount> {
+    const selection = toSelection(spaceId, query);
+    await this.checkHistoryQuery(userId, selection);
+
+    return { count: await this.transactionQueriesService.countSelection(selection) };
+  }
+
+  // The options of the History "Assigned to" filter, from one snapshot.
+  async getAssignees(userId: number, spaceId: number): Promise<TransactionAssignees> {
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    return readSnapshot(this.dataSource, async (manager) => {
+      const members = await this.transactionQueriesService.getMembers(spaceId, manager);
+      const memberIds = new Set(members.map((member) => member.userId));
+      const assigned = await this.transactionQueriesService.getAssignedUsers(spaceId, manager);
+      const former = assigned
+        .filter((person) => !memberIds.has(person.userId))
+        .sort((a, b) => a.name.localeCompare(b.name) || a.userId - b.userId);
+
+      return {
+        members: members.map(toOption(PersonStatus.MEMBER)),
+        former_members: former.map(toOption(PersonStatus.FORMER_MEMBER)),
+        has_deleted_members: await this.transactionQueriesService.hasDeletedAssignees(spaceId, manager),
+      };
+    });
+  }
+
   async getById(userId: number, spaceId: number, transactionId: string): Promise<TransactionViewV2> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
@@ -199,6 +282,30 @@ export class SpaceTransactionsService {
         transaction: view,
       };
     });
+  }
+
+  // An archived category is a valid filter: its history is kept. A member
+  // filter takes anyone the space knows as an assignee, so former members
+  // stay filterable.
+  private async checkHistoryQuery(userId: number, { spaceId, from, to, filters = {} }: TransactionSelection) {
+    if (from.getTime() > to.getTime()) {
+      throw new BadRequestException([{ field: 'from', error: 'from must not be after to' }]);
+    }
+
+    await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    if (filters.categoryId !== undefined) {
+      assertUserCategory(await this.categoriesService.getOne(filters.categoryId), spaceId);
+    }
+
+    const assignment = filters.assignment;
+
+    if (
+      assignment?.kind === AssignmentKind.MEMBER &&
+      !(await this.transactionQueriesService.isKnownAssignee(spaceId, assignment.userId))
+    ) {
+      throw new ApiException('FORBIDDEN_MEMBER', HttpStatus.FORBIDDEN);
+    }
   }
 
   private async readView(manager: EntityManager, spaceId: number, transactionId: string): Promise<TransactionViewV2> {

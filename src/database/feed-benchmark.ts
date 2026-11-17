@@ -5,11 +5,14 @@ import { AppModule } from '../app.module';
 import { UsersService } from '@modules/users/users.service';
 import { CurrenciesService } from '@modules/currencies/currencies.service';
 import { TransactionsService } from '@modules/transactions/transactions.service';
+import { SpaceTransactionsService } from '@modules/transactions/space-transactions.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { encodeFeedCursor, selectionDigest } from '@modules/transactions/feed-cursor';
 import type { TransactionFeedQueryDto } from '@modules/transactions/dto/transaction-feed-query.dto';
+import type { TransactionFeedQueryV2Dto } from '@modules/transactions/dto/transaction-feed-query-v2.dto';
+import { TransactionType } from '@shared/enums';
 
-// Dev-only load test of GET /transactions/feed (docs/feed-performance.md).
+// Dev-only load test of GET /transactions/feed, v1 and v2 (docs/feed-performance.md).
 // Fills a disposable database with a large space and a second, unrelated
 // one, then times the feed scenarios through the service and prints the
 // EXPLAIN ANALYZE of every query they run. Usage:
@@ -113,8 +116,12 @@ async function fill(dataSource: DataSource, fixture: Fixture, count: number, ext
   const rows: unknown[][] = [];
   const row = (timestamp: Date) => {
     const income = random() < 0.1;
+    const assignment = random();
 
     rows.push([
+      // 60 % the whole space, 25 % the member, 15 % nobody
+      assignment < 0.6 ? 'space' : assignment < 0.85 ? 'member' : 'unassigned',
+      assignment >= 0.6 && assignment < 0.85 ? fixture.userId : null,
       pick(fixture.walletIds),
       pick(income ? fixture.incomeIds : fixture.expenseIds),
       income ? 'income' : 'expense',
@@ -143,9 +150,9 @@ async function fill(dataSource: DataSource, fixture: Fixture, count: number, ext
   for (let start = 0; start < rows.length; start += 2_000) {
     const batch = rows.slice(start, start + 2_000);
     await dataSource.query(
-      'INSERT INTO transactions (id, space_id, author_user_id, author_source, assignment_kind, wallet_id, ' +
-        'category_id, transaction_type, amount, timestamp, description) VALUES ' +
-        batch.map(() => "(UUID(), ?, ?, 'recorded', 'space', ?, ?, ?, ?, ?, ?)").join(', '),
+      'INSERT INTO transactions (id, space_id, author_user_id, author_source, assignment_kind, assigned_user_id, ' +
+        'wallet_id, category_id, transaction_type, amount, timestamp, description) VALUES ' +
+        batch.map(() => "(UUID(), ?, ?, 'recorded', ?, ?, ?, ?, ?, ?, ?, ?)").join(', '),
       batch.flatMap((values) => [fixture.spaceId, fixture.userId, ...values]),
     );
   }
@@ -162,6 +169,7 @@ async function bootstrap() {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error'] });
   const dataSource = app.get(DataSource);
   const feedService = app.get(TransactionsService);
+  const v2FeedService = app.get(SpaceTransactionsService);
   const queries = app.get(TransactionQueriesService);
 
   console.log(`Filling: ${TRANSACTIONS} transactions in the measured space, ${NOISE} in another one...`);
@@ -194,8 +202,8 @@ async function bootstrap() {
 
   const cursorAt = async (query: TransactionFeedQueryDto, offset: number) => {
     const [row] = await dataSource.query(
-      'SELECT t.id, t.timestamp FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id ' +
-        'WHERE w.space_id = ? AND t.timestamp BETWEEN ? AND ? ORDER BY t.timestamp DESC, t.id DESC LIMIT 1 OFFSET ?',
+      'SELECT t.id, t.timestamp FROM transactions t ' +
+        'WHERE t.space_id = ? AND t.timestamp BETWEEN ? AND ? ORDER BY t.timestamp DESC, t.id DESC LIMIT 1 OFFSET ?',
       [fixture.spaceId, new Date(query.from), new Date(query.to), offset],
     );
     const selection = {
@@ -213,14 +221,16 @@ async function bootstrap() {
   const idAt = async (from: string, to: string, offset: number) =>
     (
       await dataSource.query(
-        'SELECT t.id FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id ' +
-          'WHERE w.space_id = ? AND t.timestamp BETWEEN ? AND ? ORDER BY t.timestamp DESC, t.id DESC LIMIT 1 OFFSET ?',
+        'SELECT t.id FROM transactions t ' +
+          'WHERE t.space_id = ? AND t.timestamp BETWEEN ? AND ? ORDER BY t.timestamp DESC, t.id DESC LIMIT 1 OFFSET ?',
         [fixture.spaceId, new Date(from), new Date(to), offset],
       )
     )[0].id as string;
 
   const tieQuery = { ...base, from: '2026-05-01T00:00:00.000Z', to: '2026-05-31T23:59:59.999Z' };
-  const scenarios: [string, TransactionFeedQueryDto][] = [
+  const v1 = (query: TransactionFeedQueryDto) => () => feedService.getFeed(fixture.userId, fixture.spaceId, query);
+  const v2 = (query: TransactionFeedQueryV2Dto) => () => v2FeedService.getFeed(fixture.userId, fixture.spaceId, query);
+  const v1Scenarios: [string, TransactionFeedQueryDto][] = [
     ['month, first page', base],
     ['year, first page', { ...base, ...year }],
     ['all history, home (limit 5)', { ...base, ...all, limit: 5 }],
@@ -258,17 +268,26 @@ async function bootstrap() {
     ],
   ];
 
+  const scenarios: [string, () => Promise<{ summary: { count: number }; items: unknown[] }>][] = [
+    ...v1Scenarios.map(([name, query]) => [name, v1(query)] as [string, ReturnType<typeof v1>]),
+    ['v2 month, first page', v2(base)],
+    ['v2 month, unassigned', v2({ ...base, assignment: 'unassigned' })],
+    ['v2 year, assigned to the member', v2({ ...base, ...year, assignment: `member:${fixture.userId}` })],
+    ['v2 all history, unassigned, home (limit 5)', v2({ ...base, ...all, limit: 5, assignment: 'unassigned' })],
+    ['v2 all history, whole space, search "coffee"', v2({ ...base, ...all, q: 'coffee', assignment: 'space' })],
+  ];
+
   const timings: string[] = [];
   const plans: string[] = [];
 
-  for (const [name, query] of scenarios) {
-    await feedService.getFeed(fixture.userId, fixture.spaceId, query);
+  for (const [name, read] of scenarios) {
+    await read();
     const times: number[] = [];
 
     for (let run = 0; run < RUNS; run++) {
       captured.length = 0;
       const started = process.hrtime.bigint();
-      const result = await feedService.getFeed(fixture.userId, fixture.spaceId, query);
+      const result = await read();
       times.push(Number(process.hrtime.bigint() - started) / 1e6);
 
       if (run === 0) {
@@ -277,6 +296,28 @@ async function bootstrap() {
     }
 
     timings[timings.length - 1] += `|${median(times).toFixed(1)}`;
+    plans.push(`\n## ${name}`);
+
+    for (const { sql, parameters } of captured.filter(({ sql }) => /^SELECT/i.test(sql))) {
+      const [explained] = await dataSource.query(`EXPLAIN ANALYZE ${sql}`, parameters);
+      plans.push(`\n${sql}\n${Object.values(explained)[0]}`);
+    }
+  }
+
+  for (const [name, period] of [
+    ['v2 breakdown by assignment, year', year],
+    ['v2 breakdown by assignment, all history', all],
+  ] as const) {
+    captured.length = 0;
+    const started = process.hrtime.bigint();
+    await queries.getStatisticsByAssignment(
+      fixture.spaceId,
+      TransactionType.EXPENSE,
+      new Date(period.from),
+      new Date(period.to),
+      dataSource.manager,
+    );
+    timings.push(`${name}|-|-|${(Number(process.hrtime.bigint() - started) / 1e6).toFixed(1)}`);
     plans.push(`\n## ${name}`);
 
     for (const { sql, parameters } of captured.filter(({ sql }) => /^SELECT/i.test(sql))) {
@@ -325,10 +366,7 @@ async function bootstrap() {
 
   if (!KEEP) {
     for (const { spaceId, userId } of [fixture, noise]) {
-      await dataSource.query(
-        'DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ?',
-        [spaceId],
-      );
+      await dataSource.query('DELETE FROM transactions WHERE space_id = ?', [spaceId]);
       await dataSource.query('DELETE FROM idempotency_keys WHERE user_id = ?', [userId]);
       await dataSource.query(
         'DELETE FROM limit_categories WHERE limit_id IN (SELECT id FROM limits WHERE space_id = ?)',

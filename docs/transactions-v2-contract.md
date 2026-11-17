@@ -27,19 +27,25 @@ Until then every v1 route answers as before, except where
 | ------------------------------------------------------------------------- | ----------- |
 | Schema: `space_id`, author, assignment, attribution source; history moved | implemented |
 | v2 create, edit, delete, details, latest, operation lookup                | implemented |
-| v2 feed and count with the `assignment` filter, `assignees`               | planned     |
-| v2 statistics summary, trend, breakdown `by_assignment`                   | planned     |
+| v2 feed and count with the `assignment` filter, `assignees`               | implemented |
+| v2 statistics summary, trend, breakdown `by_assignment`                   | implemented |
 | v1 reads and writes over the new schema; compatibility wallet             | implemented |
 | `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | planned     |
 | Release B removals                                                        | not started |
 
 Code: `src/modules/transactions` (`transactions-v2.controller.ts`,
 `space-transactions.service.ts`, `transaction-writes.ts`,
-`transaction-assignment.ts`, `transaction-view.ts`),
-`src/modules/statistics` (`statistics-v2.controller.ts`,
-`assignment-breakdown.ts`), `src/modules/transaction-queries`, the
-migrations `1791200000000-AddTransactionSpaceOwnership` and
-`1791300000000-AddCompatibilityWallet`.
+`transaction-feed-reader.ts`, `transaction-assignment.ts`,
+`compatibility-wallet.ts`, `transaction-view.ts`), `src/modules/statistics`
+(`statistics-v2.controller.ts`, `assignment-breakdown.ts`),
+`src/modules/transaction-queries`, the migrations
+`1791200000000-AddTransactionSpaceOwnership` and
+`1791300000000-AddCompatibilityWallet`. Tests:
+`test/transactions-v2.e2e-spec.ts` (writes, both versions on one space,
+races with member removal, retries), `test/transactions-v2-reads.e2e-spec.ts`
+(filters, totals, DST, statistics, limits, OpenAPI),
+`test/transaction-ownership-migration.e2e-spec.ts` (the migration and its
+reconciliation), and the unit specs next to the code.
 
 ## Versioning
 

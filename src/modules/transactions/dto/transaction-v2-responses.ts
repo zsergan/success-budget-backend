@@ -60,8 +60,7 @@ export class TransactionAssignmentView {
   name!: string | null;
 
   @ApiProperty({
-    enum: PersonStatus,
-    enumName: 'PersonStatus',
+    enum: [...Object.values(PersonStatus), null],
     nullable: true,
     description: 'member only; otherwise null.',
   })

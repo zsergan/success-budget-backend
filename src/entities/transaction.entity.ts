@@ -26,7 +26,16 @@ import { AssignmentKind, AuthorSource, TransactionType } from '@shared/enums';
   'assignment_kind',
   'assigned_user_id',
 ])
-@Index('IDX_transactions_space_assignment', ['space_id', 'assignment_kind', 'assigned_user_id', 'timestamp', 'id'])
+@Index('IDX_transactions_space_assignment', [
+  'space_id',
+  'assignment_kind',
+  'assigned_user_id',
+  'timestamp',
+  'id',
+  'category_id',
+  'transaction_type',
+  'amount',
+])
 @Index('IDX_transactions_author_user', ['author_user_id'])
 @Index('IDX_transactions_assigned_user', ['assigned_user_id'])
 export class Transaction {

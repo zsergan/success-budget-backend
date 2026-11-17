@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Request } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -15,7 +15,15 @@ import {
 
 import { SpaceTransactionsService } from './space-transactions.service';
 import { CreateTransactionV2Dto, UpdateTransactionV2Dto } from './dto/transaction-v2.dto';
-import { TransactionOperationViewV2, TransactionResultV2, TransactionViewV2 } from './dto/transaction-v2-responses';
+import {
+  TransactionAssignees,
+  TransactionFeedV2,
+  TransactionOperationViewV2,
+  TransactionResultV2,
+  TransactionViewV2,
+} from './dto/transaction-v2-responses';
+import { TransactionCountQueryV2Dto, TransactionFeedQueryV2Dto } from './dto/transaction-feed-query-v2.dto';
+import { TransactionCount } from './dto/transaction-responses';
 import type { AuthedRequest } from '@shared/types';
 import { ParseIfMatchVersionPipe } from '@shared/pipes/parse-if-match-version.pipe';
 import { ParseIdempotencyKeyPipe } from '@shared/pipes/parse-idempotency-key.pipe';
@@ -57,6 +65,51 @@ export class TransactionsV2Controller {
     @RequestHeader('Idempotency-Key', ParseIdempotencyKeyPipe) idempotencyKey?: string,
   ): Promise<TransactionResultV2> {
     return this.spaceTransactionsService.create(req.user.id, spaceId, dto, { idempotencyKey });
+  }
+
+  @ApiOperation({
+    summary: 'The transaction list, one page at a time, filtered by assignment among others',
+    description:
+      'Newest first (timestamp, then id). summary and day_totals cover the whole selection, assignment ' +
+      `included. Search matches descriptions and category names. ${CONTRACT}`,
+  })
+  @ApiOkResponse({ type: TransactionFeedV2 })
+  @ApiBadRequestResponse({
+    description:
+      'VALIDATION_FAILED: a malformed parameter, from after to, cursor with around_id, or a cursor of another ' +
+      'query or API version.',
+  })
+  @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE, FORBIDDEN_CATEGORY or FORBIDDEN_MEMBER.' })
+  @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND or TRANSACTION_NOT_IN_FEED for around_id.' })
+  @Get('feed')
+  async getFeed(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query() query: TransactionFeedQueryV2Dto,
+  ): Promise<TransactionFeedV2> {
+    return this.spaceTransactionsService.getFeed(req.user.id, spaceId, query);
+  }
+
+  @ApiOkResponse({ type: TransactionCount, description: 'The feed summary.count for the same period, q and filters.' })
+  @ApiBadRequestResponse({ description: 'VALIDATION_FAILED: a malformed parameter or from after to.' })
+  @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE, FORBIDDEN_CATEGORY or FORBIDDEN_MEMBER.' })
+  @Get('count')
+  async count(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+    @Query() query: TransactionCountQueryV2Dto,
+  ): Promise<TransactionCount> {
+    return this.spaceTransactionsService.count(req.user.id, spaceId, query);
+  }
+
+  @ApiOperation({ summary: 'The options of the History "Assigned to" filter', description: CONTRACT })
+  @ApiOkResponse({ type: TransactionAssignees })
+  @Get('assignees')
+  async getAssignees(
+    @Request() req: AuthedRequest,
+    @Param('spaceId', ParseIntPipe) spaceId: number,
+  ): Promise<TransactionAssignees> {
+    return this.spaceTransactionsService.getAssignees(req.user.id, spaceId);
   }
 
   @ApiOkResponse({ type: TransactionViewV2, description: 'Empty body when the space has no transactions.' })

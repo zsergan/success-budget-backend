@@ -5,7 +5,8 @@ const REPORTED_IDS = 20;
 const INDEXES: Record<string, string> = {
   IDX_transactions_space_timestamp_id:
     '(`space_id`, `timestamp`, `id`, `category_id`, `transaction_type`, `amount`, `assignment_kind`, `assigned_user_id`)',
-  IDX_transactions_space_assignment: '(`space_id`, `assignment_kind`, `assigned_user_id`, `timestamp`, `id`)',
+  IDX_transactions_space_assignment:
+    '(`space_id`, `assignment_kind`, `assigned_user_id`, `timestamp`, `id`, `category_id`, `transaction_type`, `amount`)',
   IDX_transactions_author_user: '(`author_user_id`)',
   IDX_transactions_assigned_user: '(`assigned_user_id`)',
 };

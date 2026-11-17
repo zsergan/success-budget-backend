@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 
 import type { FeedPosition, TransactionSelection } from '@modules/transaction-queries/transaction-queries.service';
+import { assignmentKey } from '@modules/transaction-queries/assignment-filter';
 import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
 export const FEED_CURSOR_VERSION = 1;
@@ -24,26 +25,34 @@ interface CursorPayload {
   s: string;
 }
 
-// Not a secret: a cursor only moves within a selection the member may read,
-// so the digest just keeps a cursor from being replayed on another query.
-export const selectionDigest = (selection: TransactionSelection, timeZone: string): string => {
-  const { spaceId, from, to, filters = {} } = selection;
+export type FeedApiVersion = 1 | 2;
 
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        spaceId,
-        from.getTime(),
-        to.getTime(),
-        timeZone,
-        filters.search?.trim() || null,
-        filters.transactionType ?? null,
-        filters.kind ?? null,
-        filters.categoryId ?? null,
-        filters.walletId ?? null,
-      ]),
-    )
-    .digest('base64url');
+// Not a secret: a cursor only moves within a selection the member may read,
+// so the digest just keeps a cursor from being replayed on another query or
+// API version. v1 digests are unchanged, so v1 cursors stay valid.
+export const selectionDigest = (
+  selection: TransactionSelection,
+  timeZone: string,
+  version: FeedApiVersion = 1,
+): string => {
+  const { spaceId, from, to, filters = {} } = selection;
+  const parts: unknown[] = [
+    spaceId,
+    from.getTime(),
+    to.getTime(),
+    timeZone,
+    filters.search?.trim() || null,
+    filters.transactionType ?? null,
+    filters.kind ?? null,
+    filters.categoryId ?? null,
+    filters.walletId ?? null,
+  ];
+
+  if (version === 2) {
+    parts.push('v2', filters.assignment ? assignmentKey(filters.assignment) : null);
+  }
+
+  return createHash('sha256').update(JSON.stringify(parts)).digest('base64url');
 };
 
 export const encodeFeedCursor = (cursor: FeedCursor, digest: string): string => {

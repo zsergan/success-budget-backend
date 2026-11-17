@@ -4,6 +4,7 @@ import { DataSource, QueryFailedError, type EntityManager, type Repository } fro
 
 import { TransactionsService } from './transactions.service';
 import { TransactionWrites } from './transaction-writes';
+import { TransactionFeedReader } from './transaction-feed-reader';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { toTransactionView } from './transaction-view';
@@ -31,7 +32,7 @@ describe('TransactionsService', () => {
     Pick<
       TransactionQueriesService,
       | 'getBalances'
-      | 'countForAllWallets'
+      | 'countSelection'
       | 'getLatest'
       | 'getOneInSpace'
       | 'getFeedPage'
@@ -68,7 +69,7 @@ describe('TransactionsService', () => {
     };
     transactionQueriesService = {
       getBalances: jest.fn(async (ids: number[]) => new Map(ids.map((id) => [id, 0n]))),
-      countForAllWallets: jest.fn(),
+      countSelection: jest.fn(),
       getLatest: jest.fn(),
       getOneInSpace: jest.fn(),
       getFeedPage: jest.fn().mockResolvedValue({ items: [], hasMore: false }),
@@ -132,6 +133,7 @@ describe('TransactionsService', () => {
       providers: [
         TransactionsService,
         TransactionWrites,
+        TransactionFeedReader,
         { provide: TransactionQueriesService, useValue: transactionQueriesService },
         { provide: WalletsService, useValue: walletsService },
         { provide: CategoriesService, useValue: categoriesService },
@@ -659,7 +661,7 @@ describe('TransactionsService', () => {
       spaceAccessService.assertMembership.mockRejectedValue(forbidden());
 
       await expect(service.count(userId, spaceId, from, to)).rejects.toMatchObject(forbidden());
-      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
+      expect(transactionQueriesService.countSelection).not.toHaveBeenCalled();
     });
 
     it('rejects from after to, before the access check', async () => {
@@ -668,11 +670,11 @@ describe('TransactionsService', () => {
         response: { message: [{ field: 'from', error: 'from must not be after to' }] },
       });
       expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
-      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
+      expect(transactionQueriesService.countSelection).not.toHaveBeenCalled();
     });
 
     it('accepts from equal to to', async () => {
-      transactionQueriesService.countForAllWallets.mockResolvedValue(0);
+      transactionQueriesService.countSelection.mockResolvedValue(0);
 
       await expect(service.count(userId, spaceId, from, from)).resolves.toEqual({ count: 0 });
     });
@@ -681,7 +683,7 @@ describe('TransactionsService', () => {
       categoriesService.getOne.mockResolvedValue(
         buildCategory({ id: 5, space_id: spaceId, is_active: 0, archived_at: new Date() }),
       );
-      transactionQueriesService.countForAllWallets.mockResolvedValue(7);
+      transactionQueriesService.countSelection.mockResolvedValue(7);
       const filters = { transactionType: TransactionType.EXPENSE, categoryId: 5, walletId: 1 };
 
       await expect(service.count(userId, spaceId, from, to, filters)).resolves.toEqual({ count: 7 });
@@ -689,7 +691,12 @@ describe('TransactionsService', () => {
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
       expect(categoriesService.getOne).toHaveBeenCalledWith(5);
       expect(walletsService.getOne).toHaveBeenCalledWith(1);
-      expect(transactionQueriesService.countForAllWallets).toHaveBeenCalledWith(spaceId, from, to, filters);
+      expect(transactionQueriesService.countSelection).toHaveBeenCalledWith({
+        spaceId,
+        from,
+        to,
+        filters: { ...filters, searchesWallets: true },
+      });
     });
 
     it.each([
@@ -703,7 +710,7 @@ describe('TransactionsService', () => {
         message: ErrorMessages.FORBIDDEN_CATEGORY,
         status: 403,
       });
-      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
+      expect(transactionQueriesService.countSelection).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -717,7 +724,7 @@ describe('TransactionsService', () => {
         message: ErrorMessages.FORBIDDEN_WALLET,
         status: 403,
       });
-      expect(transactionQueriesService.countForAllWallets).not.toHaveBeenCalled();
+      expect(transactionQueriesService.countSelection).not.toHaveBeenCalled();
     });
   });
 

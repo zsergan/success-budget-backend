@@ -2,6 +2,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
 import { CreateTransactionV2Dto, UpdateTransactionV2Dto } from './transaction-v2.dto';
+import { TransactionCountQueryV2Dto, TransactionFeedQueryV2Dto } from './transaction-feed-query-v2.dto';
 import { formatValidationErrors } from '../../../app.config';
 
 const fieldsOf = async <T extends object>(type: new () => T, plain: object) => {
@@ -60,5 +61,32 @@ describe('UpdateTransactionV2Dto', () => {
   it('refuses a null assignment and a wallet', async () => {
     expect(await fieldsOf(UpdateTransactionV2Dto, { assignment: null })).toEqual(['assignment']);
     expect(await fieldsOf(UpdateTransactionV2Dto, { wallet_id: 3 })).toEqual(['wallet_id']);
+  });
+});
+
+describe('TransactionFeedQueryV2Dto', () => {
+  const valid = { from: '2026-09-30T21:00:00.000Z', to: '2026-10-31T20:59:59.999Z', time_zone: 'Europe/Moscow' };
+
+  it.each(['space', 'unassigned', 'deleted_member', 'member:31'])('accepts the assignment %p', async (assignment) => {
+    expect(await fieldsOf(TransactionFeedQueryV2Dto, { ...valid, assignment })).toEqual([]);
+  });
+
+  it.each(['', 'member', 'member:0', 'wallet:3', 'Space', ['space', 'unassigned']])(
+    'refuses the assignment %p',
+    async (assignment) => {
+      expect(await fieldsOf(TransactionFeedQueryV2Dto, { ...valid, assignment })).toEqual(['assignment']);
+    },
+  );
+
+  it('refuses a wallet filter', async () => {
+    expect(await fieldsOf(TransactionFeedQueryV2Dto, { ...valid, wallet_id: '3' })).toEqual(['wallet_id']);
+  });
+
+  it('counts with required instants and no paging', async () => {
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { from: valid.from, to: valid.to, assignment: 'space' })).toEqual(
+      [],
+    );
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { to: valid.to })).toEqual(['from']);
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { ...valid, limit: '5' })).toEqual(['time_zone', 'limit']);
   });
 });

@@ -188,3 +188,61 @@ category_id, transaction_type, amount)`.
 
 No index on `description` or the names: a B-tree index cannot serve
 `LIKE '%…%'`, see [Search](#search).
+
+## Space-owned transactions
+
+Since `1791200000000-AddTransactionSpaceOwnership`
+([v2 contract](transactions-v2-contract.md)), every feed, count, summary,
+day total and statistics read selects records by their own `space_id`; the
+per-wallet branches above are gone. Two indexes serve them:
+
+- `IDX_transactions_space_timestamp_id (space_id, timestamp, id,
+category_id, transaction_type, amount, assignment_kind,
+assigned_user_id)`: the history order of a space and every aggregate,
+  index-only. A page walks it backwards from the period end and stops at
+  `limit + 1` rows.
+- `IDX_transactions_space_assignment (space_id, assignment_kind,
+assigned_user_id, timestamp, id, category_id, transaction_type, amount)`:
+  the same order within one assignment, for the `assignment` filter and the
+  breakdown by assignment. It is covering too: without the trailing
+  columns, MySQL read a whole unfiltered space through its `space_id`
+  prefix and looked up every row (an all-history summary took 274 ms
+  instead of 56 ms).
+
+`IDX_transactions_wallet_id_timestamp_id` stays for the v1 `wallet_id`
+filter, wallet balances and the wallet foreign key until wallets are
+removed.
+
+v1 search still matches wallet names. A join to `wallets` made MySQL drive
+the read from every wallet of the database, dropping the space range (a
+month search took 662 ms); the names are matched in a subquery of the
+space's wallets instead, and the plan stays on the space range.
+
+Measured as above (500,000 rows, 120,000 in the space; the space's records
+60 % assigned to the whole space, 25 % to its member, 15 % to nobody),
+median of 5 runs, ms. The wallet-index column is the "Queries + index"
+column of [Results](#results), measured on the data of the generator before
+it drew assignments, so its selections differ slightly:
+
+| Scenario                                            | Selection | Wallet index (above) | Space indexes |
+| --------------------------------------------------- | --------: | -------------------: | ------------: |
+| Month, first page                                   |     2,377 |                  9.6 |          10.9 |
+| Year, first page                                    |    28,722 |                   27 |            24 |
+| All history, home (`limit=5`)                       |   120,000 |                   67 |            64 |
+| All history, page 100,000 records deep              |   120,000 |                   73 |            70 |
+| Month, search "coffee"                              |       513 |                   25 |            18 |
+| Year, search "coffee"                               |     3,524 |                   98 |            94 |
+| All history, search "coffee"                        |    16,161 |                  279 |           270 |
+| All history, search with no match                   |         0 |                  266 |           270 |
+| All history, around a 2023 record                   |   120,000 |                   76 |            71 |
+| One day with 5,000 records, around the middle       |     5,001 |                   29 |            26 |
+| v2 month, `assignment=unassigned`                   |       413 |                    - |          11.5 |
+| v2 year, `assignment=member:<id>`                   |     7,229 |                    - |          12.2 |
+| v2 all history, `assignment=unassigned`, `limit=5`  |    17,889 |                    - |          18.4 |
+| v2 all history, `assignment=space`, search "coffee" |     9,138 |                    - |           169 |
+| v2 breakdown by assignment, a year                  |         - |                    - |            26 |
+
+The page query alone stays under 7 ms for every period; the all-history
+summary is 56 ms. Every page and aggregate plan is an index range scan or
+lookup on one of the two indexes, with no sort; the loaded rows are read by
+primary key. Reproduce with `npm run bench:feed -- --noise 380000`.
