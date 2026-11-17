@@ -116,4 +116,12 @@ describe('envValidationSchema', () => {
       }
     });
   });
+
+  it('enables v1 writes by default and takes only enabled or retired', () => {
+    expect(envValidationSchema.validate(validEnv).value.LEGACY_WRITES).toBe('enabled');
+    expect(envValidationSchema.validate({ ...validEnv, LEGACY_WRITES: 'retired' }).error).toBeUndefined();
+    expect(envValidationSchema.validate({ ...validEnv, LEGACY_WRITES: 'off' }).error?.message).toContain(
+      'LEGACY_WRITES',
+    );
+  });
 });

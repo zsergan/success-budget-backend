@@ -30,7 +30,7 @@ Until then every v1 route answers as before, except where
 | v2 feed and count with the `assignment` filter, `assignees`               | implemented |
 | v2 statistics summary, trend, breakdown `by_assignment`                   | implemented |
 | v1 reads and writes over the new schema; compatibility wallet             | implemented |
-| `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | planned     |
+| `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | implemented |
 | Release B removals                                                        | not started |
 
 Code: `src/modules/transactions` (`transactions-v2.controller.ts`,
@@ -45,7 +45,9 @@ Code: `src/modules/transactions` (`transactions-v2.controller.ts`,
 races with member removal, retries), `test/transactions-v2-reads.e2e-spec.ts`
 (filters, totals, DST, statistics, limits, OpenAPI),
 `test/transaction-ownership-migration.e2e-spec.ts` (the migration and its
-reconciliation), and the unit specs next to the code.
+reconciliation), `test/transaction-recovery.e2e-spec.ts` (pending writes of
+the installed build, `LEGACY_WRITES=retired`), and the unit specs next to the
+code.
 
 ## Versioning
 
@@ -659,7 +661,8 @@ A converted create records the authenticated user as the author
 (`source: 'recorded'`) and assigns the whole space, because the old body
 could not say whom it was for. The user may change the category of the
 restored draft (for example if it was archived since) and send it again
-with the same id: nothing committed under that id.
+with the same id and key: nothing committed under that id, and a refused
+request leaves no stored result under the key.
 
 **Fingerprints.** A key is scoped to its operation and version, so the
 converted request's key never meets the stored fingerprint of the v1

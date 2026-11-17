@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
@@ -8,7 +9,7 @@ import type { UpdateTransactionResult } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
 import type { AuthedRequest } from '@shared/types';
 import { withRelations } from '@shared/utils';
-import { buildCategory, buildTransaction, buildWallet } from '@testing';
+import { buildConfigService, buildCategory, buildTransaction, buildWallet } from '@testing';
 
 describe('TransactionsController', () => {
   let controller: TransactionsController;
@@ -18,6 +19,7 @@ describe('TransactionsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TransactionsController],
       providers: [
+        { provide: ConfigService, useValue: buildConfigService() },
         {
           provide: TransactionsService,
           useValue: {
