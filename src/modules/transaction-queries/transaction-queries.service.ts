@@ -4,11 +4,14 @@ import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { Wallet } from '@entities/wallet.entity';
+import { SpaceMember } from '@entities/space-member.entity';
 import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
 import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 
+// author and assignedUser carry only id and name; null when not loaded
+// (no such reference, or the account was deleted)
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
 export interface TransactionFilters {
@@ -154,22 +157,31 @@ export class TransactionQueriesService {
     return balances;
   }
 
-  // Scoped through the transaction's own wallet, soft-deleted included, so a
-  // transaction of another space is not found rather than forbidden.
+  // Scoped by the transaction's own space, so a transaction of another space
+  // is not found rather than forbidden.
   async getOneInSpace(
     spaceId: number,
     transactionId: string,
     manager?: EntityManager,
   ): Promise<LoadedTransaction | null> {
-    const transaction = await this.repository(manager)
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
+    const transaction = await this.loadQuery(manager)
       .where('transaction.id = :transactionId', { transactionId })
-      .andWhere('wallet.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.space_id = :spaceId', { spaceId })
       .getOne();
 
     return transaction && withRelations(transaction, 'wallet', 'category');
+  }
+
+  // the users who are members of the space now: the rest of the users a
+  // record names are former members
+  async getMemberUserIds(spaceId: number, manager?: EntityManager): Promise<Set<number>> {
+    const rows: { user_id: number }[] = await (manager ?? this.transactionRepository.manager)
+      .createQueryBuilder(SpaceMember, 'member')
+      .select('member.user_id', 'user_id')
+      .where('member.space_id = :spaceId', { spaceId })
+      .getRawMany();
+
+    return new Set(rows.map((row) => Number(row.user_id)));
   }
 
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
@@ -387,12 +399,9 @@ export class TransactionQueriesService {
     return transaction && { timestamp: transaction.timestamp, id: transaction.id };
   }
 
-  async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
-    const transaction = await this.transactionRepository
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
-      .where('wallet.space_id = :spaceId', { spaceId })
+  async getLatest(spaceId: number, manager?: EntityManager): Promise<LoadedTransaction | null> {
+    const transaction = await this.loadQuery(manager)
+      .where('transaction.space_id = :spaceId', { spaceId })
       .orderBy('transaction.timestamp', 'DESC')
       // Deterministic tie-break for the (now rare, since timestamp is
       // millisecond-precision) case of two transactions landing on the
@@ -549,12 +558,7 @@ export class TransactionQueriesService {
       return [];
     }
 
-    const rows = await this.repository(manager)
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
-      .where('transaction.id IN (:...ids)', { ids })
-      .getMany();
+    const rows = await this.loadQuery(manager).where('transaction.id IN (:...ids)', { ids }).getMany();
     const byId = new Map(rows.map((row) => [row.id, withRelations(row, 'wallet', 'category')]));
 
     return ids.map((id) => byId.get(id)!);
@@ -616,6 +620,19 @@ export class TransactionQueriesService {
 
   private repository(manager?: EntityManager): Repository<Transaction> {
     return manager?.getRepository(Transaction) ?? this.transactionRepository;
+  }
+
+  // A record with what every view needs: wallet, category, and the id and
+  // name of its author and assignee, never other user columns.
+  private loadQuery(manager?: EntityManager): SelectQueryBuilder<Transaction> {
+    return this.repository(manager)
+      .createQueryBuilder('transaction')
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
+      .leftJoin('transaction.author', 'author')
+      .addSelect(['author.id', 'author.name'])
+      .leftJoin('transaction.assignedUser', 'assignedUser')
+      .addSelect(['assignedUser.id', 'assignedUser.name']);
   }
 
   private statisticsTypeScope(

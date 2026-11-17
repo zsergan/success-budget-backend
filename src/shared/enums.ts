@@ -117,3 +117,10 @@ export enum AuthorSource {
   RECORDED = 'recorded',
   IMPORTED = 'imported',
 }
+
+// a user a transaction names, as seen from its space at read time
+export enum PersonStatus {
+  MEMBER = 'member',
+  FORMER_MEMBER = 'former_member',
+  DELETED = 'deleted',
+}

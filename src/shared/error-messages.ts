@@ -37,6 +37,9 @@ export const ErrorMessages = {
   TRANSACTION_OPERATION_EXISTS: 'A transaction was already created for this client_operation_id',
   TRANSACTION_OPERATION_NOT_FOUND: 'No transaction was created for this operation',
   IDEMPOTENCY_KEY_REUSED: 'This Idempotency-Key was already used for a different request',
+  ASSIGNEE_NOT_MEMBER: 'The chosen member is not a member of this space',
+  FORBIDDEN_MEMBER: 'This user is not and has not been assigned in this space',
+  LEGACY_API_RETIRED: 'This version of the app can no longer save changes; update the app',
 } as const;
 
 export type ErrorCode = keyof typeof ErrorMessages;

@@ -3,6 +3,7 @@ import { BadRequestException, HttpException } from '@nestjs/common';
 import { DataSource, QueryFailedError, type EntityManager, type Repository } from 'typeorm';
 
 import { TransactionsService } from './transactions.service';
+import { TransactionWrites } from './transaction-writes';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
 import type { UpdateTransactionDto } from './dto/update-transaction.dto';
 import { toTransactionView } from './transaction-view';
@@ -130,6 +131,7 @@ describe('TransactionsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TransactionsService,
+        TransactionWrites,
         { provide: TransactionQueriesService, useValue: transactionQueriesService },
         { provide: WalletsService, useValue: walletsService },
         { provide: CategoriesService, useValue: categoriesService },

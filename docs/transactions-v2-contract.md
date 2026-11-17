@@ -26,10 +26,10 @@ Until then every v1 route answers as before, except where
 | Part                                                                      | Status      |
 | ------------------------------------------------------------------------- | ----------- |
 | Schema: `space_id`, author, assignment, attribution source; history moved | implemented |
-| v2 create, edit, delete, details, latest, operation lookup                | planned     |
+| v2 create, edit, delete, details, latest, operation lookup                | implemented |
 | v2 feed and count with the `assignment` filter, `assignees`               | planned     |
 | v2 statistics summary, trend, breakdown `by_assignment`                   | planned     |
-| v1 reads and writes over the new schema; compatibility wallet             | planned     |
+| v1 reads and writes over the new schema; compatibility wallet             | implemented |
 | `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | planned     |
 | Release B removals                                                        | not started |
 

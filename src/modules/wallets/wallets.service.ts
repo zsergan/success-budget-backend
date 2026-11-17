@@ -143,7 +143,10 @@ export class WalletsService {
   async delete(userId: number, spaceId: number, walletId: number): Promise<void> {
     await this.write(userId, spaceId, async (manager) => {
       await this.lockSpaceWallet(manager, spaceId, walletId);
-      await manager.getRepository(Wallet).update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
+      // a deleted compatibility wallet is replaced on the next v2 create
+      await manager
+        .getRepository(Wallet)
+        .update({ id: walletId }, { is_deleted: 1, deleted_at: new Date(), compat_space_id: null });
     });
   }
 

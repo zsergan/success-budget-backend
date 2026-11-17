@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
@@ -54,6 +54,49 @@ export class SpaceAccessService {
     }
 
     return member;
+  }
+
+  // lockMembership() for the actor and other users of the space at once:
+  // shared locks on their member rows, ascending id like lockMembers(), so
+  // a member assigned by a write cannot leave before it commits. Returns the
+  // locked memberships by user; a user without one is not a member. A user
+  // who left and joined again between the read and the lock has a new row:
+  // the unit runs again to lock that one.
+  async lockMemberships(
+    spaceId: number,
+    actorId: number,
+    userIds: number[],
+    manager: EntityManager,
+  ): Promise<Map<number, SpaceMember>> {
+    const wanted = [...new Set([actorId, ...userIds])];
+    const found = await manager.getRepository(SpaceMember).find({
+      select: { id: true },
+      where: { space_id: spaceId, user_id: In(wanted) },
+    });
+    const locked = await lockRows(
+      manager,
+      SpaceMember,
+      found.map((member) => member.id),
+      'shared',
+    );
+    const byUser = new Map(
+      locked.filter((member) => member.space_id === spaceId).map((member) => [member.user_id, member]),
+    );
+
+    const missing = wanted.filter((userId) => !byUser.has(userId));
+
+    if (
+      missing.length &&
+      (await manager.getRepository(SpaceMember).exists({ where: { space_id: spaceId, user_id: In(missing) } }))
+    ) {
+      throw new LockSetChanged();
+    }
+
+    if (!byUser.has(actorId)) {
+      throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+    }
+
+    return byUser;
   }
 
   // Space-scoped invariants (one monthly total limit, one limit per category,

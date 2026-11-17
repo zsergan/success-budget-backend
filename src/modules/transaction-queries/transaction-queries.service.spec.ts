@@ -18,6 +18,7 @@ describe('TransactionQueriesService', () => {
       addSelect: jest.fn().mockReturnThis(),
       innerJoin: jest.fn().mockReturnThis(),
       innerJoinAndSelect: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       setParameter: jest.fn().mockReturnThis(),
@@ -344,7 +345,7 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getOneInSpace', () => {
-    it('loads the transaction with both relations, scoped by its wallet space', async () => {
+    it('loads the transaction with its relations, scoped by its own space', async () => {
       queryBuilder.getOne.mockResolvedValue(null);
 
       expect(await service.getOneInSpace(9, 'tx-1')).toBeNull();
@@ -352,7 +353,18 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 9 });
+    });
+
+    it('loads only the id and name of the author and the assignee', async () => {
+      queryBuilder.getOne.mockResolvedValue(null);
+
+      await service.getOneInSpace(9, 'tx-1');
+
+      expect(queryBuilder.leftJoin).toHaveBeenCalledWith('transaction.author', 'author');
+      expect(queryBuilder.addSelect).toHaveBeenCalledWith(['author.id', 'author.name']);
+      expect(queryBuilder.leftJoin).toHaveBeenCalledWith('transaction.assignedUser', 'assignedUser');
+      expect(queryBuilder.addSelect).toHaveBeenCalledWith(['assignedUser.id', 'assignedUser.name']);
     });
 
     it('reads through the given manager', async () => {
@@ -371,7 +383,7 @@ describe('TransactionQueriesService', () => {
 
       await service.getLatest(9);
 
-      expect(queryBuilder.where).toHaveBeenCalledWith('wallet.space_id = :spaceId', { spaceId: 9 });
+      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 9 });
       expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
       expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
       expect(queryBuilder.limit).toHaveBeenCalledWith(1);

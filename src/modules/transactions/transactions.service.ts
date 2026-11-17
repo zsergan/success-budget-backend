@@ -3,7 +3,6 @@ import { isUUID } from 'class-validator';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { TRANSACTION_OPERATION_SCOPE, TransactionOperation } from '@entities/transaction-operation.entity';
 import { Category } from '@entities/category.entity';
 import { Wallet, type WalletWithBalance } from '@entities/wallet.entity';
 import type { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -19,35 +18,26 @@ import type {
 } from './dto/transaction-responses';
 import { toTransactionView } from './transaction-view';
 import { type FeedCursor, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
+import { normalizeDescription } from './transaction-rules';
 import {
-  AMOUNT_NOT_POSITIVE,
-  TIMESTAMP_IN_FUTURE,
-  isNotInFuture,
-  isPositiveAmount,
-  normalizeDescription,
-} from './transaction-rules';
-import {
-  assertCategoryActive,
-  assertCategoryType,
   assertNotSystem,
   assertUserCategory,
   assertVersion,
   assertWalletActive,
   assertWalletInSpace,
 } from './transaction-checks';
+import { assertNewValues, changedFields } from './transaction-changes';
+import { TransactionWrites, type WriteOptions, requireVersion } from './transaction-writes';
 import { ApiException } from '@shared/api.exception';
 import { TransactionOperationStatus } from '@shared/enums';
 import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import {
   assertFound,
   formatMoney,
-  isDuplicateKey,
   lockRows,
   moneyToNumber,
-  parseMoney,
   readSnapshot,
   resolveTimeZone,
-  runWriteTransaction,
   toDate,
 } from '@shared/utils';
 import {
@@ -60,24 +50,15 @@ import {
 import { WalletsService } from '@modules/wallets/wallets.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
-import { IdempotencyService } from '@modules/idempotency/idempotency.service';
 import { calendarDateAt, endOfDay, formatCalendarDate, startOfDay } from '@modules/statistics/statistics-calendar';
 
-export interface WriteOptions {
-  idempotencyKey?: string;
-  // the version the client read (If-Match); required by update and delete
-  expectedVersion?: number;
-}
+export type { WriteOptions } from './transaction-writes';
 
 export interface CreateTransactionResult {
   transaction: TransactionView;
   wallet: WalletWithBalance;
   previous_balance: number;
 }
-
-type TransactionChanges = Partial<
-  Pick<Transaction, 'wallet_id' | 'category_id' | 'transaction_type' | 'amount' | 'timestamp' | 'description'>
->;
 
 // newest first, with whether the selection goes on past either end
 interface FeedWindow {
@@ -113,7 +94,7 @@ export class TransactionsService {
     private readonly walletsService: WalletsService,
     private readonly categoriesService: CategoriesService,
     private readonly spaceAccessService: SpaceAccessService,
-    private readonly idempotencyService: IdempotencyService,
+    private readonly writes: TransactionWrites,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -131,20 +112,22 @@ export class TransactionsService {
 
     const operationId = createTransactionDto.client_operation_id?.toLowerCase();
 
-    return this.write(userId, spaceId, idempotency, async (manager) => {
+    return this.writes.run(userId, spaceId, idempotency, async (manager) => {
       // before the domain checks: a create that already happened is reported
       // as such even if its wallet or category has changed since
       if (operationId !== undefined) {
-        await this.assertOperationUnused(manager, spaceId, operationId);
+        await this.writes.assertOperationUnused(manager, spaceId, operationId);
       }
 
       const [wallet] = await lockRows(manager, Wallet, [createTransactionDto.wallet_id], 'exclusive');
       assertWalletInSpace(wallet, spaceId);
       assertWalletActive(wallet);
-      const [category] = await lockRows(manager, Category, [createTransactionDto.category_id], 'shared');
-      assertUserCategory(category, spaceId);
-      assertCategoryActive(category);
-      assertCategoryType(category, createTransactionDto.transaction_type);
+      const category = await this.writes.lockNewCategory(
+        manager,
+        spaceId,
+        createTransactionDto.category_id,
+        createTransactionDto.transaction_type,
+      );
 
       // both balances are sums of history read under the wallet lock, before
       // and after the insert, not a computed difference
@@ -165,7 +148,7 @@ export class TransactionsService {
       );
 
       if (operationId !== undefined) {
-        await this.recordOperation(manager, spaceId, operationId, saved.id);
+        await this.writes.recordOperation(manager, spaceId, operationId, saved.id);
       }
 
       const balance = await this.getBalance(manager, wallet.id);
@@ -200,8 +183,8 @@ export class TransactionsService {
       payload: { transactionId, expectedVersion, body: updateTransactionDto },
     };
 
-    return this.write(userId, spaceId, idempotency, async (manager) => {
-      const original = await this.lockTransaction(manager, spaceId, transactionId);
+    return this.writes.run(userId, spaceId, idempotency, async (manager) => {
+      const original = await this.writes.lockTransaction(manager, spaceId, transactionId);
       assertNotSystem(original);
       assertVersion(original, expectedVersion);
 
@@ -217,28 +200,8 @@ export class TransactionsService {
         assertWalletActive(target);
       }
 
-      let category: Category = original.category;
-
-      if (changes.category_id !== undefined) {
-        const [target] = await lockRows(manager, Category, [changes.category_id], 'shared');
-        assertUserCategory(target, spaceId);
-        assertCategoryActive(target);
-        category = target;
-      }
-
-      if (changes.category_id !== undefined || changes.transaction_type !== undefined) {
-        assertCategoryType(category, changes.transaction_type ?? original.transaction_type);
-      }
-
-      if (Object.keys(changes).length > 0) {
-        // the update query also bumps the @VersionColumn
-        await manager
-          .createQueryBuilder()
-          .update(Transaction)
-          .set(changes)
-          .where('id = :id', { id: original.id })
-          .execute();
-      }
+      await this.writes.checkChangedCategory(manager, spaceId, original, changes);
+      await this.writes.applyChanges(manager, original.id, changes);
 
       const updated = await this.transactionQueriesService.getOneInSpace(spaceId, original.id, manager);
       assertFound(updated, 'TRANSACTION_NOT_FOUND');
@@ -358,17 +321,8 @@ export class TransactionsService {
       payload: { transactionId, expectedVersion },
     };
 
-    await this.write(userId, spaceId, idempotency, async (manager) => {
-      const transaction = await this.lockTransaction(manager, spaceId, transactionId);
-      assertNotSystem(transaction);
-      assertVersion(transaction, expectedVersion);
-      // its balance changes: writes to one wallet queue on its row
-      await lockRows(manager, Wallet, [transaction.wallet_id], 'exclusive');
-
-      await manager.getRepository(Transaction).delete(transaction.id);
-      await manager
-        .getRepository(TransactionOperation)
-        .update({ transaction_id: transaction.id }, { deleted_at: new Date() });
+    await this.writes.run(userId, spaceId, idempotency, async (manager) => {
+      await this.writes.deleteRecord(manager, spaceId, transactionId, expectedVersion);
 
       return true;
     });
@@ -384,19 +338,13 @@ export class TransactionsService {
     }
 
     return readSnapshot(this.dataSource, async (manager) => {
-      const operation = await manager
-        .getRepository(TransactionOperation)
-        .findOne({ where: { space_id: spaceId, operation_id: operationId.toLowerCase() } });
+      const found = await this.writes.readOperation(manager, spaceId, operationId);
 
-      if (!operation) {
+      if (!found) {
         throw new ApiException('TRANSACTION_OPERATION_NOT_FOUND', HttpStatus.NOT_FOUND);
       }
 
-      const transaction = await this.transactionQueriesService.getOneInSpace(
-        spaceId,
-        operation.transaction_id,
-        manager,
-      );
+      const { operation, transaction } = found;
 
       return {
         operation_id: operation.operation_id,
@@ -529,83 +477,10 @@ export class TransactionsService {
     };
   }
 
-  private async assertOperationUnused(manager: EntityManager, spaceId: number, operationId: string): Promise<void> {
-    const used = await manager
-      .getRepository(TransactionOperation)
-      .exists({ where: { space_id: spaceId, operation_id: operationId } });
-
-    if (used) {
-      throw new ApiException('TRANSACTION_OPERATION_EXISTS', HttpStatus.CONFLICT);
-    }
-  }
-
-  // The unique key settles a race the check above cannot see: a concurrent
-  // create with the same id makes this insert wait for it, then fail.
-  private async recordOperation(
-    manager: EntityManager,
-    spaceId: number,
-    operationId: string,
-    transactionId: string,
-  ): Promise<void> {
-    try {
-      await manager.getRepository(TransactionOperation).insert({
-        space_id: spaceId,
-        operation_id: operationId,
-        transaction_id: transactionId,
-        created_at: new Date(),
-        deleted_at: null,
-      });
-    } catch (error) {
-      if (isDuplicateKey(error, TRANSACTION_OPERATION_SCOPE)) {
-        throw new ApiException('TRANSACTION_OPERATION_EXISTS', HttpStatus.CONFLICT);
-      }
-
-      throw error;
-    }
-  }
-
   private async getBalance(manager: EntityManager, walletId: number): Promise<bigint> {
     const balances = await this.transactionQueriesService.getBalances([walletId], manager);
 
     return balances.get(walletId) ?? 0n;
-  }
-
-  private async lockTransaction(
-    manager: EntityManager,
-    spaceId: number,
-    transactionId: string,
-  ): Promise<LoadedTransaction> {
-    const [locked] = await lockRows(manager, Transaction, [transactionId], 'exclusive');
-    const transaction = locked
-      ? await this.transactionQueriesService.getOneInSpace(spaceId, transactionId, manager)
-      : null;
-    assertFound(transaction, 'TRANSACTION_NOT_FOUND');
-
-    return transaction;
-  }
-
-  // One DB transaction per write, locks taken in one order across the app:
-  // the acting member's row, the space row, the idempotency key, the
-  // transaction row, wallet rows by ascending id, category rows, the
-  // operation row. Access is
-  // checked under these locks, so a membership removed or a category archived
-  // meanwhile is seen, and a repeat with the same key gets the stored result.
-  private write<T>(
-    userId: number,
-    spaceId: number,
-    idempotency: { operation: string; key: string | undefined; payload: unknown },
-    work: (manager: EntityManager) => Promise<T>,
-  ): Promise<T> {
-    const { key } = idempotency;
-
-    return runWriteTransaction(this.dataSource, async (manager) => {
-      await this.spaceAccessService.lockMembership(spaceId, userId, manager);
-      await this.spaceAccessService.lockSpace(spaceId, manager, 'shared');
-
-      return key === undefined
-        ? work(manager)
-        : this.idempotencyService.run(manager, { ...idempotency, key, userId, spaceId }, () => work(manager));
-    });
   }
 
   // a list filter: any category of the space but the system one, archived included
@@ -626,56 +501,5 @@ export class TransactionsService {
     }
 
     return wallet;
-  }
-}
-
-function requireVersion({ expectedVersion }: WriteOptions): number {
-  if (expectedVersion === undefined) {
-    throw new ApiException('TRANSACTION_VERSION_REQUIRED', HttpStatus.PRECONDITION_REQUIRED);
-  }
-
-  return expectedVersion;
-}
-
-// Equality is by value: a field equal to the stored one is not a change.
-function changedFields(original: Transaction, dto: UpdateTransactionDto): TransactionChanges {
-  const changes: TransactionChanges = {};
-
-  if (dto.wallet_id !== undefined && dto.wallet_id !== original.wallet_id) {
-    changes.wallet_id = dto.wallet_id;
-  }
-
-  if (dto.category_id !== undefined && dto.category_id !== original.category_id) {
-    changes.category_id = dto.category_id;
-  }
-
-  if (dto.transaction_type !== undefined && dto.transaction_type !== original.transaction_type) {
-    changes.transaction_type = dto.transaction_type;
-  }
-
-  if (dto.amount !== undefined && parseMoney(dto.amount) !== parseMoney(original.amount)) {
-    changes.amount = dto.amount;
-  }
-
-  if (dto.timestamp !== undefined && toDate(dto.timestamp).getTime() !== original.timestamp.getTime()) {
-    changes.timestamp = toDate(dto.timestamp);
-  }
-
-  const description = normalizeDescription(dto.description);
-
-  if (dto.description !== undefined && description !== normalizeDescription(original.description)) {
-    changes.description = description;
-  }
-
-  return changes;
-}
-
-function assertNewValues(changes: TransactionChanges): void {
-  if (changes.amount !== undefined && !isPositiveAmount(changes.amount)) {
-    throw new BadRequestException([{ field: 'amount', error: AMOUNT_NOT_POSITIVE }]);
-  }
-
-  if (changes.timestamp !== undefined && !isNotInFuture(changes.timestamp.toISOString())) {
-    throw new BadRequestException([{ field: 'timestamp', error: TIMESTAMP_IN_FUTURE }]);
   }
 }

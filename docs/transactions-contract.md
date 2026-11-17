@@ -730,16 +730,20 @@ against neither, so the server guarantees the following.
 
 ### One DB transaction per write
 
-Every transaction write (`POST`, `PATCH`, `DELETE`) runs as one MySQL
+Every transaction write (`POST`, `PATCH`, `DELETE`, v1 and
+[v2](transactions-v2-contract.md#writes-and-concurrency)) runs as one MySQL
 transaction (`READ COMMITTED`) that does, in this order:
 
 1. lock the acting member's `space_members` row (shared) — the access check;
+   a v2 write that sets a member assignment locks the assignee's row with it,
+   both in ascending id order;
 2. lock the `spaces` row (shared);
 3. claim the `Idempotency-Key`, if sent;
 4. lock the transaction row (exclusive), read it and check its version —
    `PATCH`, `DELETE`;
 5. lock the wallet rows (exclusive, ascending id) — every wallet whose
-   balance the write changes;
+   balance the write changes; a v2 create locks, or first creates, the
+   space's compatibility wallet (Release A);
 6. lock the category rows (shared);
 7. check the domain rules, write, record the `client_operation_id` (a create
    with a used id waits here for the other create, then is refused), store
@@ -752,25 +756,25 @@ category archived by a request that committed first is seen and refused.
 **Lock order.** Every write that takes more than one of these locks takes
 them in the order above, so two writes never wait on each other crosswise:
 
-| Operation                                                                   | Locks, in order                                                                                       |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Transaction `POST` / `PATCH` / `DELETE`                                     | member (S), space (S), key, transaction (X), wallets (X, ascending id), categories (S), operation row |
-| Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                            |
-| Space create                                                                | key (with `Idempotency-Key`), then the new rows only                                                  |
-| Space delete, leave, member removal                                         | member rows (X, ascending id), space (X), then the set is checked; see below                          |
-| Invitation create                                                           | member (S), space (X), the new invitation                                                             |
-| Invitation resend                                                           | member (S), space (X), invitation (X)                                                                 |
-| Invitation revoke                                                           | member (S), invitation (X)                                                                            |
-| Invitation accept                                                           | space (X), invitation (X), the new member row; the recipient has no member row yet                    |
-| Invitation email attempt (background)                                       | invitation (X), one conditional update to claim and one to record the result; nothing held meanwhile  |
-| Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                     |
-| Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                  |
-| Password reset request                                                      | user (S) if the email has one, password reset challenge (X)                                           |
-| Password reset verify                                                       | user (S) if the email has one, password reset challenge (X)                                           |
-| Password reset complete                                                     | user (X), password reset challenge (X)                                                                |
-| Login (token issue)                                                         | user (S)                                                                                              |
-| Category catalog migration (maintenance)                                    | spaces (X, ascending id), categories (X), limit links (X), then the rows it rewrites                  |
-| TestFlight account provisioning (maintenance)                               | the new rows only; a concurrent run waits on the user's email key                                     |
+| Operation                                                                   | Locks, in order                                                                                                                                                                                            |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transaction `POST` / `PATCH` / `DELETE`, v1 and v2                          | member rows (S, ascending id: the actor's and a newly assigned member's), space (S), key, transaction (X), wallets (X, ascending id; a v2 create: the compatibility wallet), categories (S), operation row |
+| Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                                                                                                                                 |
+| Space create                                                                | key (with `Idempotency-Key`), then the new rows only                                                                                                                                                       |
+| Space delete, leave, member removal                                         | member rows (X, ascending id), space (X), then the set is checked; see below                                                                                                                               |
+| Invitation create                                                           | member (S), space (X), the new invitation                                                                                                                                                                  |
+| Invitation resend                                                           | member (S), space (X), invitation (X)                                                                                                                                                                      |
+| Invitation revoke                                                           | member (S), invitation (X)                                                                                                                                                                                 |
+| Invitation accept                                                           | space (X), invitation (X), the new member row; the recipient has no member row yet                                                                                                                         |
+| Invitation email attempt (background)                                       | invitation (X), one conditional update to claim and one to record the result; nothing held meanwhile                                                                                                       |
+| Wallet rename, delete                                                       | member (S), space (S), wallet (X)                                                                                                                                                                          |
+| Wallet create                                                               | member (S), space (S), the new rows; the system category (S) with an initial balance                                                                                                                       |
+| Password reset request                                                      | user (S) if the email has one, password reset challenge (X)                                                                                                                                                |
+| Password reset verify                                                       | user (S) if the email has one, password reset challenge (X)                                                                                                                                                |
+| Password reset complete                                                     | user (X), password reset challenge (X)                                                                                                                                                                     |
+| Login (token issue)                                                         | user (S)                                                                                                                                                                                                   |
+| Category catalog migration (maintenance)                                    | spaces (X, ascending id), categories (X), limit links (X), then the rows it rewrites                                                                                                                       |
+| TestFlight account provisioning (maintenance)                               | the new rows only; a concurrent run waits on the user's email key                                                                                                                                          |
 
 (S = shared, X = exclusive.) Consequences:
 
@@ -788,6 +792,15 @@ them in the order above, so two writes never wait on each other crosswise:
   member waits for their in-flight wallet write, and a write that starts
   after the removal committed is refused. Deleting a wallet waits for
   in-flight transaction writes to it.
+- A v2 write assigning a record to a member holds that member's row
+  (shared) until it commits. Removing the member locks every member row of
+  the space exclusively, so of the two exactly one goes first: the removal
+  waits and the record keeps its now former member, or the write sees the
+  membership gone and is refused with `ASSIGNEE_NOT_MEMBER`. Both lock member
+  rows before the space, in ascending id order.
+- Two first v2 creates of a space race to create its compatibility wallet;
+  the second waits on its unique key, rolls back and runs again with the
+  first one's wallet.
 - Moving a transaction between wallets locks both wallets in ascending id
   order, whichever is the source.
 - Invitation acceptance starts at the space row because the recipient
