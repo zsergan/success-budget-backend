@@ -111,6 +111,57 @@ describe('SpaceAccessService', () => {
     });
   });
 
+  describe('lockMemberships', () => {
+    const managerWith = (found: SpaceMember[], locked: SpaceMember[], existsNow = false) => {
+      const lockQuery = {
+        setLock: jest.fn().mockReturnThis(),
+        whereInIds: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(locked),
+      };
+      const repository = { find: jest.fn().mockResolvedValue(found), exists: jest.fn().mockResolvedValue(existsNow) };
+      const manager = {
+        getRepository: jest.fn().mockReturnValue(repository),
+        createQueryBuilder: jest.fn().mockReturnValue(lockQuery),
+      } as unknown as EntityManager;
+
+      return { manager, lockQuery, repository };
+    };
+    const actor = buildSpaceMember({ id: 4, space_id: 10, user_id: 1 });
+    const lena = buildSpaceMember({ id: 2, space_id: 10, user_id: 31 });
+
+    it('locks the actor and the other users shared, by ascending member id', async () => {
+      const { manager, lockQuery } = managerWith([actor, lena], [lena, actor]);
+
+      const members = await service.lockMemberships(10, 1, [31], manager);
+
+      expect(lockQuery.setLock).toHaveBeenCalledWith('pessimistic_read');
+      expect(lockQuery.whereInIds).toHaveBeenCalledWith([2, 4]);
+      expect([...members.keys()]).toEqual([31, 1]);
+    });
+
+    it('leaves out a user who is not a member', async () => {
+      const { manager } = managerWith([actor], [actor]);
+
+      const members = await service.lockMemberships(10, 1, [31], manager);
+
+      expect(members.has(31)).toBe(false);
+      expect(members.get(1)).toBe(actor);
+    });
+
+    it('runs the unit again for a user whose membership was replaced meanwhile', async () => {
+      const { manager } = managerWith([actor, lena], [actor], true);
+
+      await expect(service.lockMemberships(10, 1, [31], manager)).rejects.toBeInstanceOf(LockSetChanged);
+    });
+
+    it('rejects an actor who is not a member', async () => {
+      const { manager } = managerWith([lena], [lena]);
+
+      await expect(service.lockMemberships(10, 1, [31], manager)).rejects.toMatchObject(forbidden);
+    });
+  });
+
   describe('lockSpace', () => {
     const managerLocking = () => {
       const queryBuilder = {

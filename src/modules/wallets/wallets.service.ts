@@ -8,6 +8,7 @@ import { Category } from '@entities/category.entity';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import type { UpdateWalletDto } from './dto/update-wallet.dto';
 import { TransactionType } from '@shared/enums';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import {
   assertBelongsToSpace,
   assertFound,
@@ -111,7 +112,10 @@ export class WalletsService {
       const transactionRepository = manager.getRepository(Transaction);
       const saved = await transactionRepository.save(
         transactionRepository.create({
+          space_id: spaceId,
           wallet_id: wallet.id,
+          ...recordedAuthor(userId),
+          ...SPACE_ASSIGNMENT,
           category_id: systemCategory.id,
           transaction_type: TransactionType.INCOME,
           amount: createWalletDto.initial_balance,
@@ -139,7 +143,10 @@ export class WalletsService {
   async delete(userId: number, spaceId: number, walletId: number): Promise<void> {
     await this.write(userId, spaceId, async (manager) => {
       await this.lockSpaceWallet(manager, spaceId, walletId);
-      await manager.getRepository(Wallet).update({ id: walletId }, { is_deleted: 1, deleted_at: new Date() });
+      // a deleted compatibility wallet is replaced on the next v2 create
+      await manager
+        .getRepository(Wallet)
+        .update({ id: walletId }, { is_deleted: 1, deleted_at: new Date(), compat_space_id: null });
     });
   }
 

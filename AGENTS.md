@@ -14,7 +14,9 @@ local setup and seed users: `README.md`. Deploy runbook: `docs/deployment.md`.
   coverage thresholds live in `package.json`.
 - `npm run test:e2e` — needs `docker compose up -d` (MySQL + MailDev),
   `npm run migration:run`, `npm run verify:reference-data` and a valid
-  `.env`. Runs serially by design.
+  `.env`. Runs serially by design. It skips the specs that revert
+  migrations on the whole schema; `npm run test:e2e:migrations` runs those
+  on a disposable MySQL it starts in Docker.
 - `npm run build`, `npm run migration:show|run|revert`,
   `npm run migration:create`, `npm run seed`, `npm run schema:check`.
 
@@ -94,6 +96,11 @@ specs locally.
 
 - Currency belongs to `Space` only. Wallets and transactions have no
   currency, and there is no FX conversion.
+- A transaction belongs to its space (`space_id`), has a server-set author
+  that no edit changes, and is assigned to a member, the whole space or
+  nobody (`docs/transactions-v2-contract.md`). Until wallets are removed,
+  every record also keeps a wallet: v2 creates use the space's
+  compatibility wallet, which v2 never shows.
 - Wallet balance is derived (the sum of its transactions), never stored.
   An initial balance is an `income` transaction in the system category
   `Initial balance` (`Category.is_system`). It shows in history, cannot be
@@ -129,10 +136,10 @@ specs locally.
 
 ## API contracts
 
-- `docs/transactions-contract.md`, `docs/statistics-contract.md`,
-  `docs/type-contract.md`, `docs/password-reset-contract.md` and
-  `docs/invitations-contract.md` are the source of truth for the mobile
-  client.
+- `docs/transactions-contract.md`, `docs/transactions-v2-contract.md`,
+  `docs/statistics-contract.md`, `docs/type-contract.md`,
+  `docs/password-reset-contract.md` and `docs/invitations-contract.md` are
+  the source of truth for the mobile client.
   Change them in the same PR as the behavior they describe, and keep the
   contract e2e specs (`test/api-contract.e2e-spec.ts`,
   `test/type-contract.e2e-spec.ts`, ...) passing.

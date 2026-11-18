@@ -1,11 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import { AppColor } from '@shared/enums';
 import type { AuthedRequest } from '@shared/types';
-import { buildWallet } from '@testing';
+import { buildConfigService, buildWallet } from '@testing';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
@@ -15,6 +16,7 @@ describe('WalletsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WalletsController],
       providers: [
+        { provide: ConfigService, useValue: buildConfigService() },
         {
           provide: WalletsService,
           useValue: { create: jest.fn(), update: jest.fn(), getOverview: jest.fn(), delete: jest.fn() },

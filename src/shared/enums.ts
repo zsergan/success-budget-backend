@@ -104,3 +104,23 @@ export enum TransactionOperationStatus {
   APPLIED = 'applied',
   DELETED = 'deleted',
 }
+
+// who a transaction is for: one member, the whole space, or explicitly nobody
+export enum AssignmentKind {
+  MEMBER = 'member',
+  SPACE = 'space',
+  UNASSIGNED = 'unassigned',
+}
+
+// recorded: the authenticated creator; imported: filled in when wallets were retired
+export enum AuthorSource {
+  RECORDED = 'recorded',
+  IMPORTED = 'imported',
+}
+
+// a user a transaction names, as seen from its space at read time
+export enum PersonStatus {
+  MEMBER = 'member',
+  FORMER_MEMBER = 'former_member',
+  DELETED = 'deleted',
+}

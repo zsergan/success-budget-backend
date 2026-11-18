@@ -267,13 +267,17 @@ export class UsersService {
     const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: userId } });
     const space = await manager.getRepository(Space).findOneOrFail({ where: { id: spaceMember.space_id } });
 
-    await manager.getRepository(Wallet).save(
-      manager.getRepository(Wallet).create({
-        space_id: space.id,
-        wallet_name: 'Cash',
-        design: AppColor.SLATE,
-      }),
-    );
+    // Release A only: builds older than the v2 transactions API record
+    // nothing without a wallet; v2 needs none, and retired builds write none
+    if (this.configService.get('LEGACY_WRITES', { infer: true }) !== 'retired') {
+      await manager.getRepository(Wallet).save(
+        manager.getRepository(Wallet).create({
+          space_id: space.id,
+          wallet_name: 'Cash',
+          design: AppColor.SLATE,
+        }),
+      );
+    }
 
     await createDefaultCategories(manager, space.id);
   }

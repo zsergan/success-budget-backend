@@ -10,7 +10,7 @@ import { Transaction } from '@entities/transaction.entity';
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
-import { AppColor, TransactionType } from '@shared/enums';
+import { AppColor, AssignmentKind, AuthorSource, TransactionType } from '@shared/enums';
 import { withRelations } from '@shared/utils';
 import type { CreateWalletDto } from './dto/create-wallet.dto';
 import { buildCategory, buildCurrency, buildSpace, buildSpaceMember, buildWallet } from '@testing';
@@ -179,6 +179,11 @@ describe('WalletsService', () => {
         spaceId: 5,
       });
       expect(transactionRepositoryInTx.create).toHaveBeenCalledWith({
+        space_id: 5,
+        author_user_id: userId,
+        author_source: AuthorSource.RECORDED,
+        assignment_kind: AssignmentKind.SPACE,
+        assigned_user_id: null,
         wallet_id: 7,
         category_id: 3,
         transaction_type: TransactionType.INCOME,

@@ -6,6 +6,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
@@ -13,6 +14,7 @@ import { Space } from './space.entity';
 import { AppColor } from '@shared/enums';
 
 @Entity('wallets')
+@Index('UQ_wallets_compat_space', ['compat_space_id'], { unique: true })
 export class Wallet {
   @PrimaryGeneratedColumn()
   id!: number;
@@ -34,6 +36,12 @@ export class Wallet {
   @Exclude()
   @Column({ type: 'timestamp', nullable: true })
   deleted_at!: Date | null;
+
+  // Release A only: the space whose v2 records this wallet holds, so that v1
+  // clients can read them; null for every other wallet and once deleted
+  @Exclude()
+  @Column({ type: 'int', nullable: true })
+  compat_space_id!: number | null;
 
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id' })

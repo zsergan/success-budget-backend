@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 
 import { FEED_CURSOR_MAX_LENGTH, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
+import { AssignmentKind } from '@shared/enums';
 import type { TransactionSelection } from '@modules/transaction-queries/transaction-queries.service';
 import { TransactionKind, TransactionType } from '@shared/enums';
 
@@ -98,5 +99,22 @@ describe('feed cursor', () => {
     ['too long', 'A'.repeat(FEED_CURSOR_MAX_LENGTH + 1)],
   ])('refuses a cursor that is %s', (_, value) => {
     expect(errorOf(() => decodeFeedCursor(value, digest))).toEqual([{ field: 'cursor', error: 'cursor is malformed' }]);
+  });
+});
+
+describe('selectionDigest versions', () => {
+  const selection = { spaceId: 1, from: new Date('2026-10-01'), to: new Date('2026-10-31') };
+
+  it('keeps a v1 cursor apart from a v2 one for the same query', () => {
+    expect(selectionDigest(selection, 'UTC', 2)).not.toBe(selectionDigest(selection, 'UTC', 1));
+    expect(selectionDigest(selection, 'UTC')).toBe(selectionDigest(selection, 'UTC', 1));
+  });
+
+  it('binds a v2 cursor to its assignment filter', () => {
+    const lena = { ...selection, filters: { assignment: { kind: AssignmentKind.MEMBER, userId: 31 } as const } };
+    const space = { ...selection, filters: { assignment: { kind: AssignmentKind.SPACE } as const } };
+
+    expect(selectionDigest(lena, 'UTC', 2)).not.toBe(selectionDigest(space, 'UTC', 2));
+    expect(selectionDigest(lena, 'UTC', 2)).not.toBe(selectionDigest(selection, 'UTC', 2));
   });
 });

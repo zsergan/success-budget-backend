@@ -10,8 +10,9 @@ import { Transaction } from '@entities/transaction.entity';
 import { Limit } from '@entities/limit.entity';
 import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/space-setup';
 import { IsNewPassword } from '@shared/decorators/is-new-password.decorator';
-import { AppColor, LimitType, SpaceType, TransactionType } from '@shared/enums';
+import { AppColor, AssignmentKind, LimitType, SpaceType, TransactionType } from '@shared/enums';
 import { isDuplicateKey, runWriteTransaction } from '@shared/utils';
+import { recordedAuthor } from '@shared/transaction-ownership';
 
 export const TESTFLIGHT_USER_NAME = 'TestFlight Demo';
 
@@ -32,22 +33,115 @@ interface SampleTransaction {
   // in the past, and this month's spending shows against the limit
   at: number;
   description: string;
+  // the account's own spending, shared household costs, and one left open
+  assignment: AssignmentKind;
 }
 
 export const SAMPLE_TRANSACTIONS: readonly SampleTransaction[] = [
-  { type: TransactionType.INCOME, category: 'Salary', amount: '3200.00', at: 0.04, description: 'Monthly salary' },
-  { type: TransactionType.EXPENSE, category: 'Housing', amount: '1150.00', at: 0.06, description: 'Rent' },
-  { type: TransactionType.EXPENSE, category: 'Groceries', amount: '72.35', at: 0.1, description: 'Supermarket' },
-  { type: TransactionType.EXPENSE, category: 'Utilities', amount: '86.40', at: 0.12, description: 'Electricity' },
-  { type: TransactionType.EXPENSE, category: 'Eating out', amount: '18.60', at: 0.18, description: 'Lunch' },
-  { type: TransactionType.EXPENSE, category: 'Subscriptions', amount: '11.99', at: 0.22, description: 'Music' },
-  { type: TransactionType.EXPENSE, category: 'Transport', amount: '35.00', at: 0.3, description: 'Transit pass' },
-  { type: TransactionType.EXPENSE, category: 'Groceries', amount: '54.10', at: 0.38, description: 'Farmers market' },
-  { type: TransactionType.EXPENSE, category: 'Entertainment', amount: '24.00', at: 0.47, description: 'Cinema' },
-  { type: TransactionType.INCOME, category: 'Freelance', amount: '480.00', at: 0.52, description: 'Website fixes' },
-  { type: TransactionType.EXPENSE, category: 'Groceries', amount: '63.25', at: 0.66, description: 'Supermarket' },
-  { type: TransactionType.EXPENSE, category: 'Eating out', amount: '42.80', at: 0.74, description: 'Dinner' },
-  { type: TransactionType.EXPENSE, category: 'Health', amount: '15.20', at: 0.85, description: 'Pharmacy' },
+  {
+    type: TransactionType.INCOME,
+    category: 'Salary',
+    amount: '3200.00',
+    at: 0.04,
+    description: 'Monthly salary',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Housing',
+    amount: '1150.00',
+    at: 0.06,
+    description: 'Rent',
+    assignment: AssignmentKind.SPACE,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Groceries',
+    amount: '72.35',
+    at: 0.1,
+    description: 'Supermarket',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Utilities',
+    amount: '86.40',
+    at: 0.12,
+    description: 'Electricity',
+    assignment: AssignmentKind.SPACE,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Eating out',
+    amount: '18.60',
+    at: 0.18,
+    description: 'Lunch',
+    assignment: AssignmentKind.UNASSIGNED,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Subscriptions',
+    amount: '11.99',
+    at: 0.22,
+    description: 'Music',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Transport',
+    amount: '35.00',
+    at: 0.3,
+    description: 'Transit pass',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Groceries',
+    amount: '54.10',
+    at: 0.38,
+    description: 'Farmers market',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Entertainment',
+    amount: '24.00',
+    at: 0.47,
+    description: 'Cinema',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.INCOME,
+    category: 'Freelance',
+    amount: '480.00',
+    at: 0.52,
+    description: 'Website fixes',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Groceries',
+    amount: '63.25',
+    at: 0.66,
+    description: 'Supermarket',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Eating out',
+    amount: '42.80',
+    at: 0.74,
+    description: 'Dinner',
+    assignment: AssignmentKind.MEMBER,
+  },
+  {
+    type: TransactionType.EXPENSE,
+    category: 'Health',
+    amount: '15.20',
+    at: 0.85,
+    description: 'Pharmacy',
+    assignment: AssignmentKind.MEMBER,
+  },
 ];
 
 export const SAMPLE_LIMIT = { category: 'Groceries', amount: '400.00' };
@@ -166,7 +260,11 @@ async function createAccount(manager: EntityManager, input: TestFlightAccountInp
   await transactionRepository.save(
     SAMPLE_TRANSACTIONS.map((sample) =>
       transactionRepository.create({
+        space_id: space.id,
         wallet_id: wallet.id,
+        ...recordedAuthor(user.id),
+        assignment_kind: sample.assignment,
+        assigned_user_id: sample.assignment === AssignmentKind.MEMBER ? user.id : null,
         category_id: categoryId(sample.type, sample.category),
         transaction_type: sample.type,
         amount: sample.amount,

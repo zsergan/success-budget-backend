@@ -1,10 +1,10 @@
 import type { Category } from '@entities/category.entity';
 import type { Transaction } from '@entities/transaction.entity';
 import type { Wallet } from '@entities/wallet.entity';
-import { TransactionKind } from '@shared/enums';
+import { AssignmentKind, AuthorSource, PersonStatus, TransactionKind } from '@shared/enums';
 import { withRelations } from '@shared/utils';
-import { buildCategory, buildTransaction, buildWallet } from '@testing';
-import { toTransactionView } from './transaction-view';
+import { buildCategory, buildTransaction, buildUser, buildWallet } from '@testing';
+import { toTransactionView, toTransactionViewV2 } from './transaction-view';
 
 describe('toTransactionView', () => {
   const view = (
@@ -76,5 +76,82 @@ describe('toTransactionView', () => {
 
   it('carries the stored amount and version', () => {
     expect(view({ amount: '12.30', version: 4 })).toEqual(expect.objectContaining({ amount: '12.30', version: 4 }));
+  });
+});
+
+describe('toTransactionViewV2', () => {
+  const members = new Set([7, 31]);
+  const view = (transaction: Partial<Transaction> = {}, category: Partial<Category> = {}) =>
+    toTransactionViewV2(
+      withRelations(
+        buildTransaction({ wallet: buildWallet(), category: buildCategory(category), ...transaction }),
+        'wallet',
+        'category',
+      ),
+      members,
+    );
+
+  it('lists exactly the public fields: no wallet, the author and the assignment', () => {
+    expect(Object.keys(view()).sort()).toEqual([
+      'amount',
+      'assignment',
+      'author',
+      'category',
+      'description',
+      'id',
+      'kind',
+      'timestamp',
+      'transaction_type',
+      'version',
+    ]);
+  });
+
+  it('resolves the author against the members of the space now', () => {
+    const author = (author_user_id: number | null, source = AuthorSource.RECORDED) =>
+      view({ author_user_id, author_source: source, author: author_user_id ? buildUser({ name: 'Lena' }) : null })
+        .author;
+
+    expect(author(31)).toEqual({ user_id: 31, name: 'Lena', status: PersonStatus.MEMBER, source: 'recorded' });
+    expect(author(44, AuthorSource.IMPORTED)).toEqual({
+      user_id: 44,
+      name: 'Lena',
+      status: PersonStatus.FORMER_MEMBER,
+      source: 'imported',
+    });
+    expect(author(null)).toEqual({ user_id: null, name: null, status: PersonStatus.DELETED, source: 'recorded' });
+  });
+
+  it('keeps a member assignment to a deleted account apart from an unassigned record', () => {
+    const assignment = (overrides: Partial<Transaction>) => view(overrides).assignment;
+
+    expect(
+      assignment({
+        assignment_kind: AssignmentKind.MEMBER,
+        assigned_user_id: 7,
+        assignedUser: buildUser({ name: 'Zakhar' }),
+      }),
+    ).toEqual({ kind: 'member', user_id: 7, name: 'Zakhar', status: PersonStatus.MEMBER });
+    expect(assignment({ assignment_kind: AssignmentKind.MEMBER, assigned_user_id: null })).toEqual({
+      kind: 'member',
+      user_id: null,
+      name: null,
+      status: PersonStatus.DELETED,
+    });
+    expect(assignment({ assignment_kind: AssignmentKind.UNASSIGNED, assigned_user_id: null })).toEqual({
+      kind: 'unassigned',
+      user_id: null,
+      name: null,
+      status: null,
+    });
+    expect(assignment({ assignment_kind: AssignmentKind.SPACE })).toEqual({
+      kind: 'space',
+      user_id: null,
+      name: null,
+      status: null,
+    });
+  });
+
+  it('marks the initial balance by the system category', () => {
+    expect(view({}, { is_system: 1 }).kind).toBe(TransactionKind.INITIAL_BALANCE);
   });
 });

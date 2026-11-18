@@ -3,21 +3,29 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { Wallet } from '@entities/wallet.entity';
-import { AppColor, TransactionKind, TransactionType } from '@shared/enums';
+import { SpaceMember } from '@entities/space-member.entity';
+import { AppColor, AssignmentKind, TransactionKind, TransactionType } from '@shared/enums';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
 import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
+import { type AssignmentFilter, DELETED_MEMBER_KEY } from './assignment-filter';
 
+// author and assignedUser carry only id and name; null when not loaded
+// (no such reference, or the account was deleted)
 export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
 
 export interface TransactionFilters {
   transactionType?: TransactionType;
   kind?: TransactionKind;
   categoryId?: number;
+  // v1 only
   walletId?: number;
+  // v2 only
+  assignment?: AssignmentFilter;
   // trimmed here too; blank means no text condition
   search?: string;
+  // v1 searches wallet names too; v2 only descriptions and category names
+  searchesWallets?: boolean;
 }
 
 // What the history and the feed select: one space, both bounds inclusive.
@@ -110,6 +118,23 @@ export interface StatisticsWalletGroup {
   count: number;
 }
 
+// One assignment group: a user (member or former member), the whole space,
+// nobody, or every user whose account was deleted.
+export interface StatisticsAssignmentGroup {
+  kind: AssignmentKind | typeof DELETED_MEMBER_KEY;
+  userId: number | null;
+  name: string | null;
+  isMember: boolean;
+  // in cents
+  amount: bigint;
+  count: number;
+}
+
+export interface SpacePerson {
+  userId: number;
+  name: string;
+}
+
 // in cents
 export interface StatisticsTotals {
   income: bigint;
@@ -154,22 +179,31 @@ export class TransactionQueriesService {
     return balances;
   }
 
-  // Scoped through the transaction's own wallet, soft-deleted included, so a
-  // transaction of another space is not found rather than forbidden.
+  // Scoped by the transaction's own space, so a transaction of another space
+  // is not found rather than forbidden.
   async getOneInSpace(
     spaceId: number,
     transactionId: string,
     manager?: EntityManager,
   ): Promise<LoadedTransaction | null> {
-    const transaction = await this.repository(manager)
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
+    const transaction = await this.loadQuery(manager)
       .where('transaction.id = :transactionId', { transactionId })
-      .andWhere('wallet.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.space_id = :spaceId', { spaceId })
       .getOne();
 
     return transaction && withRelations(transaction, 'wallet', 'category');
+  }
+
+  // the users who are members of the space now: the rest of the users a
+  // record names are former members
+  async getMemberUserIds(spaceId: number, manager?: EntityManager): Promise<Set<number>> {
+    const rows: { user_id: number }[] = await (manager ?? this.transactionRepository.manager)
+      .createQueryBuilder(SpaceMember, 'member')
+      .select('member.user_id', 'user_id')
+      .where('member.space_id = :spaceId', { spaceId })
+      .getRawMany();
+
+    return new Set(rows.map((row) => Number(row.user_id)));
   }
 
   // one aggregated query for GET /spaces/:spaceId/wallets - the period
@@ -210,10 +244,8 @@ export class TransactionQueriesService {
   }
 
   // one aggregated query for GET /spaces/:spaceId/limits - every category's
-  // expense spend for the period, grouped in SQL. Joined to wallet only to
-  // scope by space_id (still includes deleted-wallet history, since limits
-  // track space spend, not per-wallet); no wallet/category entities loaded.
-  // Sums are in cents.
+  // expense spend for the period, grouped in SQL: every expense of the space,
+  // whoever it is assigned to and whatever its wallet. Sums are in cents.
   async getExpensesByCategory(
     spaceId: number,
     from: Date,
@@ -222,10 +254,9 @@ export class TransactionQueriesService {
   ): Promise<Map<number, bigint>> {
     const rows = await this.repository(manager)
       .createQueryBuilder('transaction')
-      .innerJoin('transaction.wallet', 'wallet')
       .select('transaction.category_id', 'category_id')
       .addSelect('SUM(transaction.amount)', 'spent')
-      .where('wallet.space_id = :spaceId', { spaceId })
+      .where('transaction.space_id = :spaceId', { spaceId })
       .andWhere('transaction.transaction_type = :expense', { expense: TransactionType.EXPENSE })
       .andWhere('transaction.timestamp >= :from', { from })
       .andWhere('transaction.timestamp <= :to', { to })
@@ -236,59 +267,41 @@ export class TransactionQueriesService {
   }
 
   // the number of records the feed pages through for the same selection
-  async countForAllWallets(spaceId: number, from: Date, to: Date, filters: TransactionFilters = {}): Promise<number> {
-    const selection = { spaceId, from, to, filters };
-    const walletIds = await this.selectionWallets(selection);
-
-    return walletIds.length === 0 ? 0 : this.selectionScope(selection, walletIds).getCount();
+  async countSelection(selection: TransactionSelection, manager?: EntityManager): Promise<number> {
+    return this.selectionScope(selection, manager).getCount();
   }
 
   // Up to `limit` records of the selection next to a position, in the
   // history order. One more is read to tell whether the direction goes on.
-  // Each wallet is read as its own branch: with a constant wallet_id, MySQL
-  // walks (wallet_id, timestamp, id) in index order and stops at the limit,
-  // so the cost does not grow with the history; only the branches' heads are
-  // sorted together.
+  // With the space as a constant, MySQL walks (space_id, timestamp, id) in
+  // index order and stops at the limit, so the cost does not grow with the
+  // history; an assignment filter walks its own index the same way.
   async getFeedPage(
     selection: TransactionSelection,
     page: FeedPageRequest,
     manager?: EntityManager,
   ): Promise<FeedPage> {
-    const walletIds = await this.selectionWallets(selection, manager);
-
-    if (walletIds.length === 0) {
-      return { items: [], hasMore: false };
-    }
-
     const newer = page.before !== undefined;
     const position = page.before ?? page.after;
     const direction = newer ? 'ASC' : 'DESC';
-    const branches = walletIds.map((walletId) => {
-      const branch = this.selectionScope(selection, [walletId], manager)
-        .select('transaction.id', 'id')
-        .addSelect('transaction.timestamp', 'timestamp');
+    const query = this.selectionScope(selection, manager)
+      .select('transaction.id', 'id')
+      .addSelect('transaction.timestamp', 'timestamp');
 
-      if (position) {
-        const operator = newer ? '>' : '<';
-        branch.andWhere(
-          `transaction.timestamp ${operator}= :positionTimestamp AND ` +
-            `(transaction.timestamp ${operator} :positionTimestamp OR transaction.id ${operator} :positionId)`,
-          { positionTimestamp: position.timestamp, positionId: position.id },
-        );
-      }
+    if (position) {
+      const operator = newer ? '>' : '<';
+      query.andWhere(
+        `transaction.timestamp ${operator}= :positionTimestamp AND ` +
+          `(transaction.timestamp ${operator} :positionTimestamp OR transaction.id ${operator} :positionId)`,
+        { positionTimestamp: position.timestamp, positionId: position.id },
+      );
+    }
 
-      return branch
-        .orderBy('transaction.timestamp', direction)
-        .addOrderBy('transaction.id', direction)
-        .limit(page.limit + 1)
-        .getQueryAndParameters();
-    });
-
-    const rows: { id: string }[] = await (manager ?? this.transactionRepository.manager).query(
-      `SELECT page.id FROM (${branches.map(([sql]) => `(${sql})`).join(' UNION ALL ')}) page ` +
-        `ORDER BY page.\`timestamp\` ${direction}, page.id ${direction} LIMIT ${page.limit + 1}`,
-      branches.flatMap(([, parameters]) => parameters),
-    );
+    const rows = await query
+      .orderBy('transaction.timestamp', direction)
+      .addOrderBy('transaction.id', direction)
+      .limit(page.limit + 1)
+      .getRawMany<{ id: string }>();
     const ids = rows.slice(0, page.limit).map((row) => row.id);
     const items = await this.loadInOrder(ids, manager);
 
@@ -296,13 +309,7 @@ export class TransactionQueriesService {
   }
 
   async getFeedSummary(selection: TransactionSelection, manager?: EntityManager): Promise<FeedSummary> {
-    const walletIds = await this.selectionWallets(selection, manager);
-
-    if (walletIds.length === 0) {
-      return { count: 0, income: 0n, expense: 0n };
-    }
-
-    const row = await this.selectionScope(selection, walletIds, manager)
+    const row = await this.selectionScope(selection, manager)
       .select('COUNT(*)', 'count')
       .addSelect(
         'SUM(CASE WHEN category.is_system = 0 AND transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)',
@@ -332,14 +339,13 @@ export class TransactionQueriesService {
     manager?: EntityManager,
   ): Promise<bigint[]> {
     const nets = intervals.map(() => 0n);
-    const walletIds = intervals.length === 0 ? [] : await this.selectionWallets(selection, manager);
 
-    if (walletIds.length === 0) {
+    if (intervals.length === 0) {
       return nets;
     }
 
     const within = (i: number) => `transaction.timestamp BETWEEN :intervalFrom${i} AND :intervalTo${i}`;
-    const rows = await this.selectionScope(selection, walletIds, manager)
+    const rows = await this.selectionScope(selection, manager)
       .select(`CASE ${intervals.map((_, i) => `WHEN ${within(i)} THEN ${i}`).join(' ')} END`, 'interval_index')
       .addSelect(
         'SUM(CASE WHEN category.is_system = 1 THEN 0 ' +
@@ -373,13 +379,7 @@ export class TransactionQueriesService {
     transactionId: string,
     manager?: EntityManager,
   ): Promise<FeedPosition | null> {
-    const walletIds = await this.selectionWallets(selection, manager);
-
-    if (walletIds.length === 0) {
-      return null;
-    }
-
-    const transaction = await this.selectionScope(selection, walletIds, manager)
+    const transaction = await this.selectionScope(selection, manager)
       .select(['transaction.id', 'transaction.timestamp'])
       .andWhere('transaction.id = :transactionId', { transactionId })
       .getOne();
@@ -387,12 +387,9 @@ export class TransactionQueriesService {
     return transaction && { timestamp: transaction.timestamp, id: transaction.id };
   }
 
-  async getLatest(spaceId: number): Promise<LoadedTransaction | null> {
-    const transaction = await this.transactionRepository
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
-      .where('wallet.space_id = :spaceId', { spaceId })
+  async getLatest(spaceId: number, manager?: EntityManager): Promise<LoadedTransaction | null> {
+    const transaction = await this.loadQuery(manager)
+      .where('transaction.space_id = :spaceId', { spaceId })
       .orderBy('transaction.timestamp', 'DESC')
       // Deterministic tie-break for the (now rare, since timestamp is
       // millisecond-precision) case of two transactions landing on the
@@ -492,6 +489,7 @@ export class TransactionQueriesService {
     manager: EntityManager,
   ): Promise<StatisticsWalletGroup[]> {
     const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
+      .innerJoin('transaction.wallet', 'wallet')
       .select('wallet.id', 'id')
       .addSelect('wallet.wallet_name', 'name')
       .addSelect('wallet.design', 'design')
@@ -518,6 +516,110 @@ export class TransactionQueriesService {
     }));
   }
 
+  // Per assignment: each user once (members and former members alike), the
+  // whole space, nobody, and every deleted account together. A user's name
+  // and membership are read in the same snapshot as the sums.
+  async getStatisticsByAssignment(
+    spaceId: number,
+    transactionType: TransactionType,
+    from: Date,
+    to: Date,
+    manager: EntityManager,
+  ): Promise<StatisticsAssignmentGroup[]> {
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
+      .leftJoin('transaction.assignedUser', 'assignedUser')
+      .leftJoin(
+        SpaceMember,
+        'member',
+        'member.space_id = transaction.space_id AND member.user_id = transaction.assigned_user_id',
+      )
+      .select('transaction.assignment_kind', 'kind')
+      .addSelect('transaction.assigned_user_id', 'user_id')
+      .addSelect('MAX(assignedUser.name)', 'name')
+      .addSelect('MAX(member.id)', 'member_id')
+      .addSelect('SUM(transaction.amount)', 'amount')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('transaction.assignment_kind')
+      .addGroupBy('transaction.assigned_user_id')
+      .getRawMany<{
+        kind: AssignmentKind;
+        user_id: number | string | null;
+        name: string | null;
+        member_id: number | string | null;
+        amount: string;
+        count: number | string;
+      }>();
+
+    return rows.map((row) => {
+      const userId = row.user_id === null ? null : Number(row.user_id);
+      const deleted = row.kind === AssignmentKind.MEMBER && userId === null;
+
+      return {
+        kind: deleted ? DELETED_MEMBER_KEY : row.kind,
+        userId,
+        name: row.name,
+        isMember: row.member_id !== null,
+        amount: parseMoney(row.amount),
+        count: Number(row.count),
+      };
+    });
+  }
+
+  // the members of the space now, in joining order
+  async getMembers(spaceId: number, manager?: EntityManager): Promise<SpacePerson[]> {
+    const rows: { user_id: number; name: string }[] = await (manager ?? this.transactionRepository.manager)
+      .createQueryBuilder(SpaceMember, 'member')
+      .innerJoin('member.user', 'user')
+      .select('member.user_id', 'user_id')
+      .addSelect('user.name', 'name')
+      .where('member.space_id = :spaceId', { spaceId })
+      .orderBy('member.created_at', 'ASC')
+      .addOrderBy('member.id', 'ASC')
+      .getRawMany();
+
+    return rows.map((row) => ({ userId: Number(row.user_id), name: row.name }));
+  }
+
+  // every existing user with a record of the space assigned to them
+  async getAssignedUsers(spaceId: number, manager?: EntityManager): Promise<SpacePerson[]> {
+    const rows: { user_id: number; name: string }[] = await this.repository(manager)
+      .createQueryBuilder('transaction')
+      .innerJoin('transaction.assignedUser', 'assignedUser')
+      .select('transaction.assigned_user_id', 'user_id')
+      .addSelect('MAX(assignedUser.name)', 'name')
+      .where('transaction.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.assignment_kind = :member', { member: AssignmentKind.MEMBER })
+      .groupBy('transaction.assigned_user_id')
+      .getRawMany();
+
+    return rows.map((row) => ({ userId: Number(row.user_id), name: row.name }));
+  }
+
+  // some record of the space is assigned to an account deleted since
+  async hasDeletedAssignees(spaceId: number, manager?: EntityManager): Promise<boolean> {
+    return this.repository(manager)
+      .createQueryBuilder('transaction')
+      .where('transaction.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.assignment_kind = :member', { member: AssignmentKind.MEMBER })
+      .andWhere('transaction.assigned_user_id IS NULL')
+      .getExists();
+  }
+
+  // A member filter may name a member or anyone a record of the space is
+  // assigned to, so former members stay filterable.
+  async isKnownAssignee(spaceId: number, userId: number): Promise<boolean> {
+    if ((await this.getMemberUserIds(spaceId)).has(userId)) {
+      return true;
+    }
+
+    return this.transactionRepository
+      .createQueryBuilder('transaction')
+      .where('transaction.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.assignment_kind = :member', { member: AssignmentKind.MEMBER })
+      .andWhere('transaction.assigned_user_id = :userId', { userId })
+      .getExists();
+  }
+
   // Latest timestamp of any statistics transaction up to `to`, in any period.
   async getLastStatisticsTimestamp(spaceId: number, to: Date, manager: EntityManager): Promise<Date | null> {
     const transaction = await this.statisticsScope(manager, spaceId, null, to)
@@ -529,54 +631,30 @@ export class TransactionQueriesService {
     return transaction?.timestamp ?? null;
   }
 
-  // The wallets whose transactions the selection reads: every wallet of the
-  // space, soft-deleted included, or the one of the wallet filter.
-  private async selectionWallets(selection: TransactionSelection, manager?: EntityManager): Promise<number[]> {
-    const rows: { id: number }[] = await (manager ?? this.transactionRepository.manager)
-      .createQueryBuilder(Wallet, 'wallet')
-      .select('wallet.id', 'id')
-      .where('wallet.space_id = :spaceId', { spaceId: selection.spaceId })
-      .orderBy('wallet.id')
-      .getRawMany();
-    const walletId = selection.filters?.walletId;
-    const ids = rows.map((row) => Number(row.id));
-
-    return walletId === undefined ? ids : ids.filter((id) => id === walletId);
-  }
-
   private async loadInOrder(ids: string[], manager?: EntityManager): Promise<LoadedTransaction[]> {
     if (ids.length === 0) {
       return [];
     }
 
-    const rows = await this.repository(manager)
-      .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
-      .innerJoinAndSelect('transaction.category', 'category')
-      .where('transaction.id IN (:...ids)', { ids })
-      .getMany();
+    const rows = await this.loadQuery(manager).where('transaction.id IN (:...ids)', { ids }).getMany();
     const byId = new Map(rows.map((row) => [row.id, withRelations(row, 'wallet', 'category')]));
 
     return ids.map((id) => byId.get(id)!);
   }
 
-  // The one selection of the feed, its count and every total of it. Soft-
-  // deleted wallets are joined like active ones, so their history is listed
-  // and their stored name is searched; archived categories likewise. The
-  // space is applied as a list of wallet ids, not through the wallet join:
-  // only constants give MySQL index ranges on (wallet_id, timestamp), while
-  // the join let it scan the whole table, every space's rows included.
+  // The one selection of the feed, its count and every total of it: the
+  // records of the space by their own space_id, deleted wallets and archived
+  // categories included. The space is a constant, so MySQL ranges over
+  // (space_id, timestamp, ...) instead of scanning other spaces.
   private selectionScope(
-    { from, to, filters = {} }: TransactionSelection,
-    walletIds: number[],
+    { spaceId, from, to, filters = {} }: TransactionSelection,
     manager?: EntityManager,
   ): SelectQueryBuilder<Transaction> {
+    const search = filters.search?.trim();
     const query = this.repository(manager)
       .createQueryBuilder('transaction')
-      .innerJoin('transaction.wallet', 'wallet')
-      .innerJoin('transaction.category', 'category');
-
-    query.where('transaction.wallet_id IN (:...walletIds)', { walletIds });
+      .innerJoin('transaction.category', 'category')
+      .where('transaction.space_id = :spaceId', { spaceId });
 
     // MySQL is only given the part of the period a TIMESTAMP can hold; a
     // period wholly outside it selects nothing.
@@ -600,15 +678,28 @@ export class TransactionQueriesService {
       query.andWhere('transaction.category_id = :categoryId', { categoryId: filters.categoryId });
     }
 
-    const search = filters.search?.trim();
+    if (filters.walletId) {
+      query.andWhere('transaction.wallet_id = :walletId', { walletId: filters.walletId });
+    }
+
+    if (filters.assignment) {
+      applyAssignmentFilter(query, filters.assignment);
+    }
 
     if (search) {
       const matches = (column: string) => searchMatch(column, ':searchPattern');
+      const conditions = [matches('transaction.description'), matches('category.name')];
 
-      query.andWhere(
-        `(${matches('transaction.description')} OR ${matches('category.name')} OR ${matches('wallet.wallet_name')})`,
-        { searchPattern: toSearchPattern(search) },
-      );
+      // a subquery of the space's few wallets, not a join: joined, MySQL
+      // drives the read from every wallet instead of the space's range
+      if (filters.searchesWallets) {
+        conditions.push(
+          'transaction.wallet_id IN (SELECT `wallet`.`id` FROM `wallets` `wallet` ' +
+            `WHERE \`wallet\`.\`space_id\` = :spaceId AND ${matches('`wallet`.`wallet_name`')})`,
+        );
+      }
+
+      query.andWhere(`(${conditions.join(' OR ')})`, { searchPattern: toSearchPattern(search) });
     }
 
     return query;
@@ -616,6 +707,19 @@ export class TransactionQueriesService {
 
   private repository(manager?: EntityManager): Repository<Transaction> {
     return manager?.getRepository(Transaction) ?? this.transactionRepository;
+  }
+
+  // A record with what every view needs: wallet, category, and the id and
+  // name of its author and assignee, never other user columns.
+  private loadQuery(manager?: EntityManager): SelectQueryBuilder<Transaction> {
+    return this.repository(manager)
+      .createQueryBuilder('transaction')
+      .innerJoinAndSelect('transaction.wallet', 'wallet')
+      .innerJoinAndSelect('transaction.category', 'category')
+      .leftJoin('transaction.author', 'author')
+      .addSelect(['author.id', 'author.name'])
+      .leftJoin('transaction.assignedUser', 'assignedUser')
+      .addSelect(['assignedUser.id', 'assignedUser.name']);
   }
 
   private statisticsTypeScope(
@@ -642,8 +746,8 @@ export class TransactionQueriesService {
   }
 
   // The selection every statistics block shares (docs/statistics-contract.md):
-  // all wallets of the space, soft-deleted ones included, without starting
-  // balances, both bounds inclusive.
+  // every record of the space, whatever its wallet or assignment, without
+  // starting balances, both bounds inclusive.
   private statisticsScope(
     manager: EntityManager,
     spaceId: number,
@@ -652,9 +756,8 @@ export class TransactionQueriesService {
   ): SelectQueryBuilder<Transaction> {
     const query = manager
       .createQueryBuilder(Transaction, 'transaction')
-      .innerJoin('transaction.wallet', 'wallet')
       .innerJoin('transaction.category', 'category')
-      .where('wallet.space_id = :spaceId', { spaceId })
+      .where('transaction.space_id = :spaceId', { spaceId })
       .andWhere('category.is_system = 0');
 
     if (from) {
@@ -662,5 +765,19 @@ export class TransactionQueriesService {
     }
 
     return query.andWhere('transaction.timestamp <= :to', { to });
+  }
+}
+
+function applyAssignmentFilter(query: SelectQueryBuilder<Transaction>, filter: AssignmentFilter): void {
+  if (filter.kind === AssignmentKind.MEMBER) {
+    query
+      .andWhere('transaction.assignment_kind = :assignmentKind', { assignmentKind: AssignmentKind.MEMBER })
+      .andWhere('transaction.assigned_user_id = :assignedUserId', { assignedUserId: filter.userId });
+  } else if (filter.kind === DELETED_MEMBER_KEY) {
+    query
+      .andWhere('transaction.assignment_kind = :assignmentKind', { assignmentKind: AssignmentKind.MEMBER })
+      .andWhere('transaction.assigned_user_id IS NULL');
+  } else {
+    query.andWhere('transaction.assignment_kind = :assignmentKind', { assignmentKind: filter.kind });
   }
 }

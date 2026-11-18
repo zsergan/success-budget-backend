@@ -76,6 +76,10 @@ describe('StatisticsService', () => {
               { id: 1, name: 'Card', design: 'slate', isDeleted: false, amount: 71050n, count: 7 },
               { id: 3, name: 'Old card', design: 'rose', isDeleted: true, amount: 10000n, count: 2 },
             ]),
+            getStatisticsByAssignment: jest.fn().mockResolvedValue([
+              { kind: 'member', userId: 31, name: 'Lena', isMember: false, amount: 45000n, count: 5 },
+              { kind: 'space', userId: null, name: null, isMember: false, amount: 36050n, count: 4 },
+            ]),
           },
         },
       ],
@@ -343,5 +347,46 @@ describe('StatisticsService', () => {
     await expect(service.getTrend(userId, spaceId, query)).rejects.toThrow(ErrorMessages.FORBIDDEN_SPACE);
     expect(spacesService.getOne).not.toHaveBeenCalled();
     expect(transactionQueriesService.getStatisticsTotals).not.toHaveBeenCalled();
+  });
+
+  describe('getBreakdownV2', () => {
+    it('groups by category and by assignment in one snapshot, both adding up to the total', async () => {
+      const result = await service.getBreakdownV2(userId, spaceId, query);
+
+      expect(result).not.toHaveProperty('by_wallet');
+      expect(result.total).toEqual({ amount: '810.50', count: 9 });
+      expect(result.by_category.total_amount).toBe('810.50');
+      expect(result.by_assignment).toEqual(
+        expect.objectContaining({
+          total_amount: '810.50',
+          source_count: 2,
+          primary_items: [
+            expect.objectContaining({ key: 'member:31', status: 'former_member', amount: '450.00' }),
+            expect.objectContaining({ key: 'space', amount: '360.50' }),
+          ],
+          other: null,
+        }),
+      );
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(transactionQueriesService.getStatisticsByAssignment).toHaveBeenCalledWith(
+        spaceId,
+        TransactionType.EXPENSE,
+        expect.any(Date),
+        expect.any(Date),
+        manager,
+      );
+      expect(transactionQueriesService.getStatisticsByWallet).not.toHaveBeenCalled();
+    });
+
+    it('reads nothing for a period that has not started', async () => {
+      const result = await service.getBreakdownV2(userId, spaceId, {
+        ...query,
+        anchor_date: '2026-11-15',
+        as_of: '2026-09-28T12:00:00.000Z',
+      });
+
+      expect(result.by_assignment).toEqual({ total_amount: '0.00', source_count: 0, primary_items: [], other: null });
+      expect(transactionQueriesService.getStatisticsByAssignment).not.toHaveBeenCalled();
+    });
   });
 });

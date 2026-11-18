@@ -51,6 +51,7 @@ import { ParseOptionalIdPipe } from '@shared/pipes/parse-optional-id.pipe';
 import { ParseIfMatchVersionPipe } from '@shared/pipes/parse-if-match-version.pipe';
 import { ParseIdempotencyKeyPipe } from '@shared/pipes/parse-idempotency-key.pipe';
 import { RequestHeader } from '@shared/decorators/request-header.decorator';
+import { LegacyWrite } from '@shared/guards/legacy-writes.guard';
 
 const IDEMPOTENCY_KEY_HEADER = {
   name: 'Idempotency-Key',
@@ -102,6 +103,7 @@ export class TransactionsController {
       'TRANSACTION_OPERATION_EXISTS: client_operation_id was already used; GET /operations/:id tells the result.',
   })
   @UseInterceptors(ClassSerializerInterceptor)
+  @LegacyWrite()
   @Post()
   async create(
     @Request() req: AuthedRequest,
@@ -213,6 +215,7 @@ export class TransactionsController {
   @ApiNotFoundResponse({ description: 'TRANSACTION_NOT_FOUND: missing, malformed id, or of another space.' })
   @ApiConflictResponse({ description: 'TRANSACTION_VERSION_CONFLICT or IDEMPOTENCY_KEY_REUSED.' })
   @ApiResponse({ status: 428, description: 'TRANSACTION_VERSION_REQUIRED: If-Match is missing.' })
+  @LegacyWrite()
   @Patch(':transactionId')
   async update(
     @Request() req: AuthedRequest,
@@ -243,6 +246,7 @@ export class TransactionsController {
       'TRANSACTION_VERSION_CONFLICT: If-Match differs from the stored version. ' +
       'IDEMPOTENCY_KEY_REUSED: the key was used for a different request.',
   })
+  @LegacyWrite()
   @Delete(':transactionId')
   async remove(
     @Request() req: AuthedRequest,

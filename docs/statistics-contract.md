@@ -8,6 +8,10 @@ the rules below apply to all three endpoints identically.
 
 Anything marked _open_ needs sign-off before the stage that implements it.
 
+**API v2.** `/api/v2/spaces/:spaceId/statistics/...` takes the same
+parameters and rules; its breakdown groups by assignment instead of by
+wallet. See the [v2 contract](transactions-v2-contract.md#statistics-v2).
+
 ## Implementation
 
 Everything in this document is implemented. Code: `src/modules/statistics`

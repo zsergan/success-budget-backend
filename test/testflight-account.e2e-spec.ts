@@ -120,6 +120,21 @@ describe('TestFlight account provisioning (e2e)', () => {
     expect(state.transactions).toHaveLength(SAMPLE_TRANSACTIONS.length);
     expect(state.limits).toHaveLength(1);
     expect(state.limitCategories).toHaveLength(1);
+
+    const { id: userId } = state.users[0] as { id: number };
+    const owned = state.transactions.map((row) =>
+      [row.space_id, row.author_user_id, row.author_source, row.assignment_kind, row.assigned_user_id].join(),
+    );
+    const expected = SAMPLE_TRANSACTIONS.map((sample) =>
+      [
+        state.spaces[0].id,
+        userId,
+        'recorded',
+        sample.assignment,
+        sample.assignment === 'member' ? userId : null,
+      ].join(),
+    );
+    expect(owned.sort()).toEqual(expected.sort());
   }
 
   it('creates one verified account with the demo data that signs in through the normal login', async () => {

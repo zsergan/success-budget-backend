@@ -360,6 +360,18 @@ describe('UsersService', () => {
       expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(21);
     });
 
+    it('skips the transitional wallet once v1 writes are retired; v2 records need none', async () => {
+      const configService = service['configService'];
+      jest
+        .spyOn(configService, 'get')
+        .mockImplementation((key: string) => (key === 'LEGACY_WRITES' ? 'retired' : undefined));
+
+      await service.completeEmailVerification(1);
+
+      expect(walletRepositoryInTx.save).not.toHaveBeenCalled();
+      expect(categoryRepositoryInTx.save).toHaveBeenCalled();
+    });
+
     it('is a no-op for a user that is already verified', async () => {
       lockedUser.getOne.mockResolvedValue(buildUser({ id: 1, email_verified: 1 }));
 

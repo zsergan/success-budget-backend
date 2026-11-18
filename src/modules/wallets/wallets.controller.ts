@@ -20,6 +20,7 @@ import { UpdateWalletDto } from './dto/update-wallet.dto';
 import type { AuthedRequest } from '@shared/types';
 import { getEndOfMonth, getStartOfMonth } from '@shared/utils';
 import { ParseOptionalDatePipe } from '@shared/pipes/parse-optional-date.pipe';
+import { LegacyWrite } from '@shared/guards/legacy-writes.guard';
 
 @ApiTags('wallets')
 @ApiBearerAuth()
@@ -28,6 +29,7 @@ export class WalletsController {
   constructor(private readonly walletsService: WalletsService) {}
 
   @UseInterceptors(ClassSerializerInterceptor)
+  @LegacyWrite()
   @Post()
   async create(
     @Request() req: AuthedRequest,
@@ -38,6 +40,7 @@ export class WalletsController {
   }
 
   @UseInterceptors(ClassSerializerInterceptor)
+  @LegacyWrite()
   @Put(':walletId')
   async update(
     @Request() req: AuthedRequest,
@@ -59,6 +62,7 @@ export class WalletsController {
     return this.walletsService.getOverview(req.user.id, spaceId, from, to);
   }
 
+  @LegacyWrite()
   @Delete(':walletId')
   async delete(
     @Request() req: AuthedRequest,

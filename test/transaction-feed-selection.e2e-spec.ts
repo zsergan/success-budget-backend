@@ -12,6 +12,7 @@ import {
   toSearchPattern,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { AppColor, CategoryIcon, TransactionKind, TransactionType } from '@shared/enums';
+import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
 import { createTestApp, createVerifiedMember, deleteUsers, type Member, type TestApp } from './support/app';
 
 // The selection the feed pages and totals share, against MySQL: the search
@@ -33,11 +34,12 @@ describe('Transaction feed selection (e2e)', () => {
   let salary: Category;
   let archived: Category;
 
+  // the v1 search, wallet names included
   const selection = (search?: string, extra: TransactionSelection['filters'] = {}): TransactionSelection => ({
     spaceId: member.spaceId,
     from,
     to,
-    filters: { ...extra, search },
+    filters: { searchesWallets: true, ...extra, search },
   });
 
   // the whole selection as one page
@@ -105,6 +107,9 @@ describe('Transaction feed selection (e2e)', () => {
     ) => {
       const saved = await transactions.save(
         transactions.create({
+          space_id: member.spaceId,
+          ...recordedAuthor(member.userId),
+          ...SPACE_ASSIGNMENT,
           wallet_id: wallet.id,
           category_id: category.id,
           transaction_type: category.transaction_type,
@@ -167,9 +172,14 @@ describe('Transaction feed selection (e2e)', () => {
       const rows = await select('card');
 
       expect(rows.filter((row) => row.id === ids.everywhere)).toHaveLength(1);
-      expect(await queries.countForAllWallets(member.spaceId, from, to, { search: 'кофе' })).toBe(
-        (await select('кофе')).length,
-      );
+      expect(
+        await queries.countSelection({
+          spaceId: member.spaceId,
+          from,
+          to,
+          filters: { search: 'кофе', searchesWallets: true },
+        }),
+      ).toBe((await select('кофе')).length);
     });
 
     it.each([
@@ -197,11 +207,17 @@ describe('Transaction feed selection (e2e)', () => {
     it('combines with the period and the other filters', async () => {
       expect(await search('кофе в ноябре')).toEqual([]);
       expect(
-        await queries.countForAllWallets(member.spaceId, from, to, {
-          search: 'кофе',
-          kind: TransactionKind.REGULAR,
-          transactionType: TransactionType.EXPENSE,
-          walletId: card.id,
+        await queries.countSelection({
+          spaceId: member.spaceId,
+          from,
+          to,
+          filters: {
+            search: 'кофе',
+            kind: TransactionKind.REGULAR,
+            transactionType: TransactionType.EXPENSE,
+            walletId: card.id,
+            searchesWallets: true,
+          },
         }),
       ).toBe(6);
     });
