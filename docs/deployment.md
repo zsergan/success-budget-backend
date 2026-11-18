@@ -596,14 +596,18 @@ working and the deploy changes nothing they show.
 **The previous image cannot write after the migration.** Its transaction
 inserts (a create, or a wallet with a starting balance) lack the new NOT
 NULL columns and fail, and while the migration runs they would leave
-records without an owner. The migration needs a **write pause**: no
-instance of the previous image may run from the snapshot (step 4) until the
-new image starts (step 8). Measured locally on 500,000 transactions: the
-preflight takes 4 s, the migration 25 s, the snapshot and the
-reconciliation about 80 s each, so the pause lasts a few minutes at most.
+records without an owner. The rollout therefore runs in a **write pause**:
+no instance of the previous image runs from step 3 until the new image
+starts (step 9), or, when the rollout is abandoned, until the database is
+back on the pre-migration schema and verified (see "Recovering before the
+new image starts" below). Measured locally on 500,000 transactions: the
+preflight takes 1 to 4 s, the backup 1 s and its restore 7 s, the migration
+22 to 25 s, and each ledger snapshot or reconciliation 2 s on a warm
+database and up to about 80 s on a cold one (the first read of the restored
+backup took 64 s). The pause, steps 3 to 9, lasts about two to five
+minutes; a larger database needs longer for the backup and its restore.
 
-1. **Back up** the database (see [Backup & restore](#backup--restore)) and
-   build the new image.
+1. **Build** the new image.
 2. **Preflight**, while the previous image still serves traffic (it only
    reads):
 
@@ -622,22 +626,66 @@ reconciliation about 80 s each, so the pause lasts a few minutes at most.
    earliest current member (`created_at`, then membership id), since no
    creator of a space is stored; it is the creator whenever the creator is
    still a member.
-3. **Pause writes**: stop every instance of the previous image (the
-   invitation-email queue runs inside it too). Requests fail during the
-   pause; the installed app keeps unsent writes and retries them.
-4. **Snapshot** the history:
+
+3. **Pause writes and drain them**: stop every instance of the previous
+   image (the invitation-email queue runs inside it too) and wait until
+   each one has exited. Its shutdown lets requests in progress finish, and
+   MySQL rolls back the open transaction of an instance that was killed
+   instead. Then confirm that nothing is still connected with the app's
+   database account (for example with `mysql` from the `mysql:8` image,
+   logged in as that account):
+
+   ```sql
+   SELECT ID, HOST, COMMAND, TIME FROM information_schema.PROCESSLIST
+   WHERE USER = SUBSTRING_INDEX(CURRENT_USER(), '@', 1) AND ID <> CONNECTION_ID();
+   -- Empty set
+   ```
+
+   Requests fail from here on; the installed app keeps unsent writes and
+   retries them later.
+
+4. **Back up and verify the backup**. This dump is what an abandoned
+   rollout is restored from, so it is taken only now, when nothing writes
+   any more. Restore it into a new, empty database (created by an account
+   that may) and read its history:
+
+   ```bash
+   DB_HOST=... DB_PORT=... DB_USERNAME=... DB_PASSWORD=... DB_DATABASE=<database> \
+     ./scripts/db-backup.sh
+   DB_HOST=... DB_PORT=... DB_USERNAME=... DB_PASSWORD=... DB_DATABASE=<database>_rollback \
+     ./scripts/db-restore.sh ./backups/<database>-<timestamp>.sql.gz
+   docker run --rm --env-file .env.production -e DB_DATABASE=<database>_rollback \
+     success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js snapshot - > ledger-backup.json
+   ```
+
+   Copy the dump off the database host, and leave `<database>_rollback`
+   untouched until the new image serves.
+
+5. **Capture the reconciliation ledger** of the live database and compare
+   it with the backup's:
 
    ```bash
    docker run --rm --env-file .env.production success-budget-backend:<tag> \
      node dist/database/transaction-ownership-check.js snapshot - > ledger-before.json
+   diff <(jq 'del(.taken_at)' ledger-backup.json) <(jq 'del(.taken_at)' ledger-before.json)
    ```
 
-5. **Migrate** with the usual step 2 command. A run stopped midway resumes
-   from where it stopped. A run that ends with "N transactions were written
-   without an owner while this migration ran" means an old instance is
-   still writing: stop it and run the migrations again.
-6. **Check the schema** (step 3) and the reference data (step 4).
-7. **Reconcile** the history with the snapshot:
+   The ledger is the evidence the reconciliation (step 8) compares with;
+   the backup stays the only restore source. No output (the ledgers differ
+   only in `taken_at`) shows that the backup holds every transaction
+   committed before the pause. On a
+   difference something still writes: find and stop it, then repeat from
+   step 4.
+
+6. **Migrate** with the command of step 2 of the deploy procedure. A run
+   stopped midway resumes from where it stopped. A run that ends with "N
+   transactions were written without an owner while this migration ran"
+   means an old instance is still writing: stop it and run the migrations
+   again.
+7. **Check the schema** and the reference data (steps 3 and 4 of the
+   deploy procedure).
+8. **Reconcile** the history with the ledger:
 
    ```bash
    docker run --rm -i --env-file .env.production success-budget-backend:<tag> \
@@ -649,11 +697,13 @@ reconciliation about 80 s each, so the pause lasts a few minutes at most.
    timestamp, description and version, the ordinary income and expense of
    every space and month, and the starting balances, and checks that every
    record's `space_id` is its wallet's space and has an author. On any
-   difference, do not start the new image: keep the pause, investigate,
-   and restore the backup if history changed.
-8. **Start the new image** and run the health check and the smoke tests
-   (steps 5 to 7), then the v2 smoke test below.
-9. **Release the mobile v2 build**.
+   difference, do not start the new image: keep the pause and recover from
+   the backup (below), or investigate and fix forward.
+
+9. **Start the new image** and run the health check and the smoke tests
+   (steps 5 to 7 of the deploy procedure), then the v2 smoke test below.
+   Writes resume here, and the rollback limits below apply from now on.
+10. **Release the mobile v2 build**.
 
 v2 smoke test, with the token of the smoke-test account: a create on its
 personal space, read through both versions, then deleted.
@@ -670,20 +720,49 @@ curl -sf http://<host>:3000/api/v1/spaces/$space/transactions/$id -H "Authorizat
 curl -sf -X DELETE http://<host>:3000/api/v2/spaces/$space/transactions/$id -H "Authorization: Bearer $token" -H 'If-Match: "1"'
 ```
 
-**Rollback limits.**
+**Recovering before the new image starts.** Until step 6 the database is
+unchanged, and an abandoned rollout only starts the previous image again.
+From step 6 until the new image accepts writes, a failure that is not fixed
+forward takes the database back to the backup of step 4. The pause
+continues, and the previous image stays stopped until its database has the
+pre-migration schema again:
+
+1. Restore the backup into a new, empty database with
+   `scripts/db-restore.sh`, as in step 4 (`<database>_rollback` serves if
+   nothing has connected to it since). Leave the migrated database as it
+   is, for the investigation.
+2. Verify it: the previous image's schema check passes with no warning
+   about migrations it does not know, and its history equals the ledger:
+
+   ```bash
+   docker run --rm --env-file .env.production -e DB_DATABASE=<restored> \
+     success-budget-backend:<previous-tag> node dist/database/check-schema.js
+   # Schema OK: <n> migrations applied.
+   docker run --rm --env-file .env.production -e DB_DATABASE=<restored> \
+     success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js snapshot - > ledger-restored.json
+   diff <(jq 'del(.taken_at)' ledger-before.json) <(jq 'del(.taken_at)' ledger-restored.json)
+   ```
+
+3. Point the previous image's `DB_DATABASE` at the restored database,
+   start it, and run the health check and the smoke tests. This ends the
+   pause.
+
+**Rollback limits** once the new image accepted writes (step 9):
 
 - This release is the earliest image that may run on the migrated
-  database. An older image starts there (its schema check only warns about
-  migrations it does not know) but cannot create transactions and would
-  write records without an owner: never start one after step 5.
-- Before step 8, a failed rollout is undone by restoring the backup of
-  step 1; nothing was written meanwhile.
-- After step 8, roll the application back only to another image of this
-  release or later, and fix forward. `migration:revert` (twice) is
-  possible but discards every author and assignment, also those of v2
-  records, which then stay in their space's "Shared transactions" wallet;
-  restoring the backup discards every write since the deploy. Treat both
-  as a last resort, decided separately.
+  database. Never start an older image there: it starts (its schema check
+  only warns about migrations it does not know) but cannot create
+  transactions and would write records without an owner. The generic
+  "Roll back" under [If a deploy fails](#if-a-deploy-fails) (redeploy the
+  previous image tag) therefore does not apply: roll the application back
+  only to another image of this release or later, and fix forward.
+- `migration:revert` (twice) discards every author and assignment, also
+  those of v2 records, which then stay in their space's "Shared
+  transactions" wallet. Restoring the backup of step 4 discards every write
+  since step 9. Treat both as a last resort, decided separately, and keep
+  the previous image stopped until its database is verified as in
+  "Recovering before the new image starts".
 
 **Retiring v1 writes** (before the release that removes wallets): set
 `LEGACY_WRITES=retired` and restart every instance together. Builds older
@@ -739,6 +818,9 @@ source tree, that the image refuses to start on an empty database, and that
   `src/modules/confirmation-codes/confirmation-codes.service.ts`).
 - **Roll back**: redeploy the previous image tag. This rolls back
   *application code only* - it does **not** revert the database schema.
+  Never across `AddTransactionSpaceOwnership1791200000000`: an image older
+  than it cannot write on a database that ran it - see the rollback limits
+  in [Rolling out space-owned transactions](#rolling-out-space-owned-transactions).
   A migration that already ran stays applied even if the app version that
   shipped it gets rolled back, because a later migration may already
   depend on it, and MySQL DDL isn't generally safely reversible mid-deploy.
