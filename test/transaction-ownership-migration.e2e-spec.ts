@@ -12,6 +12,7 @@ import {
 import { SpacesService } from '@modules/spaces/spaces.service';
 import { SpaceType } from '@shared/enums';
 import { type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { assertDisposableDatabase, disposableDatabaseName } from './support/disposable-database';
 
 interface OwnedRow {
   id: string;
@@ -24,12 +25,14 @@ interface OwnedRow {
   version: number;
 }
 
-// Runs the migration over the whole test database, like the CLI would: the
-// schema is taken back to before it, legacy rows are written the way the
-// previous app wrote them, and the migration runs again. Every test leaves
-// the database migrated.
+// Runs the migration over the whole database, like the CLI would: the schema
+// is taken back to before it, legacy rows are written the way the previous
+// app wrote them, and the migration runs again. Every test leaves the
+// database migrated. Only `npm run test:e2e:migrations` runs it, on a
+// disposable database (test/jest-migration-e2e.config.js).
 describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   let testApp: TestApp;
+  let disposable = false;
   const ownership = new AddTransactionSpaceOwnership1791200000000();
   const compatibility = new AddCompatibilityWallet1791300000000();
   let userIds: number[];
@@ -190,10 +193,24 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
     );
 
   beforeAll(async () => {
+    const database = disposableDatabaseName();
     testApp = await createTestApp();
+
+    try {
+      await assertDisposableDatabase(testApp.dataSource, database);
+    } catch (error) {
+      await testApp.app.close();
+      throw error;
+    }
+
+    disposable = true;
   });
 
   beforeEach(async () => {
+    if (!disposable) {
+      throw new Error('Not a disposable database');
+    }
+
     userIds = [];
     ids = [];
     strayIds = { spaceIds: [] };
@@ -202,6 +219,10 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   });
 
   afterEach(async () => {
+    if (!disposable) {
+      return;
+    }
+
     if (!(await hasColumn('transactions', 'space_id')) || !(await hasColumn('wallets', 'compat_space_id'))) {
       if (strayIds.spaceIds.length) {
         await query('DELETE t FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id IN (?)', [
@@ -221,7 +242,9 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   });
 
   afterAll(async () => {
-    await testApp.app.close();
+    if (disposable) {
+      await testApp.app.close();
+    }
   });
 
   it('moves every record to its space, assigned to the space, authored by the earliest current member', async () => {

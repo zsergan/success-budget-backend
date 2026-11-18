@@ -97,6 +97,19 @@ jobs:
         env:
           TZ: America/Chicago
 
+  # Takes the schema back and forth, so it runs on a disposable MySQL that
+  # the script starts itself instead of the e2e job's database.
+  migration-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:e2e:migrations
+
   build:
     runs-on: ubuntu-latest
     steps:

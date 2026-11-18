@@ -14,7 +14,9 @@ local setup and seed users: `README.md`. Deploy runbook: `docs/deployment.md`.
   coverage thresholds live in `package.json`.
 - `npm run test:e2e` — needs `docker compose up -d` (MySQL + MailDev),
   `npm run migration:run`, `npm run verify:reference-data` and a valid
-  `.env`. Runs serially by design.
+  `.env`. Runs serially by design. It skips the specs that revert
+  migrations on the whole schema; `npm run test:e2e:migrations` runs those
+  on a disposable MySQL it starts in Docker.
 - `npm run build`, `npm run migration:show|run|revert`,
   `npm run migration:create`, `npm run seed`, `npm run schema:check`.
 

@@ -258,6 +258,14 @@ npm run test:cov
 # each boot their own app/DB pool against one shared MySQL instance, and
 # running them in parallel can trip real InnoDB lock contention.
 npm run test:e2e
+
+# migration e2e tests - the specs that revert and reapply migrations on the
+# whole schema (test/jest-migration-e2e.config.js). Needs only Docker: it
+# starts its own MySQL and MailDev containers, migrates them, runs the specs
+# with explicit connection settings and removes the containers, so the
+# database in .env is never touched. `npm run test:e2e` skips these specs,
+# and they refuse to start on any database the script did not create.
+npm run test:e2e:migrations
 ```
 
 Unit tests use mocked TypeORM repositories via `@nestjs/testing` - no
@@ -278,7 +286,8 @@ out of an actually-delivered message via MailDev's REST API
 code generation. Every spec cleans up the test users/spaces it creates
 afterward (which, thanks to `onDelete: CASCADE` on the relevant foreign
 keys, also removes their wallets/categories/confirmation codes). CI runs
-them against MySQL and MailDev service containers on every push/PR.
+them against MySQL and MailDev service containers on every push/PR, and the
+migration e2e tests in a job of their own.
 
 ## Linting and type checking
 
