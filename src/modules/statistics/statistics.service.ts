@@ -2,13 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 
 import type { StatisticsBreakdownQueryDto, StatisticsQueryDto } from './dto/statistics-query.dto';
-import {
-  type CategoryBreakdown,
-  type WalletBreakdown,
-  buildCategoryBreakdown,
-  buildWalletBreakdown,
-  sumOf,
-} from './statistics-breakdown';
+import { type CategoryBreakdown, buildCategoryBreakdown, sumOf } from './statistics-breakdown';
 import { type AssignmentBreakdown, buildAssignmentBreakdown } from './assignment-breakdown';
 import { calendarDateAt, formatCalendarDate } from './statistics-calendar';
 import {
@@ -75,16 +69,11 @@ export interface StatisticsTrend extends StatisticsBlock {
   buckets: TrendBucket[];
 }
 
-export interface StatisticsBreakdown extends StatisticsBlock {
+export interface StatisticsBreakdownV2 extends StatisticsBlock {
   transaction_type: TransactionType;
   // control sum: the client compares it with the summary figure of transaction_type of the same cycle
   total: MoneyCount;
   by_category: CategoryBreakdown;
-  by_wallet: WalletBreakdown;
-}
-
-// v2: who the transactions are for instead of their wallets
-export interface StatisticsBreakdownV2 extends Omit<StatisticsBreakdown, 'by_wallet'> {
   by_assignment: AssignmentBreakdown;
 }
 
@@ -182,49 +171,8 @@ export class StatisticsService {
     };
   }
 
-  async getBreakdown(
-    userId: number,
-    spaceId: number,
-    query: StatisticsBreakdownQueryDto,
-  ): Promise<StatisticsBreakdown> {
-    const block = await this.openBlock(userId, spaceId, query);
-    const { period } = block;
-    const { actual_to: to } = period;
-    const transactionType = query.transaction_type ?? TransactionType.EXPENSE;
-    const [categories, wallets] =
-      to === null
-        ? [[], []]
-        : await this.readSnapshot(async (manager) => [
-            await this.transactionQueriesService.getStatisticsByCategory(
-              spaceId,
-              transactionType,
-              period.from,
-              to,
-              manager,
-            ),
-            await this.transactionQueriesService.getStatisticsByWallet(
-              spaceId,
-              transactionType,
-              period.from,
-              to,
-              manager,
-            ),
-          ]);
-
-    return {
-      ...block,
-      transaction_type: transactionType,
-      total: {
-        amount: formatMoney(sumOf(categories)),
-        count: categories.reduce((sum, category) => sum + category.count, 0),
-      },
-      by_category: buildCategoryBreakdown(categories),
-      by_wallet: buildWalletBreakdown(wallets),
-    };
-  }
-
   // Both groupings from one snapshot, so their totals and `total` are equal.
-  async getBreakdownV2(
+  async getBreakdown(
     userId: number,
     spaceId: number,
     query: StatisticsBreakdownQueryDto,

@@ -1,15 +1,12 @@
 import { AppColor } from '@shared/enums';
 import { formatMoney, roundPercentToTenth } from '@shared/utils';
-import type {
-  StatisticsCategoryGroup,
-  StatisticsWalletGroup,
-} from '@modules/transaction-queries/transaction-queries.service';
+import type { StatisticsCategoryGroup } from '@modules/transaction-queries/transaction-queries.service';
 
 export const MAX_PRIMARY_GROUPS = 6;
 // A product setting, not a mock-up value: about 11° of the donut.
 export const OTHER_THRESHOLD_PERCENT = 3n;
 
-export type BreakdownItemKind = 'category' | 'wallet' | 'deleted_wallets' | 'other';
+export type BreakdownItemKind = 'category' | 'other';
 
 interface BreakdownItemBase<K extends BreakdownItemKind> {
   kind: K;
@@ -26,11 +23,6 @@ interface BreakdownItemBase<K extends BreakdownItemKind> {
 }
 
 export type CategoryItem = BreakdownItemBase<'category'>;
-export type WalletItem = BreakdownItemBase<'wallet'>;
-
-export interface DeletedWalletsItem extends BreakdownItemBase<'deleted_wallets'> {
-  wallets_count: number;
-}
 
 export interface OtherItem<T> extends BreakdownItemBase<'other'> {
   children: T[];
@@ -41,14 +33,6 @@ export interface CategoryBreakdown {
   source_count: number;
   primary_items: CategoryItem[];
   other: OtherItem<CategoryItem> | null;
-}
-
-export interface WalletBreakdown {
-  total_amount: string;
-  source_count: number;
-  primary_items: WalletItem[];
-  deleted_wallets: DeletedWalletsItem | null;
-  other: OtherItem<WalletItem> | null;
 }
 
 export interface Group {
@@ -81,9 +65,9 @@ export const foldGroups = <T extends Group>(
   return { primary: sorted.slice(0, primaryCount), folded: sorted.slice(primaryCount) };
 };
 
-const serviceItem = <K extends 'deleted_wallets' | 'other'>(kind: K, amount: bigint, total: bigint) => ({
-  kind,
-  key: kind,
+const otherItem = (amount: bigint, total: bigint) => ({
+  kind: 'other' as const,
+  key: 'other',
   id: null,
   name: null,
   icon: null,
@@ -97,7 +81,7 @@ const serviceItem = <K extends 'deleted_wallets' | 'other'>(kind: K, amount: big
 export const sumOf = (groups: Group[]): bigint => groups.reduce((sum, group) => sum + group.amount, 0n);
 
 const otherOf = <T>(folded: Group[], children: T[], total: bigint): OtherItem<T> | null =>
-  folded.length ? { ...serviceItem('other', sumOf(folded), total), children } : null;
+  folded.length ? { ...otherItem(sumOf(folded), total), children } : null;
 
 export const buildCategoryBreakdown = (categories: StatisticsCategoryGroup[]): CategoryBreakdown => {
   const total = sumOf(categories);
@@ -119,40 +103,6 @@ export const buildCategoryBreakdown = (categories: StatisticsCategoryGroup[]): C
     total_amount: formatMoney(total),
     source_count: primary.length + folded.length,
     primary_items: primary.map(toItem),
-    other: otherOf(folded, folded.map(toItem), total),
-  };
-};
-
-// Deleted wallets form one service group outside the threshold and Other;
-// with it, one primary slot less keeps the donut within seven segments.
-export const buildWalletBreakdown = (wallets: StatisticsWalletGroup[]): WalletBreakdown => {
-  const total = sumOf(wallets);
-  const deleted = wallets.filter((wallet) => wallet.isDeleted && wallet.amount > 0n);
-  const { primary, folded } = foldGroups(
-    wallets.filter((wallet) => !wallet.isDeleted),
-    total,
-    deleted.length ? MAX_PRIMARY_GROUPS - 1 : MAX_PRIMARY_GROUPS,
-  );
-  const toItem = (wallet: StatisticsWalletGroup): WalletItem => ({
-    kind: 'wallet',
-    key: `wallet:${wallet.id}`,
-    id: wallet.id,
-    name: wallet.name,
-    icon: null,
-    color: wallet.design,
-    amount: formatMoney(wallet.amount),
-    percent: roundPercentToTenth(wallet.amount, total),
-    is_archived: false,
-    opens_history: true,
-  });
-
-  return {
-    total_amount: formatMoney(total),
-    source_count: primary.length + folded.length + deleted.length,
-    primary_items: primary.map(toItem),
-    deleted_wallets: deleted.length
-      ? { ...serviceItem('deleted_wallets', sumOf(deleted), total), wallets_count: deleted.length }
-      : null,
     other: otherOf(folded, folded.map(toItem), total),
   };
 };

@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule, type OpenAPIObject } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
 
-import { StatisticsController } from './statistics.controller';
+import { StatisticsV2Controller } from './statistics-v2.controller';
 import { StatisticsService } from './statistics.service';
 
 type Schema = {
@@ -29,7 +29,7 @@ describe('Statistics OpenAPI', () => {
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({
-      controllers: [StatisticsController],
+      controllers: [StatisticsV2Controller],
       providers: [{ provide: StatisticsService, useValue: {} }],
     }).compile();
 
@@ -78,7 +78,7 @@ describe('Statistics OpenAPI', () => {
   it.each([
     ['summary', 'StatisticsSummary'],
     ['trend', 'StatisticsTrend'],
-    ['breakdown', 'StatisticsBreakdown'],
+    ['breakdown', 'StatisticsBreakdownV2'],
   ])('describes the body of a successful %s', (block, schema) => {
     const response = document.paths[`/spaces/{spaceId}/statistics/${block}`].get!.responses['200'] as {
       content: Record<string, { schema: Schema }>;
@@ -89,7 +89,7 @@ describe('Statistics OpenAPI', () => {
   });
 
   it('defines every referenced schema and marks every object field as required', () => {
-    const names = ['StatisticsSummary', 'StatisticsTrend', 'StatisticsBreakdown'].flatMap((name) => [
+    const names = ['StatisticsSummary', 'StatisticsTrend', 'StatisticsBreakdownV2'].flatMap((name) => [
       ...reachable(name),
     ]);
 
@@ -112,11 +112,11 @@ describe('Statistics OpenAPI', () => {
     expect(nullableFields('PreviousPeriod')).toEqual([]);
     expect(nullableFields('TrendBucket')).toEqual(['income', 'expense']);
     expect(nullableFields('CategoryItem')).toEqual([]);
-    expect(nullableFields('WalletItem')).toEqual(['icon']);
     expect(nullableFields('CategoryOtherItem')).toEqual(['id', 'name', 'icon', 'color']);
-    expect(nullableFields('DeletedWalletsItem')).toEqual(['id', 'name', 'icon', 'color']);
     expect(nullableFields('CategoryBreakdown')).toEqual(['other']);
-    expect(nullableFields('WalletBreakdown')).toEqual(['deleted_wallets', 'other']);
+    expect(nullableFields('AssignmentItem')).toEqual(['user_id', 'name', 'status']);
+    expect(nullableFields('AssignmentOtherItem')).toEqual([]);
+    expect(nullableFields('AssignmentBreakdown')).toEqual(['other']);
   });
 
   it('describes a nullable object as its schema or null, in OpenAPI 3.0 terms', () => {
@@ -124,8 +124,7 @@ describe('Statistics OpenAPI', () => {
       ['StatisticsSummary', 'previous', 'PreviousPeriod'],
       ['StatisticsSummary', 'change', 'Changes'],
       ['CategoryBreakdown', 'other', 'CategoryOtherItem'],
-      ['WalletBreakdown', 'deleted_wallets', 'DeletedWalletsItem'],
-      ['WalletBreakdown', 'other', 'WalletOtherItem'],
+      ['AssignmentBreakdown', 'other', 'AssignmentOtherItem'],
     ];
 
     for (const [schema, field, target] of nullableObjects) {
@@ -141,7 +140,7 @@ describe('Statistics OpenAPI', () => {
     }
 
     expect(refName(schemas.CategoryOtherItem.properties!.children.items!)).toBe('CategoryItem');
-    expect(refName(schemas.WalletOtherItem.properties!.children.items!)).toBe('WalletItem');
+    expect(refName(schemas.AssignmentOtherItem.properties!.children.items!)).toBe('AssignmentItem');
   });
 
   it('describes money as decimal strings', () => {
@@ -153,11 +152,11 @@ describe('Statistics OpenAPI', () => {
       ['TrendBucket', 'income'],
       ['TrendBucket', 'expense'],
       ['CategoryItem', 'amount'],
-      ['WalletItem', 'amount'],
-      ['DeletedWalletsItem', 'amount'],
       ['CategoryOtherItem', 'amount'],
       ['CategoryBreakdown', 'total_amount'],
-      ['WalletBreakdown', 'total_amount'],
+      ['AssignmentItem', 'amount'],
+      ['AssignmentOtherItem', 'amount'],
+      ['AssignmentBreakdown', 'total_amount'],
     ];
 
     for (const [schema, field] of money) {
@@ -197,7 +196,7 @@ describe('Statistics OpenAPI', () => {
     expect(transactionType.required).toBe(false);
     expect(refName(transactionType.schema!)).toBe('TransactionType');
     expect(transactionType.description).toContain('Default: expense');
-    expect(refName(schemas.StatisticsBreakdown.properties!.transaction_type)).toBe('TransactionType');
+    expect(refName(schemas.StatisticsBreakdownV2.properties!.transaction_type)).toBe('TransactionType');
     expect(schemas.TransactionType.enum).toEqual(['income', 'expense']);
   });
 
@@ -209,9 +208,8 @@ describe('Statistics OpenAPI', () => {
     expect(refName(schemas.CategoryItem.properties!.color)).toBe('AppColor');
 
     expect(
-      ['CategoryItem', 'WalletItem', 'DeletedWalletsItem', 'CategoryOtherItem', 'WalletOtherItem'].map(
-        (name) => schemas[name].properties!.kind.enum,
-      ),
-    ).toEqual([['category'], ['wallet'], ['deleted_wallets'], ['other'], ['other']]);
+      ['CategoryItem', 'CategoryOtherItem', 'AssignmentOtherItem'].map((name) => schemas[name].properties!.kind.enum),
+    ).toEqual([['category'], ['other'], ['other']]);
+    expect(schemas.AssignmentItemKind.enum).toEqual(['member', 'space', 'unassigned', 'deleted_member']);
   });
 });

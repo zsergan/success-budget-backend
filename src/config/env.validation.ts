@@ -29,7 +29,6 @@ export interface EnvironmentVariables {
   INVITE_TOKEN_SECRET: string;
   APPLE_APP_ID?: string;
   TESTFLIGHT_URL?: string;
-  LEGACY_WRITES: 'enabled' | 'retired';
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -119,6 +118,4 @@ export const envValidationSchema = Joi.object<EnvironmentVariables>({
   TESTFLIGHT_URL: testFlightUrl
     .optional()
     .messages({ 'any.invalid': '"TESTFLIGHT_URL" must be an https://testflight.apple.com link' }),
-  // Release A: retired refuses the v1 transaction and wallet writes of older app builds
-  LEGACY_WRITES: Joi.string().valid('enabled', 'retired').default('enabled'),
 }).unknown(true);

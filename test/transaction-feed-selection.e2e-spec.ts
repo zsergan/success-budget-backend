@@ -3,7 +3,6 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
-import { Wallet } from '@entities/wallet.entity';
 import {
   type FeedPosition,
   type TransactionSelection,
@@ -11,16 +10,22 @@ import {
   searchMatch,
   toSearchPattern,
 } from '@modules/transaction-queries/transaction-queries.service';
-import { AppColor, CategoryIcon, TransactionKind, TransactionType } from '@shared/enums';
-import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
-import { createTestApp, createVerifiedMember, deleteUsers, type Member, type TestApp } from './support/app';
+import { AppColor, AssignmentKind, CategoryIcon, TransactionKind, TransactionType } from '@shared/enums';
+import { recordedAuthor } from '@shared/transaction-ownership';
+import {
+  SPACE_ASSIGNMENT,
+  createTestApp,
+  createVerifiedMember,
+  deleteUsers,
+  type Member,
+  type TestApp,
+} from './support/app';
 
 // The selection the feed pages and totals share, against MySQL: the search
 // depends on collations and LIKE escaping that a mocked query cannot check.
 describe('Transaction feed selection (e2e)', () => {
   let testApp: TestApp;
   let queries: TransactionQueriesService;
-  let wallets: Repository<Wallet>;
   let categories: Repository<Category>;
   let transactions: Repository<Transaction>;
   let member: Member;
@@ -28,18 +33,15 @@ describe('Transaction feed selection (e2e)', () => {
   const from = new Date('2026-10-01T00:00:00.000Z');
   const to = new Date('2026-10-31T23:59:59.999Z');
   const ids: Record<string, string> = {};
-  let card: Wallet;
-  let cash: Wallet;
   let coffee: Category;
   let salary: Category;
   let archived: Category;
 
-  // the v1 search, wallet names included
   const selection = (search?: string, extra: TransactionSelection['filters'] = {}): TransactionSelection => ({
     spaceId: member.spaceId,
     from,
     to,
-    filters: { searchesWallets: true, ...extra, search },
+    filters: { ...extra, search },
   });
 
   // the whole selection as one page
@@ -67,7 +69,6 @@ describe('Transaction feed selection (e2e)', () => {
   beforeAll(async () => {
     testApp = await createTestApp();
     queries = testApp.app.get(TransactionQueriesService);
-    wallets = testApp.app.get(getRepositoryToken(Wallet));
     categories = testApp.app.get(getRepositoryToken(Category));
     transactions = testApp.app.get(getRepositoryToken(Transaction));
     member = await createVerifiedMember(testApp, 'feed-selection');
@@ -86,12 +87,6 @@ describe('Transaction feed selection (e2e)', () => {
         }),
       );
 
-    card = await wallets.save(
-      wallets.create({ space_id: member.spaceId, wallet_name: 'Card', design: AppColor.SLATE }),
-    );
-    cash = await wallets.save(
-      wallets.create({ space_id: member.spaceId, wallet_name: 'Наличные', design: AppColor.SLATE }),
-    );
     coffee = await category('Кофе', TransactionType.EXPENSE);
     salary = await category('Salary', TransactionType.INCOME);
     archived = await category('Old 100%_off!', TransactionType.EXPENSE, { is_active: 0, archived_at: new Date() });
@@ -100,7 +95,6 @@ describe('Transaction feed selection (e2e)', () => {
     const add = async (
       key: string,
       timestamp: string,
-      wallet: Wallet,
       category: Category,
       amount: string,
       description: string | null,
@@ -110,7 +104,6 @@ describe('Transaction feed selection (e2e)', () => {
           space_id: member.spaceId,
           ...recordedAuthor(member.userId),
           ...SPACE_ASSIGNMENT,
-          wallet_id: wallet.id,
           category_id: category.id,
           transaction_type: category.transaction_type,
           amount,
@@ -121,19 +114,17 @@ describe('Transaction feed selection (e2e)', () => {
       ids[key] = saved.id;
     };
 
-    await add('initial', '2026-10-01T06:00:00.000Z', card, system, '100.00', null);
-    await add('latte', '2026-10-02T08:00:00.000Z', card, coffee, '4.50', 'ЛАТТЕ на вынос');
-    await add('tree', '2026-10-03T08:00:00.000Z', card, coffee, '30.00', 'Ёлка');
-    await add('cafe', '2026-10-03T08:00:00.000Z', card, coffee, '12.00', 'Café Central');
-    await add('percent', '2026-10-03T08:00:00.000Z', card, coffee, '1.00', '100 off');
-    await add('literal', '2026-10-04T09:00:00.000Z', card, archived, '2.00', 'a_b 50%! deal');
-    await add('salary', '2026-10-05T10:00:00.000Z', card, salary, '2500.00', 'October');
-    await add('everywhere', '2026-10-06T11:00:00.000Z', card, coffee, '3.00', 'Card кофе');
-    await add('cashOnly', '2026-10-07T12:00:00.000Z', cash, coffee, '7.00', null);
-    await add('quote', '2026-10-08T13:00:00.000Z', card, coffee, '1.50', "it's -- fine");
-    await add('outside', '2026-11-02T08:00:00.000Z', card, coffee, '9.00', 'Кофе в ноябре');
-
-    await wallets.update(cash.id, { is_deleted: 1, deleted_at: new Date() });
+    await add('initial', '2026-10-01T06:00:00.000Z', system, '100.00', null);
+    await add('latte', '2026-10-02T08:00:00.000Z', coffee, '4.50', 'ЛАТТЕ на вынос');
+    await add('tree', '2026-10-03T08:00:00.000Z', coffee, '30.00', 'Ёлка');
+    await add('cafe', '2026-10-03T08:00:00.000Z', coffee, '12.00', 'Café Central');
+    await add('percent', '2026-10-03T08:00:00.000Z', coffee, '1.00', '100 off');
+    await add('literal', '2026-10-04T09:00:00.000Z', archived, '2.00', 'a_b 50%! deal');
+    await add('salary', '2026-10-05T10:00:00.000Z', salary, '2500.00', 'October');
+    await add('everywhere', '2026-10-06T11:00:00.000Z', coffee, '3.00', 'Card кофе');
+    await add('cashOnly', '2026-10-07T12:00:00.000Z', coffee, '7.00', null);
+    await add('quote', '2026-10-08T13:00:00.000Z', coffee, '1.50', "it's -- fine");
+    await add('outside', '2026-11-02T08:00:00.000Z', coffee, '9.00', 'Кофе в ноябре');
   });
 
   afterAll(async () => {
@@ -155,11 +146,9 @@ describe('Transaction feed selection (e2e)', () => {
       expect(await search('old 100')).toEqual(['a_b 50%! deal']);
     });
 
-    it('matches the stored name of a deleted wallet, which is still read as a deleted wallet', async () => {
-      const rows = await select('наличн');
-
-      expect(rows.map((row) => row.id)).toEqual([ids.cashOnly]);
-      expect(rows[0].wallet.is_deleted).toBe(1);
+    it('does not match the names of people or of the wallets records were moved from', async () => {
+      expect(await select('наличн')).toEqual([]);
+      expect(await select('e2e')).toEqual([]);
     });
 
     it('matches the system category by its name', async () => {
@@ -169,17 +158,12 @@ describe('Transaction feed selection (e2e)', () => {
     });
 
     it('lists a record matching in several fields once', async () => {
-      const rows = await select('card');
+      const rows = await select('кофе');
 
       expect(rows.filter((row) => row.id === ids.everywhere)).toHaveLength(1);
-      expect(
-        await queries.countSelection({
-          spaceId: member.spaceId,
-          from,
-          to,
-          filters: { search: 'кофе', searchesWallets: true },
-        }),
-      ).toBe((await select('кофе')).length);
+      expect(await queries.countSelection({ spaceId: member.spaceId, from, to, filters: { search: 'кофе' } })).toBe(
+        rows.length,
+      );
     });
 
     it.each([
@@ -215,11 +199,10 @@ describe('Transaction feed selection (e2e)', () => {
             search: 'кофе',
             kind: TransactionKind.REGULAR,
             transactionType: TransactionType.EXPENSE,
-            walletId: card.id,
-            searchesWallets: true,
+            assignment: { kind: AssignmentKind.SPACE },
           },
         }),
-      ).toBe(6);
+      ).toBe(7);
     });
   });
 
@@ -265,8 +248,8 @@ describe('Transaction feed selection (e2e)', () => {
       [undefined, () => history()],
       // the category of every record but salary, literal and initial
       ['кофе', () => history().filter((id) => ![ids.salary, ids.literal, ids.initial].includes(id))],
-      // the wallet of every record but cashOnly
-      ['card', () => history().filter((id) => id !== ids.cashOnly)],
+      // a description only
+      ['card', () => [ids.everywhere]],
     ])('pages through the records of the history, search %p', async (text, expected) => {
       for (const limit of [1, 2, 3, 100]) {
         const seen = await walk(selection(text), limit);

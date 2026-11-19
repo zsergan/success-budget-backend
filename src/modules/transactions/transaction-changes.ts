@@ -13,9 +13,7 @@ import {
   normalizeDescription,
 } from './transaction-rules';
 
-// An edit of either API version: v1 may move the wallet, v2 the assignment.
 export interface TransactionEdit {
-  wallet_id?: number;
   category_id?: number;
   transaction_type?: TransactionType;
   amount?: string;
@@ -25,18 +23,13 @@ export interface TransactionEdit {
 }
 
 export type TransactionChanges = Partial<
-  Pick<Transaction, 'wallet_id' | 'category_id' | 'transaction_type' | 'amount' | 'timestamp' | 'description'> &
-    AssignmentColumns
+  Pick<Transaction, 'category_id' | 'transaction_type' | 'amount' | 'timestamp' | 'description'> & AssignmentColumns
 >;
 
 // Equality is by value: a field equal to the stored one is not a change.
 // The author is never among them.
 export function changedFields(original: Transaction, edit: TransactionEdit): TransactionChanges {
   const changes: TransactionChanges = {};
-
-  if (edit.wallet_id !== undefined && edit.wallet_id !== original.wallet_id) {
-    changes.wallet_id = edit.wallet_id;
-  }
 
   if (edit.category_id !== undefined && edit.category_id !== original.category_id) {
     changes.category_id = edit.category_id;

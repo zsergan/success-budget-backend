@@ -3,12 +3,20 @@ import type { DataSource } from 'typeorm';
 
 import { formatMoney, parseMoney } from '@shared/utils';
 
-// Deploy checks for AddTransactionSpaceOwnership1791200000000: the
-// preflight it runs itself, and a ledger of the history taken before and
-// after it, compared field by field. The space of a record is read through
-// its wallet on both sides, which the migration leaves as it is, so the
-// ledgers agree only if every record kept its space, category, amounts and
-// version; that the new space_id equals the wallet's space is checked apart.
+// Deploy checks for the migrations that changed who owns a transaction
+// (docs/deployment.md): AddTransactionSpaceOwnership1791200000000 moved every
+// record from its wallet to its space, DropWallets1791400000000 removed the
+// wallets. Each step has a preflight and a ledger of the history taken
+// before and after it, compared field by field. The ledger never reads the
+// wallet of a record, and its space through space_id once that column
+// exists, so it stays comparable across both migrations.
+
+export interface OwnershipSchema {
+  // transactions.space_id and the author and assignment columns
+  hasOwners: boolean;
+  // transactions.wallet_id and the wallets table
+  hasWallets: boolean;
+}
 
 export interface OwnershipProblems {
   transactionsWithoutWallet: string[];
@@ -21,6 +29,9 @@ export interface SpaceLedger {
   transactions: number;
   // sha256 of every record of the space, by id
   digest: string;
+  // sha256 of the author and assignment of every record, by id; absent
+  // before the space-ownership migration added them
+  owners?: string;
 }
 
 export interface MonthTotals {
@@ -48,9 +59,10 @@ export interface TransactionLedger {
 }
 
 export interface OwnershipInvariants {
-  // space_id differs from the wallet's space
+  // space_id differs from the wallet's space; 0 once wallets are gone
   misplaced: number;
-  // none right after the migration; later only records of deleted accounts
+  // none right after the space-ownership migration; later only records of
+  // deleted accounts
   withoutAuthor: number;
   // a user on a space or unassigned record
   inconsistentAssignments: number;
@@ -58,6 +70,18 @@ export interface OwnershipInvariants {
 
 const BATCH = 5000;
 
+export async function readOwnershipSchema(dataSource: DataSource): Promise<OwnershipSchema> {
+  const columns: { COLUMN_NAME: string }[] = await dataSource.query(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transactions' AND COLUMN_NAME IN ('space_id', 'wallet_id')`,
+  );
+  const names = new Set(columns.map((column) => column.COLUMN_NAME));
+
+  return { hasOwners: names.has('space_id'), hasWallets: names.has('wallet_id') };
+}
+
+// The preflight of AddTransactionSpaceOwnership1791200000000: what it would
+// refuse to move.
 export async function findOwnershipProblems(dataSource: DataSource): Promise<OwnershipProblems> {
   const orphans: { id: string }[] = await dataSource.query(
     `SELECT t.id FROM transactions t LEFT JOIN wallets w ON w.id = t.wallet_id WHERE w.id IS NULL ORDER BY t.id`,
@@ -88,10 +112,20 @@ export const hasOwnershipProblems = (problems: OwnershipProblems): boolean =>
   problems.walletsWithoutSpace.length > 0 ||
   problems.spacesWithoutMembers.length > 0;
 
+// The preflight of DropWallets1791400000000: records whose space_id is not
+// their wallet's space, which it refuses to drop the wallets over.
+export async function findMisplacedTransactions(dataSource: DataSource): Promise<string[]> {
+  const rows: { id: string }[] = await dataSource.query(
+    `SELECT t.id FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id
+     WHERE w.space_id <> t.space_id ORDER BY t.id`,
+  );
+
+  return rows.map((row) => row.id);
+}
+
 interface LedgerRow {
   id: string;
   space_id: number;
-  wallet_id: number;
   category_id: number;
   is_system: number;
   transaction_type: string;
@@ -99,6 +133,10 @@ interface LedgerRow {
   timestamp_ms: string | number;
   description: string | null;
   version: number;
+  author_user_id?: number | null;
+  author_source?: string;
+  assignment_kind?: string;
+  assigned_user_id?: number | null;
 }
 
 interface MonthSums {
@@ -107,23 +145,33 @@ interface MonthSums {
   count: number;
 }
 
+type Hash = ReturnType<typeof createHash>;
+
 const byKey = <T>(map: Map<string, T>) => [...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+const nullableNumber = (value: number | string | null | undefined): number | null =>
+  value === null || value === undefined ? null : Number(value);
 
 // Streams the records by id, so a large history is never held in memory.
 // Sums are in exact cents; months are UTC.
 export async function readTransactionLedger(dataSource: DataSource): Promise<TransactionLedger> {
-  const spaces = new Map<number, { transactions: number; hash: ReturnType<typeof createHash> }>();
+  const { hasOwners } = await readOwnershipSchema(dataSource);
+  const spaces = new Map<number, { transactions: number; hash: Hash; owners?: Hash }>();
   const months = new Map<string, MonthSums & { space_id: number; month: string }>();
   const initialBalances = new Map<number, { count: number; amount: bigint }>();
+  const space = hasOwners ? 't.space_id' : 'w.space_id';
+  const ownerColumns = hasOwners ? ', t.author_user_id, t.author_source, t.assignment_kind, t.assigned_user_id' : '';
+  const walletJoin = hasOwners ? '' : 'INNER JOIN wallets w ON w.id = t.wallet_id';
   let after = '';
   let total = 0;
 
   for (;;) {
     const rows: LedgerRow[] = await dataSource.query(
-      `SELECT t.id, w.space_id, t.wallet_id, t.category_id, c.is_system, t.transaction_type, t.amount,
-              CAST(ROUND(UNIX_TIMESTAMP(t.timestamp) * 1000) AS UNSIGNED) AS timestamp_ms, t.description, t.version
+      `SELECT t.id, ${space} AS space_id, t.category_id, c.is_system, t.transaction_type, t.amount,
+              CAST(ROUND(UNIX_TIMESTAMP(t.timestamp) * 1000) AS UNSIGNED) AS timestamp_ms, t.description,
+              t.version${ownerColumns}
        FROM transactions t
-       INNER JOIN wallets w ON w.id = t.wallet_id
+       ${walletJoin}
        INNER JOIN categories c ON c.id = t.category_id
        WHERE t.id > ? ORDER BY t.id LIMIT ${BATCH}`,
       [after],
@@ -131,14 +179,17 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
 
     for (const row of rows) {
       const spaceId = Number(row.space_id);
-      const space = spaces.get(spaceId) ?? { transactions: 0, hash: createHash('sha256') };
+      const ledger = spaces.get(spaceId) ?? {
+        transactions: 0,
+        hash: createHash('sha256'),
+        ...(hasOwners && { owners: createHash('sha256') }),
+      };
       const amount = parseMoney(row.amount);
 
-      space.transactions++;
-      space.hash.update(
+      ledger.transactions++;
+      ledger.hash.update(
         JSON.stringify([
           row.id,
-          Number(row.wallet_id),
           Number(row.category_id),
           row.transaction_type,
           row.amount,
@@ -147,7 +198,16 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
           Number(row.version),
         ]),
       );
-      spaces.set(spaceId, space);
+      ledger.owners?.update(
+        JSON.stringify([
+          row.id,
+          nullableNumber(row.author_user_id),
+          row.author_source,
+          row.assignment_kind,
+          nullableNumber(row.assigned_user_id),
+        ]),
+      );
+      spaces.set(spaceId, ledger);
 
       if (Number(row.is_system)) {
         const balances = initialBalances.get(spaceId) ?? { count: 0, amount: 0n };
@@ -177,10 +237,11 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
     transactions: total,
     spaces: [...spaces.entries()]
       .sort(([a], [b]) => a - b)
-      .map(([spaceId, space]) => ({
+      .map(([spaceId, ledger]) => ({
         space_id: spaceId,
-        transactions: space.transactions,
-        digest: space.hash.digest('hex'),
+        transactions: ledger.transactions,
+        digest: ledger.hash.digest('hex'),
+        ...(ledger.owners && { owners: ledger.owners.digest('hex') }),
       })),
     months: byKey(months).map(([, sums]) => ({
       space_id: sums.space_id,
@@ -200,13 +261,14 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
 }
 
 export async function readOwnershipInvariants(dataSource: DataSource): Promise<OwnershipInvariants> {
+  const { hasWallets } = await readOwnershipSchema(dataSource);
   const [row]: Record<keyof OwnershipInvariants, string | number | null>[] = await dataSource.query(
     `SELECT
-       SUM(CASE WHEN w.space_id <> t.space_id THEN 1 ELSE 0 END) AS misplaced,
+       ${hasWallets ? 'SUM(CASE WHEN w.space_id <> t.space_id THEN 1 ELSE 0 END)' : '0'} AS misplaced,
        SUM(CASE WHEN t.author_user_id IS NULL THEN 1 ELSE 0 END) AS withoutAuthor,
        SUM(CASE WHEN t.assignment_kind <> 'member' AND t.assigned_user_id IS NOT NULL THEN 1 ELSE 0 END)
          AS inconsistentAssignments
-     FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id`,
+     FROM transactions t ${hasWallets ? 'INNER JOIN wallets w ON w.id = t.wallet_id' : ''}`,
   );
 
   return {
@@ -217,7 +279,8 @@ export async function readOwnershipInvariants(dataSource: DataSource): Promise<O
 }
 
 // Every difference between two ledgers, as lines to print; none means the
-// history was preserved.
+// history was preserved. Authors and assignments are compared only when both
+// ledgers have them.
 export function compareLedgers(before: TransactionLedger, after: TransactionLedger): string[] {
   const differences: string[] = [];
 
@@ -235,8 +298,19 @@ export function compareLedgers(before: TransactionLedger, after: TransactionLedg
       }
     }
   };
+  const comparesOwners = before.spaces.some((space) => space.owners) && after.spaces.some((space) => space.owners);
+  const withoutOwners = (space: SpaceLedger): SpaceLedger => ({
+    space_id: space.space_id,
+    transactions: space.transactions,
+    digest: space.digest,
+  });
 
-  compare<SpaceLedger>('space', (space) => String(space.space_id), before.spaces, after.spaces);
+  compare<SpaceLedger>(
+    'space',
+    (space) => String(space.space_id),
+    comparesOwners ? before.spaces : before.spaces.map(withoutOwners),
+    comparesOwners ? after.spaces : after.spaces.map(withoutOwners),
+  );
   compare<MonthTotals>('month', (month) => `${month.space_id}/${month.month}`, before.months, after.months);
   compare<InitialBalances>(
     'initial balances of space',

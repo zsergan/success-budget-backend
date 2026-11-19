@@ -6,9 +6,8 @@ import type { Repository } from 'typeorm';
 
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
-import { Wallet } from '@entities/wallet.entity';
-import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
-import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
+import { AppColor, AssignmentKind, CategoryIcon, TransactionType } from '@shared/enums';
+import { recordedAuthor } from '@shared/transaction-ownership';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
@@ -18,7 +17,7 @@ interface FeedItem {
   transaction_type: 'income' | 'expense';
   amount: string;
   timestamp: string;
-  wallet: { id: number } | null;
+  assignment: { kind: string; user_id: number | null; status: string | null };
 }
 
 interface FeedBody {
@@ -35,7 +34,8 @@ interface ControlRow {
   cents: bigint;
   system: boolean;
   categoryId: number;
-  walletId: number;
+  // the feed assignment filter value of the record
+  assignment: string;
   texts: (string | null)[];
 }
 
@@ -47,7 +47,7 @@ interface FeedQuery {
   transaction_type?: TransactionType;
   kind?: 'regular' | 'initial_balance';
   category_id?: number;
-  wallet_id?: number;
+  assignment?: string;
 }
 
 const fold = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -66,8 +66,6 @@ describe('Transactions feed against a control selection (e2e)', () => {
   let owner: Member;
   let outsider: Member;
   let document: OpenAPIObject;
-  let card: Wallet;
-  let cash: Wallet;
   let coffee: Category;
   let salary: Category;
   let archived: Category;
@@ -84,7 +82,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
     testApp.resetThrottling();
 
     return request(testApp.app.getHttpServer())
-      .get(`/api/v1/spaces/${owner.spaceId}/transactions${path}?${query(params)}`)
+      .get(`/api/v2/spaces/${owner.spaceId}/transactions${path}?${query(params)}`)
       .set('Authorization', `Bearer ${member.token}`);
   };
 
@@ -110,7 +108,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
           (!q.transaction_type || row.type === q.transaction_type) &&
           (!q.kind || row.system === (q.kind === 'initial_balance')) &&
           (!q.category_id || row.categoryId === q.category_id) &&
-          (!q.wallet_id || row.walletId === q.wallet_id) &&
+          (!q.assignment || row.assignment === q.assignment) &&
           (!search || row.texts.some((text) => text !== null && fold(text).includes(search))),
       )
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime() || (a.id < b.id ? 1 : -1));
@@ -163,7 +161,6 @@ describe('Transactions feed against a control selection (e2e)', () => {
     owner = await createVerifiedMember(testApp, 'feed-contract-owner');
     outsider = await createVerifiedMember(testApp, 'feed-contract-outsider');
 
-    const wallets = testApp.app.get<Repository<Wallet>>(getRepositoryToken(Wallet));
     const categories = testApp.app.get<Repository<Category>>(getRepositoryToken(Category));
     const transactions = testApp.app.get<Repository<Transaction>>(getRepositoryToken(Transaction));
 
@@ -180,10 +177,6 @@ describe('Transactions feed against a control selection (e2e)', () => {
         }),
       );
 
-    card = await wallets.save(wallets.create({ space_id: owner.spaceId, wallet_name: 'Card', design: AppColor.SLATE }));
-    cash = await wallets.save(
-      wallets.create({ space_id: owner.spaceId, wallet_name: 'Наличные', design: AppColor.SLATE }),
-    );
     coffee = await category(owner.spaceId, 'Кофе', TransactionType.EXPENSE);
     salary = await category(owner.spaceId, 'Salary', TransactionType.INCOME);
     archived = await category(owner.spaceId, 'Old 50%_off', TransactionType.EXPENSE);
@@ -199,9 +192,16 @@ describe('Transactions feed against a control selection (e2e)', () => {
       return seed / 2 ** 31;
     };
 
+    // the owner, a former member (the outsider), the whole space, nobody
+    const assignments: Pick<Transaction, 'assignment_kind' | 'assigned_user_id'>[] = [
+      { assignment_kind: AssignmentKind.MEMBER, assigned_user_id: owner.userId },
+      { assignment_kind: AssignmentKind.MEMBER, assigned_user_id: outsider.userId },
+      { assignment_kind: AssignmentKind.SPACE, assigned_user_id: null },
+      { assignment_kind: AssignmentKind.UNASSIGNED, assigned_user_id: null },
+    ];
     const rows: Partial<Transaction>[] = [
       {
-        wallet_id: card.id,
+        ...assignments[2],
         category_id: system.id,
         transaction_type: TransactionType.INCOME,
         amount: '100.00',
@@ -218,7 +218,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
           : new Date(Date.UTC(2026, 2, 20) + Math.floor(random() * 17 * 86_400_000));
 
       rows.push({
-        wallet_id: random() < 0.6 ? card.id : cash.id,
+        ...assignments[Math.floor(random() * assignments.length)],
         category_id: categoryOf.id,
         transaction_type: categoryOf.transaction_type,
         amount: (1 + Math.floor(random() * 99_999) / 100).toFixed(2),
@@ -227,16 +227,11 @@ describe('Transactions feed against a control selection (e2e)', () => {
       });
     }
 
-    const owned = { space_id: owner.spaceId, ...recordedAuthor(owner.userId), ...SPACE_ASSIGNMENT };
+    const owned = { space_id: owner.spaceId, ...recordedAuthor(owner.userId) };
     const saved = await transactions.save(rows.map((row) => transactions.create({ ...row, ...owned })));
 
-    await wallets.update(cash.id, { is_deleted: 1, deleted_at: new Date() });
     await categories.update(archived.id, { is_active: 0, archived_at: new Date() });
 
-    const names = new Map<number, string>([
-      [card.id, card.wallet_name],
-      [cash.id, cash.wallet_name],
-    ]);
     const categoryNames = new Map<number, string>([
       [coffee.id, coffee.name],
       [salary.id, salary.name],
@@ -250,8 +245,9 @@ describe('Transactions feed against a control selection (e2e)', () => {
       cents: BigInt(row.amount.replace('.', '')),
       system: row.category_id === system.id,
       categoryId: row.category_id,
-      walletId: row.wallet_id,
-      texts: [row.description, categoryNames.get(row.category_id)!, names.get(row.wallet_id)!],
+      assignment:
+        row.assignment_kind === AssignmentKind.MEMBER ? `member:${row.assigned_user_id}` : row.assignment_kind,
+      texts: [row.description, categoryNames.get(row.category_id)!],
     }));
   });
 
@@ -273,9 +269,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
       ['description and category name at once, Cyrillic in any case', { time_zone: 'UTC', q: 'КОФЕ' }, 9],
       ['accents ignored', { time_zone: 'UTC', q: 'cafe creme' }, 5],
       ['ё and е alike', { time_zone: 'UTC', q: 'елка' }, 6],
-      ['the name of a deleted wallet', { time_zone: 'UTC', q: 'наличн' }, 11],
       ['the name of an archived category', { time_zone: 'UTC', q: 'old 50' }, 13],
-      ['the name of an active wallet', { time_zone: 'UTC', q: 'card' }, 17],
       ['% literally', { time_zone: 'UTC', q: '50%' }, 20],
       ['_ literally', { time_zone: 'UTC', q: 'a_b' }, 20],
       ['outer spaces trimmed, inner kept', { time_zone: 'UTC', q: '  с собой ' }, 20],
@@ -293,8 +287,14 @@ describe('Transactions feed against a control selection (e2e)', () => {
       checkAgainstControl(q, pages);
     });
 
-    it('filters by an archived category and by an active wallet', async () => {
-      for (const params of [{ category_id: archived.id }, { wallet_id: card.id }]) {
+    it('filters by an archived category and by every kind of assignment', async () => {
+      for (const params of [
+        { category_id: archived.id },
+        { assignment: `member:${owner.userId}` },
+        { assignment: `member:${outsider.userId}` },
+        { assignment: 'space' },
+        { assignment: 'unassigned' },
+      ]) {
         const q = { ...period, time_zone: 'UTC', ...params } as FeedQuery;
 
         checkAgainstControl(q, await walkForward(q, 12));
@@ -373,11 +373,15 @@ describe('Transactions feed against a control selection (e2e)', () => {
   });
 
   describe('access and filters', () => {
-    it('reads deleted wallets as null and archived categories as archived', async () => {
-      const page = await feed({ ...period, time_zone: 'UTC', q: 'наличн', limit: 100 });
+    it('does not search the names of people', async () => {
+      expect((await feed({ ...period, time_zone: 'UTC', q: 'E2E' })).summary.count).toBe(0);
+    });
+
+    it('reads an assignment to a user who is not a member as a former member, archived categories as archived', async () => {
+      const page = await feed({ ...period, time_zone: 'UTC', assignment: `member:${outsider.userId}`, limit: 100 });
 
       expect(page.items.length).toBeGreaterThan(0);
-      expect(page.items.every((item) => item.wallet === null)).toBe(true);
+      expect(page.items.every((item) => item.assignment.status === 'former_member')).toBe(true);
 
       const old = await feed({ ...period, time_zone: 'UTC', category_id: archived.id, limit: 1 });
       expect(old.items[0]).toMatchObject({ category: { id: archived.id, is_archived: true } });
@@ -385,7 +389,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
 
     it.each([
       ['a category of another space', () => ({ category_id: foreignCategoryId }), 'FORBIDDEN_CATEGORY'],
-      ['a deleted wallet', () => ({ wallet_id: cash.id }), 'FORBIDDEN_WALLET'],
+      ['a user the space never knew', () => ({ assignment: 'member:2147483647' }), 'FORBIDDEN_MEMBER'],
     ])('refuses %s as a filter, as the count does', async (_, params, code) => {
       const feedRes = await get(owner, '/feed', { ...period, time_zone: 'UTC', ...params() });
       const countRes = await get(owner, '/count', { ...period, ...params() });
@@ -412,12 +416,12 @@ describe('Transactions feed against a control selection (e2e)', () => {
       for (const params of [
         {},
         { q: 'кофе' },
-        { q: 'наличн' },
+        { assignment: 'unassigned' },
         { kind: 'regular' },
         { kind: 'initial_balance' },
         { transaction_type: TransactionType.INCOME },
         { category_id: archived.id },
-        { wallet_id: card.id, q: 'кофе' },
+        { assignment: `member:${outsider.userId}`, q: 'кофе' },
         { from: '2026-03-29T12:00:00.000Z', to: '2026-03-29T12:00:00.000Z' },
       ]) {
         const q = { ...period, time_zone: 'UTC', ...params } as FeedQuery;
@@ -458,7 +462,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
           'time_zone',
           'to',
           'transaction_type',
-          'wallet_id',
+          'assignment',
         ].sort(),
       );
       expect(names('/transactions/count')).toContain('q');

@@ -4,8 +4,7 @@ set -euo pipefail
 # Reproducible, isolated verification of the drill described in
 # docs/deployment.md ("Verifying a restore works"):
 #
-#   1. Create real data (a user + a wallet with a transaction) against a
-#      running app.
+#   1. Create real data (a user + a transaction) against a running app.
 #   2. Back it up with db-backup.sh.
 #   3. Restore that backup into a second, empty database with
 #      db-restore.sh.
@@ -137,11 +136,13 @@ TOKEN=$(curl -sf -X POST "http://127.0.0.1:$APP_PORT/api/v1/users/login" \
 
 SPACE_ID=$(curl -sf "http://127.0.0.1:$APP_PORT/api/v1/spaces" -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
 
-WALLET_JSON=$(curl -sf -X POST "http://127.0.0.1:$APP_PORT/api/v1/spaces/$SPACE_ID/wallets" \
+CATEGORY_ID=$(curl -sf "http://127.0.0.1:$APP_PORT/api/v1/spaces/$SPACE_ID/categories" -H "Authorization: Bearer $TOKEN" | jq -r '.expenses[0].id')
+TRANSACTION_JSON=$(curl -sf -X POST "http://127.0.0.1:$APP_PORT/api/v2/spaces/$SPACE_ID/transactions" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"wallet_name":"Restore Verify","initial_balance":"250.00","design":"evergreen"}')
-echo "$WALLET_JSON" | jq -e '.wallet.id' >/dev/null || { echo "FAIL: wallet creation did not return a wallet" >&2; exit 1; }
-echo "OK: created user, verified, logged in, created a wallet with a starting transaction"
+  -d "{\"category_id\":$CATEGORY_ID,\"transaction_type\":\"expense\",\"amount\":\"250.00\",\"timestamp\":\"2026-01-15T10:00:00Z\",\"description\":\"Restore Verify\",\"assignment\":{\"kind\":\"space\"}}")
+TRANSACTION_ID=$(echo "$TRANSACTION_JSON" | jq -er '.transaction.id') \
+  || { echo "FAIL: transaction creation did not return a transaction" >&2; exit 1; }
+echo "OK: created user, verified, logged in, created a transaction"
 
 echo "=== [2] back up the live database ==="
 BACKUP_DIR="$WORKDIR/backups" DB_HOST=127.0.0.1 DB_PORT="$MYSQL_HOST_PORT" DB_USERNAME=success_budget \
@@ -174,10 +175,10 @@ TOKEN_RESTORED=$(curl -sf -X POST "http://127.0.0.1:$APP_RESTORED_PORT/api/v1/us
 [[ -n "$TOKEN_RESTORED" ]] || { echo "FAIL: login against the restored database failed" >&2; exit 1; }
 
 SPACE_ID_RESTORED=$(curl -sf "http://127.0.0.1:$APP_RESTORED_PORT/api/v1/spaces" -H "Authorization: Bearer $TOKEN_RESTORED" | jq -r '.[0].id')
-WALLETS_RESTORED=$(curl -sf "http://127.0.0.1:$APP_RESTORED_PORT/api/v1/spaces/$SPACE_ID_RESTORED/wallets" -H "Authorization: Bearer $TOKEN_RESTORED")
-echo "$WALLETS_RESTORED" | jq -e '.wallets[].wallet | select(.wallet_name == "Restore Verify")' >/dev/null \
-  || { echo "FAIL: wallet data missing after restore. Response was: $WALLETS_RESTORED" >&2; exit 1; }
-echo "OK: logged in and found the created wallet after restoring into a separate, empty database"
+TRANSACTION_RESTORED=$(curl -sf "http://127.0.0.1:$APP_RESTORED_PORT/api/v2/spaces/$SPACE_ID_RESTORED/transactions/$TRANSACTION_ID" -H "Authorization: Bearer $TOKEN_RESTORED")
+echo "$TRANSACTION_RESTORED" | jq -e 'select(.description == "Restore Verify" and .amount == "250.00")' >/dev/null \
+  || { echo "FAIL: transaction missing after restore. Response was: $TRANSACTION_RESTORED" >&2; exit 1; }
+echo "OK: logged in and found the created transaction after restoring into a separate, empty database"
 
 echo "=== [5] TLS: correct CA succeeds, wrong CA is rejected ==="
 CERT_DIR="$WORKDIR/certs"

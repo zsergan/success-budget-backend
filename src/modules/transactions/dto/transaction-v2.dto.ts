@@ -1,17 +1,17 @@
-import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { CreateTransactionDto } from './create-transaction.dto';
 import { UpdateTransactionDto } from './update-transaction.dto';
 import { IsAssignment, TransactionAssignmentDto } from './transaction-assignment.dto';
 
-// The v1 fields and rules without the wallet, plus the assignment.
-export class CreateTransactionV2Dto extends OmitType(CreateTransactionDto, ['wallet_id'] as const) {
+// The fields and rules shared with the retired v1 API, plus the assignment.
+export class CreateTransactionV2Dto extends CreateTransactionDto {
   @ApiProperty({ type: TransactionAssignmentDto, description: 'Who the transaction is for.' })
   @IsAssignment({ required: true })
   assignment!: TransactionAssignmentDto;
 }
 
-export class UpdateTransactionV2Dto extends OmitType(UpdateTransactionDto, ['wallet_id'] as const) {
+export class UpdateTransactionV2Dto extends UpdateTransactionDto {
   @ApiPropertyOptional({
     type: TransactionAssignmentDto,
     description: 'Absent, or equal to the stored assignment, keeps it, also for a former member.',

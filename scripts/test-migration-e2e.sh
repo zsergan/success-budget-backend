@@ -62,7 +62,6 @@ export MAIL_FROM='Success Budget <no-reply@success-budget.local>'
 export PUBLIC_WEB_ORIGIN=http://localhost:3000
 export NODE_ENV=test
 export LOG_LEVEL=warn
-export LEGACY_WRITES=enabled
 
 cd "$REPO_ROOT"
 

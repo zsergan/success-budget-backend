@@ -3,7 +3,6 @@ import { isUUID } from 'class-validator';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
-import { Wallet } from '@entities/wallet.entity';
 import type { CreateTransactionV2Dto, UpdateTransactionV2Dto } from './dto/transaction-v2.dto';
 import type { TransactionCountQueryV2Dto, TransactionFeedQueryV2Dto } from './dto/transaction-feed-query-v2.dto';
 import type { TransactionCount } from './dto/transaction-responses';
@@ -21,12 +20,11 @@ import { assertNotSystem, assertUserCategory, assertVersion } from './transactio
 import { assertNewValues, changedFields } from './transaction-changes';
 import { assertAssigneeIsMember, assigneeOf, toAssignmentColumns } from './transaction-assignment';
 import { TransactionWrites, type WriteOptions, requireVersion } from './transaction-writes';
-import { lockCompatibilityWallet } from './compatibility-wallet';
 import { TransactionFeedReader } from './transaction-feed-reader';
 import { ApiException } from '@shared/api.exception';
 import { AssignmentKind, PersonStatus, TransactionOperationStatus } from '@shared/enums';
 import { recordedAuthor } from '@shared/transaction-ownership';
-import { assertFound, lockRows, readSnapshot, resolveTimeZone, toDate } from '@shared/utils';
+import { assertFound, readSnapshot, resolveTimeZone, toDate } from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
@@ -61,9 +59,8 @@ const toOption =
     status,
   });
 
-// The v2 transactions API (docs/transactions-v2-contract.md): records of a
-// space with an author and an assignment, no wallet. Shares its write unit,
-// rules and operations with the v1 TransactionsService.
+// The transactions API (docs/transactions-v2-contract.md): records of a space
+// with an author and an assignment.
 @Injectable()
 export class SpaceTransactionsService {
   constructor(
@@ -95,7 +92,6 @@ export class SpaceTransactionsService {
           await this.writes.assertOperationUnused(manager, spaceId, operationId);
         }
 
-        const wallet = await lockCompatibilityWallet(manager, spaceId);
         const category = await this.writes.lockNewCategory(manager, spaceId, dto.category_id, dto.transaction_type);
         const assignment = toAssignmentColumns(dto.assignment);
         assertAssigneeIsMember(assignment, members);
@@ -104,7 +100,6 @@ export class SpaceTransactionsService {
         const saved = await repository.save(
           repository.create({
             space_id: spaceId,
-            wallet_id: wallet.id,
             ...recordedAuthor(userId),
             ...assignment,
             category_id: category.id,
@@ -125,9 +120,11 @@ export class SpaceTransactionsService {
     );
   }
 
-  // The v1 merge rules, with the assignment instead of the wallet. The
-  // author never changes; a stored assignment to a former member is kept
-  // when the edit does not change it.
+  // Merges the request into the stored record; only changed values are
+  // checked against the rules for new values. The author never changes; a
+  // stored assignment to a former member is kept when the edit does not
+  // change it. An edit that changes nothing writes nothing and keeps the
+  // version.
   async update(
     userId: number,
     spaceId: number,
@@ -153,9 +150,6 @@ export class SpaceTransactionsService {
 
         const changes = changedFields(original, dto);
         assertNewValues(changes);
-        // Release A: a v1 create reads its wallet's balance twice under this
-        // lock, so an edit of a record of that wallet waits for it
-        await lockRows(manager, Wallet, [original.wallet_id], 'exclusive');
         await this.writes.checkChangedCategory(manager, spaceId, original, changes);
 
         if (changes.assignment_kind !== undefined) {
@@ -188,8 +182,8 @@ export class SpaceTransactionsService {
     });
   }
 
-  // The v1 feed over the v2 selection: summary and day totals cover exactly
-  // the filtered records, the assignment included, and a cursor carries it.
+  // Summary and day totals cover exactly the filtered records, the
+  // assignment included, and a cursor carries it.
   async getFeed(userId: number, spaceId: number, query: TransactionFeedQueryV2Dto): Promise<TransactionFeedV2> {
     const selection = toSelection(spaceId, query);
 
@@ -200,7 +194,6 @@ export class SpaceTransactionsService {
         limit: query.limit,
         cursor: query.cursor,
         aroundId: query.around_id,
-        version: 2,
       },
       () => this.checkHistoryQuery(userId, selection),
       (items, manager) => this.toViews(manager, spaceId, items),
@@ -255,7 +248,7 @@ export class SpaceTransactionsService {
     });
   }
 
-  // Operations are shared by both versions: one created through v1 is found here.
+  // Also finds the creates of the retired v1 API: operations outlive it.
   async getOperation(userId: number, spaceId: number, operationId: string): Promise<TransactionOperationViewV2> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 

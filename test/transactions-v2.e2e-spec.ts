@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 
 import { SpaceAccessService } from '@modules/space-access/space-access.service';
@@ -13,11 +14,10 @@ interface Space {
   lena: Member;
   mark: Member;
   categoryId: number;
-  walletId: number;
 }
 
-// v1 and v2 clients against the same spaces (docs/transactions-v2-contract.md).
-describe('Transactions v2 next to v1 (e2e)', () => {
+// Writes and reads of a space's records by its members (docs/transactions-v2-contract.md).
+describe('Transactions v2 (e2e)', () => {
   let testApp: TestApp;
   const userIds: number[] = [];
 
@@ -56,7 +56,7 @@ describe('Transactions v2 next to v1 (e2e)', () => {
   const v1 = (spaceId: number) => `/api/v1/spaces/${spaceId}`;
   const v2 = (spaceId: number) => `/api/v2/spaces/${spaceId}/transactions`;
 
-  // a group space of `owner`, joined by `lena` and `mark`, with one v1 wallet
+  // a group space of `owner`, joined by `lena` and `mark`
   async function setup(): Promise<Space> {
     const owner = await createVerifiedMember(testApp, 'v2-owner');
     const lena = await createVerifiedMember(testApp, 'v2-lena');
@@ -79,12 +79,8 @@ describe('Transactions v2 next to v1 (e2e)', () => {
     const categories = await api(owner)
       .get(`${v1(id)}/categories`)
       .expect(200);
-    const wallet = await api(owner)
-      .post(`${v1(id)}/wallets`)
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
 
-    return { id, owner, lena, mark, categoryId: categories.body.expenses[0].id, walletId: wallet.body.wallet.id };
+    return { id, owner, lena, mark, categoryId: categories.body.expenses[0].id };
   }
 
   const expenseV2 = (s: Space, assignment: object, extra: object = {}) => ({
@@ -96,26 +92,10 @@ describe('Transactions v2 next to v1 (e2e)', () => {
     ...extra,
   });
 
-  const expenseV1 = (s: Space, extra: object = {}) => ({
-    wallet_id: s.walletId,
-    category_id: s.categoryId,
-    transaction_type: 'expense',
-    amount: '7.00',
-    timestamp: '2026-09-16T10:00:00.000Z',
-    ...extra,
-  });
-
   const forMember = (member: Member) => ({ kind: 'member', user_id: member.userId });
 
-  async function compatibilityWallets(spaceId: number) {
-    return testApp.dataSource.query<{ id: number; is_deleted: number; compat_space_id: number | null }[]>(
-      "SELECT id, is_deleted, compat_space_id FROM wallets WHERE space_id = ? AND wallet_name = 'Shared transactions'",
-      [spaceId],
-    );
-  }
-
-  describe('reading both ways', () => {
-    it('creates through v2, by the caller for a member, and reads it through v2 and v1', async () => {
+  describe('reading', () => {
+    it('creates by the caller for a member, and reads it back without a wallet', async () => {
       const s = await setup();
 
       const created = await api(s.owner)
@@ -141,80 +121,8 @@ describe('Transactions v2 next to v1 (e2e)', () => {
 
       const viaV1 = await api(s.mark)
         .get(`${v1(s.id)}/transactions/${id}`)
-        .expect(200);
-      expect(viaV1.body).toEqual(
-        expect.objectContaining({
-          id,
-          amount: '12.30',
-          wallet: expect.objectContaining({ wallet_name: 'Shared transactions' }),
-        }),
-      );
-      expect(viaV1.body).not.toHaveProperty('author');
-
-      const wallets = await api(s.mark)
-        .get(`${v1(s.id)}/wallets`)
-        .expect(200);
-      expect(
-        wallets.body.wallets.map((summary: { wallet: { wallet_name: string } }) => summary.wallet.wallet_name),
-      ).toContain('Shared transactions');
-    });
-
-    it('keeps v2 records in one compatibility wallet per space, also under concurrent creates', async () => {
-      const s = await setup();
-
-      await Promise.all(
-        [s.owner, s.lena, s.mark].map((member) =>
-          api(member)
-            .post(v2(s.id))
-            .send(expenseV2(s, { kind: 'space' }))
-            .expect(201),
-        ),
-      );
-
-      expect(await compatibilityWallets(s.id)).toEqual([
-        expect.objectContaining({ is_deleted: 0, compat_space_id: s.id }),
-      ]);
-    });
-
-    it('replaces a compatibility wallet a v1 client deleted on the next v2 create', async () => {
-      const s = await setup();
-      await api(s.owner)
-        .post(v2(s.id))
-        .send(expenseV2(s, { kind: 'space' }))
-        .expect(201);
-      const [first] = await compatibilityWallets(s.id);
-
-      await api(s.owner)
-        .delete(`${v1(s.id)}/wallets/${first.id}`)
-        .expect(200);
-      await api(s.owner)
-        .post(v2(s.id))
-        .send(expenseV2(s, { kind: 'unassigned' }))
-        .expect(201);
-
-      expect(await compatibilityWallets(s.id)).toEqual([
-        expect.objectContaining({ id: first.id, is_deleted: 1, compat_space_id: null }),
-        expect.objectContaining({ is_deleted: 0, compat_space_id: s.id }),
-      ]);
-    });
-
-    it('reads a v1 create through v2 as recorded by its creator for the whole space', async () => {
-      const s = await setup();
-
-      const created = await api(s.lena)
-        .post(`${v1(s.id)}/transactions`)
-        .send(expenseV1(s))
-        .expect(201);
-      const read = await api(s.owner)
-        .get(`${v2(s.id)}/${created.body.transaction.id}`)
-        .expect(200);
-
-      expect(read.body).toEqual(
-        expect.objectContaining({
-          author: { user_id: s.lena.userId, name: 'E2E', status: 'member', source: 'recorded' },
-          assignment: { kind: 'space', user_id: null, name: null, status: null },
-        }),
-      );
+        .expect(410);
+      expect(viaV1.body.code).toBe('LEGACY_API_RETIRED');
     });
 
     it('matches the OpenAPI schemas', async () => {
@@ -242,7 +150,7 @@ describe('Transactions v2 next to v1 (e2e)', () => {
   });
 
   describe('a new space', () => {
-    it('takes v2 records right away, without any wallet to set up', async () => {
+    it('takes records right away, with nothing to set up', async () => {
       const owner = await createVerifiedMember(testApp, 'v2-new-space');
       userIds.push(owner.userId);
       const space = await api(owner)
@@ -253,7 +161,7 @@ describe('Transactions v2 next to v1 (e2e)', () => {
         .get(`${v1(space.body.id)}/categories`)
         .expect(200);
 
-      await api(owner)
+      const created = await api(owner)
         .post(v2(space.body.id))
         .send({
           category_id: categories.body.expenses[0].id,
@@ -264,12 +172,15 @@ describe('Transactions v2 next to v1 (e2e)', () => {
         })
         .expect(201);
 
-      expect(await compatibilityWallets(space.body.id)).toHaveLength(1);
+      const latest = await api(owner)
+        .get(`${v2(space.body.id)}/latest`)
+        .expect(200);
+      expect(latest.body).toEqual(created.body.transaction);
     });
   });
 
   describe('author and assignment on edit', () => {
-    it('keeps them through a v1 edit of the amount, the date, the category and the wallet', async () => {
+    it('keeps them through an edit of the amount, the date and the category by another member', async () => {
       const s = await setup();
       const created = await api(s.owner)
         .post(v2(s.id))
@@ -281,13 +192,12 @@ describe('Transactions v2 next to v1 (e2e)', () => {
         .expect(200);
 
       await api(s.mark)
-        .patch(`${v1(s.id)}/transactions/${id}`)
+        .patch(`${v2(s.id)}/${id}`)
         .set('If-Match', '1')
         .send({
           amount: '20',
           timestamp: '2026-09-17T10:00:00.000Z',
           category_id: categories.body.expenses[1].id,
-          wallet_id: s.walletId,
         })
         .expect(200);
 
@@ -476,7 +386,7 @@ describe('Transactions v2 next to v1 (e2e)', () => {
         .expect(400);
       const wallet = await api(s.owner)
         .post(v2(s.id))
-        .send(expenseV2(s, { kind: 'space' }, { wallet_id: s.walletId }))
+        .send(expenseV2(s, { kind: 'space' }, { wallet_id: 7 }))
         .expect(400);
 
       expect(missing.body.message).toContainEqual(expect.objectContaining({ field: 'assignment' }));
@@ -563,16 +473,35 @@ describe('Transactions v2 next to v1 (e2e)', () => {
       ]);
     });
 
-    it('never answers a v2 create with a stored v1 result, and shares the operation id across versions', async () => {
+    it('never answers with a v1 result stored before the upgrade, and keeps its operation id', async () => {
       const s = await setup();
       const operationId = '0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70';
-
-      const legacy = await api(s.owner)
-        .post(`${v1(s.id)}/transactions`)
-        .set('Idempotency-Key', operationId)
-        .send(expenseV1(s, { client_operation_id: operationId }))
-        .expect(201);
-      expect(legacy.body).toHaveProperty('wallet');
+      const legacyId = randomUUID();
+      // what a v1 create committed under Release A left: the record, its operation and the stored result
+      await testApp.dataSource.query(
+        `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, timestamp, version,
+           author_user_id, author_source, assignment_kind)
+         VALUES (?, ?, ?, 'expense', '7.00', ?, 1, ?, 'recorded', 'space')`,
+        [legacyId, s.id, s.categoryId, new Date('2026-09-16T10:00:00.000Z'), s.owner.userId],
+      );
+      await testApp.dataSource.query(
+        'INSERT INTO transaction_operations (space_id, operation_id, transaction_id, created_at) VALUES (?, ?, ?, ?)',
+        [s.id, operationId, legacyId, new Date()],
+      );
+      await testApp.dataSource.query(
+        `INSERT INTO idempotency_keys (user_id, space_id, operation, idempotency_key, request_hash, response_body,
+           created_at, expires_at)
+         VALUES (?, ?, 'transactions.create', ?, ?, ?, ?, ?)`,
+        [
+          s.owner.userId,
+          s.id,
+          operationId,
+          'a'.repeat(64),
+          JSON.stringify({ transaction: { id: legacyId }, wallet: { id: 7 }, previous_balance: 0 }),
+          new Date(),
+          new Date(Date.now() + 3_600_000),
+        ],
+      );
 
       const converted = await api(s.owner)
         .post(v2(s.id))
@@ -594,7 +523,7 @@ describe('Transactions v2 next to v1 (e2e)', () => {
       expect(lookup.body).toEqual(
         expect.objectContaining({
           status: 'applied',
-          transaction_id: legacy.body.transaction.id,
+          transaction_id: legacyId,
           transaction: expect.objectContaining({ author: expect.objectContaining({ user_id: s.owner.userId }) }),
         }),
       );

@@ -17,7 +17,6 @@ const errorsOf = async <T extends object>(type: new () => T, plain: object) => {
 
 describe('CreateTransactionDto', () => {
   const valid = {
-    wallet_id: 1,
     category_id: 5,
     transaction_type: 'expense',
     amount: '12.3',
@@ -111,14 +110,11 @@ describe('UpdateTransactionDto', () => {
     expect(errors).toEqual({});
   });
 
-  it.each(['wallet_id', 'category_id', 'transaction_type', 'amount', 'timestamp'])(
-    'refuses a null %s',
-    async (field) => {
-      expect((await errorsOf(UpdateTransactionDto, { [field]: null })).errors[field]).toContain(
-        `${field} must not be null`,
-      );
-    },
-  );
+  it.each(['category_id', 'transaction_type', 'amount', 'timestamp'])('refuses a null %s', async (field) => {
+    expect((await errorsOf(UpdateTransactionDto, { [field]: null })).errors[field]).toContain(
+      `${field} must not be null`,
+    );
+  });
 
   it('takes a null description as clearing it', async () => {
     const { dto, errors } = await errorsOf(UpdateTransactionDto, { description: null });
@@ -189,15 +185,15 @@ describe('TransactionFeedQueryDto', () => {
   });
 
   it('turns numeric filters into numbers', async () => {
-    const { dto, errors } = await errorsOf(TransactionFeedQueryDto, { ...valid, category_id: '12', wallet_id: '7' });
+    const { dto, errors } = await errorsOf(TransactionFeedQueryDto, { ...valid, category_id: '12' });
 
     expect(errors).toEqual({});
-    expect(dto).toMatchObject({ category_id: 12, wallet_id: 7 });
+    expect(dto).toMatchObject({ category_id: 12 });
   });
 
-  it.each(['0', '2147483648', '1e3', 'abc'])('refuses the wallet_id %p', async (wallet_id) => {
-    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, wallet_id })).errors)).toEqual([
-      'wallet_id',
+  it.each(['0', '2147483648', '1e3', 'abc'])('refuses the category_id %p', async (category_id) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, category_id })).errors)).toEqual([
+      'category_id',
     ]);
   });
 

@@ -11,9 +11,8 @@ import { User } from '@entities/user.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
-import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
-import { AppColor, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
+import { SpaceRole, SpaceType, TransactionType } from '@shared/enums';
 import { DEFAULT_CATEGORIES, INITIAL_BALANCE_CATEGORY } from '@shared/constants';
 
 // Registration, email verification and POST /spaces each provision a
@@ -90,13 +89,12 @@ describe('Space setup across registration, verification and space creation (e2e)
   }
 
   async function spaceData(spaceId: number) {
-    const [members, wallets, categories, invites] = await Promise.all([
+    const [members, categories, invites] = await Promise.all([
       dataSource.getRepository(SpaceMember).findBy({ space_id: spaceId }),
-      dataSource.getRepository(Wallet).findBy({ space_id: spaceId }),
       dataSource.getRepository(Category).findBy({ space_id: spaceId }),
       dataSource.getRepository(SpaceInvite).findBy({ space_id: spaceId }),
     ]);
-    return { members, wallets, categories, invites };
+    return { members, categories, invites };
   }
 
   function failSavesOf(entity: typeof SpaceMember | typeof Category) {
@@ -139,7 +137,7 @@ describe('Space setup across registration, verification and space creation (e2e)
     expect(listed.archived).toHaveLength(0);
   }
 
-  it('registration creates the user, a personal space and its owner - no wallet, no categories', async () => {
+  it('registration creates the user, a personal space and its owner - no categories yet', async () => {
     const user = await register();
 
     const memberships = await dataSource.getRepository(SpaceMember).findBy({ user_id: user.id });
@@ -151,14 +149,13 @@ describe('Space setup across registration, verification and space creation (e2e)
 
     const data = await spaceData(space.id);
     expect(data.members).toHaveLength(1);
-    expect(data.wallets).toHaveLength(0);
     expect(data.categories).toHaveLength(0);
 
     const stored = await dataSource.getRepository(User).findOneByOrFail({ id: user.id });
     expect(stored.email_verified).toBe(0);
   });
 
-  it('email verification adds one Cash wallet and the default categories to the personal space', async () => {
+  it('email verification adds the default categories to the personal space', async () => {
     const user = await register();
 
     await usersService.completeEmailVerification(user.id);
@@ -168,8 +165,6 @@ describe('Space setup across registration, verification and space creation (e2e)
 
     const data = await spaceData(memberships[0].space_id);
     expect(data.members).toHaveLength(1);
-    expect(data.wallets).toHaveLength(1);
-    expect(data.wallets[0]).toMatchObject({ wallet_name: 'Cash', design: AppColor.SLATE });
     expectDefaultCategories(data.categories);
     await expectCatalogInDisplayOrder(user.id, memberships[0].space_id);
 
@@ -177,7 +172,7 @@ describe('Space setup across registration, verification and space creation (e2e)
     expect(stored.email_verified).toBe(1);
   });
 
-  it('creating a space adds the owner, the default categories and invites - no Cash wallet', async () => {
+  it('creating a space adds the owner, the default categories and invites', async () => {
     const user = await register();
 
     const space = await spacesService.create(user.id, {
@@ -190,7 +185,6 @@ describe('Space setup across registration, verification and space creation (e2e)
     expect(space).toMatchObject({ type: SpaceType.GROUP, currency_id: currencyId });
     const data = await spaceData(space.id);
     expect(data.members).toEqual([expect.objectContaining({ user_id: user.id, role: SpaceRole.OWNER })]);
-    expect(data.wallets).toHaveLength(0);
     expectDefaultCategories(data.categories);
     await expectCatalogInDisplayOrder(user.id, space.id);
     expect(data.invites).toEqual([expect.objectContaining({ email: 'invitee@example.com', role: SpaceRole.MEMBER })]);
@@ -219,7 +213,6 @@ describe('Space setup across registration, verification and space creation (e2e)
 
     jest.restoreAllMocks();
     const data = await spaceData(membership.space_id);
-    expect(data.wallets).toHaveLength(0);
     expect(data.categories).toHaveLength(0);
     const stored = await dataSource.getRepository(User).findOneByOrFail({ id: user.id });
     expect(stored.email_verified).toBe(0);

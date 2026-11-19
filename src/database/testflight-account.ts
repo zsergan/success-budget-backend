@@ -4,13 +4,12 @@ import type { DataSource, EntityManager } from 'typeorm';
 
 import { User } from '@entities/user.entity';
 import { Currency } from '@entities/currency.entity';
-import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
 import { Limit } from '@entities/limit.entity';
 import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/space-setup';
 import { IsNewPassword } from '@shared/decorators/is-new-password.decorator';
-import { AppColor, AssignmentKind, LimitType, SpaceType, TransactionType } from '@shared/enums';
+import { AssignmentKind, LimitType, SpaceType, TransactionType } from '@shared/enums';
 import { isDuplicateKey, runWriteTransaction } from '@shared/utils';
 import { recordedAuthor } from '@shared/transaction-ownership';
 
@@ -237,11 +236,6 @@ async function createAccount(manager: EntityManager, input: TestFlightAccountInp
     user.id,
   );
 
-  const walletRepository = manager.getRepository(Wallet);
-  const wallet = await walletRepository.save(
-    walletRepository.create({ space_id: space.id, wallet_name: 'Cash', design: AppColor.SLATE }),
-  );
-
   await createDefaultCategories(manager, space.id);
 
   const categories = await manager.getRepository(Category).findBy({ space_id: space.id, is_system: 0 });
@@ -261,7 +255,6 @@ async function createAccount(manager: EntityManager, input: TestFlightAccountInp
     SAMPLE_TRANSACTIONS.map((sample) =>
       transactionRepository.create({
         space_id: space.id,
-        wallet_id: wallet.id,
         ...recordedAuthor(user.id),
         assignment_kind: sample.assignment,
         assigned_user_id: sample.assignment === AssignmentKind.MEMBER ? user.id : null,

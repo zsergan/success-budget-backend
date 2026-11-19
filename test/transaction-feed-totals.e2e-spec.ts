@@ -1,6 +1,13 @@
 import request from 'supertest';
 
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import {
+  type Member,
+  type TestApp,
+  createTestApp,
+  createVerifiedMember,
+  deleteUsers,
+  insertLegacyTransaction,
+} from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
 interface FeedBody {
@@ -14,28 +21,27 @@ interface FeedBody {
 describe('Transactions feed totals (e2e)', () => {
   let testApp: TestApp;
   let owner: Member;
-  let walletId: number;
   let expenseCategoryId: number;
   let incomeCategoryId: number;
 
   const feed = async (query: string): Promise<FeedBody> =>
     (
       await request(testApp.app.getHttpServer())
-        .get(`/api/v1/spaces/${owner.spaceId}/transactions/feed?${query}`)
+        .get(`/api/v2/spaces/${owner.spaceId}/transactions/feed?${query}`)
         .set('Authorization', `Bearer ${owner.token}`)
         .expect(200)
     ).body;
 
   async function add(type: 'income' | 'expense', amount: string, timestamp: string) {
     await request(testApp.app.getHttpServer())
-      .post(`/api/v1/spaces/${owner.spaceId}/transactions`)
+      .post(`/api/v2/spaces/${owner.spaceId}/transactions`)
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
-        wallet_id: walletId,
         category_id: type === 'income' ? incomeCategoryId : expenseCategoryId,
         transaction_type: type,
         amount,
         timestamp,
+        assignment: { kind: 'space' },
       })
       .expect(201);
   }
@@ -45,16 +51,16 @@ describe('Transactions feed totals (e2e)', () => {
     owner = await createVerifiedMember(testApp, 'feed-totals');
 
     const server = testApp.app.getHttpServer();
-    const wallet = await request(server)
-      .post(`/api/v1/spaces/${owner.spaceId}/wallets`)
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ wallet_name: 'Card', initial_balance: '100', design: 'slate' })
-      .expect(201);
-    walletId = wallet.body.wallet.id;
-    await testApp.dataSource.query('UPDATE transactions SET timestamp = ? WHERE wallet_id = ?', [
-      new Date('2026-02-10T09:00:00.000Z'),
-      walletId,
+    const [system] = await testApp.dataSource.query('SELECT id FROM categories WHERE space_id = ? AND is_system = 1', [
+      owner.spaceId,
     ]);
+    await insertLegacyTransaction(testApp.dataSource, {
+      spaceId: owner.spaceId,
+      categoryId: system.id,
+      type: 'income',
+      amount: '100.00',
+      timestamp: new Date('2026-02-10T09:00:00.000Z'),
+    });
 
     const categories = await request(server)
       .get(`/api/v1/spaces/${owner.spaceId}/categories`)
@@ -213,7 +219,7 @@ describe('Transactions feed totals (e2e)', () => {
     const count = async (query: string) =>
       (
         await request(testApp.app.getHttpServer())
-          .get(`/api/v1/spaces/${owner.spaceId}/transactions/count?${query}`)
+          .get(`/api/v2/spaces/${owner.spaceId}/transactions/count?${query}`)
           .set('Authorization', `Bearer ${owner.token}`)
       ).body;
     const period = 'from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z';
@@ -243,9 +249,12 @@ describe('Transactions feed totals (e2e)', () => {
       });
     });
 
-    it('keeps the old parameter rules: date-only bounds and the month default', async () => {
-      expect(await count('from=2026-02-01&to=2026-02-28')).toEqual({ count: 7 });
-      expect(await count('')).toEqual({ count: expect.any(Number) });
+    it('takes both bounds as instants, in order', async () => {
+      expect(await count('from=2026-02-01&to=2026-02-28')).toMatchObject({
+        statusCode: 400,
+        code: 'VALIDATION_FAILED',
+      });
+      expect(await count('')).toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' });
       expect(await count('from=2026-02-28T00:00:00.000Z&to=2026-02-01T00:00:00.000Z')).toMatchObject({
         statusCode: 400,
         message: [{ field: 'from', error: 'from must not be after to' }],

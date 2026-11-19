@@ -1,7 +1,6 @@
 import { HttpStatus } from '@nestjs/common';
 
 import type { Category } from '@entities/category.entity';
-import type { Wallet } from '@entities/wallet.entity';
 import type { Transaction } from '@entities/transaction.entity';
 import type { TransactionType } from '@shared/enums';
 import { ApiException } from '@shared/api.exception';
@@ -9,17 +8,7 @@ import { assertBelongsToSpace } from '@shared/utils';
 
 // Building blocks shared by create and update. Create applies all of them;
 // update applies each only to a value that changes, which is what lets an
-// edit keep a deleted wallet or an archived category it already had.
-
-export function assertWalletInSpace(wallet: Wallet | null | undefined, spaceId: number): asserts wallet is Wallet {
-  assertBelongsToSpace(wallet, spaceId, 'FORBIDDEN_WALLET');
-}
-
-export function assertWalletActive(wallet: Wallet): void {
-  if (wallet.is_deleted) {
-    throw new ApiException('WALLET_DELETED', HttpStatus.BAD_REQUEST);
-  }
-}
+// edit keep an archived category it already had.
 
 // any category of the space but the system one
 export function assertUserCategory(

@@ -10,41 +10,45 @@ import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { User } from '@entities/user.entity';
 import { Currency } from '@entities/currency.entity';
-import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
 
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { CategoriesService } from '@modules/categories/categories.service';
 import { LimitsService } from '@modules/limits/limits.service';
-import { WalletsService } from '@modules/wallets/wallets.service';
 import { LimitsController } from '@modules/limits/limits.controller';
 
-import { AppColor, AuthorSource, CategoryIcon, SpaceRole, SpaceType, TransactionType } from '@shared/enums';
+import {
+  AppColor,
+  AssignmentKind,
+  AuthorSource,
+  CategoryIcon,
+  SpaceRole,
+  SpaceType,
+  TransactionType,
+} from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import type { AuthedRequest } from '@shared/types';
-import { SPACE_ASSIGNMENT } from '@shared/transaction-ownership';
+import { SPACE_ASSIGNMENT } from './support/app';
 
-// These exercise the SQL aggregation queries added in Stages 2-4
-// (TransactionQueriesService.getPeriodTotals/getExpensesByCategory,
-// CategoriesService.getMany) against a real MySQL instance, at the service
-// layer - the unit specs mock QueryBuilder and can't catch a query that is
-// syntactically valid but returns the wrong rows.
-describe('Wallet & limit summary queries against a real database (e2e)', () => {
+// These exercise the SQL aggregation queries behind limits
+// (TransactionQueriesService.getExpensesByCategory, CategoriesService.getMany)
+// against a real MySQL instance, at the service layer - the unit specs mock
+// QueryBuilder and can't catch a query that is syntactically valid but
+// returns the wrong rows.
+describe('Limit summary queries against a real database (e2e)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
 
   let transactionQueriesService: TransactionQueriesService;
   let categoriesService: CategoriesService;
   let limitsService: LimitsService;
-  let walletsService: WalletsService;
   let limitsController: LimitsController;
 
   let spaceRepository: Repository<Space>;
   let spaceMemberRepository: Repository<SpaceMember>;
   let userRepository: Repository<User>;
   let currencyRepository: Repository<Currency>;
-  let walletRepository: Repository<Wallet>;
   let categoryRepository: Repository<Category>;
   let transactionRepository: Repository<Transaction>;
 
@@ -65,14 +69,12 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
     transactionQueriesService = moduleFixture.get(TransactionQueriesService);
     categoriesService = moduleFixture.get(CategoriesService);
     limitsService = moduleFixture.get(LimitsService);
-    walletsService = moduleFixture.get(WalletsService);
     limitsController = moduleFixture.get(LimitsController);
 
     spaceRepository = moduleFixture.get(getRepositoryToken(Space));
     spaceMemberRepository = moduleFixture.get(getRepositoryToken(SpaceMember));
     userRepository = moduleFixture.get(getRepositoryToken(User));
     currencyRepository = moduleFixture.get(getRepositoryToken(Currency));
-    walletRepository = moduleFixture.get(getRepositoryToken(Wallet));
     categoryRepository = moduleFixture.get(getRepositoryToken(Category));
     transactionRepository = moduleFixture.get(getRepositoryToken(Transaction));
 
@@ -133,10 +135,6 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
     return user.id;
   }
 
-  async function createWallet(spaceId: number, wallet_name = 'Wallet'): Promise<Wallet> {
-    return walletRepository.save(walletRepository.create({ space_id: spaceId, wallet_name, design: AppColor.SLATE }));
-  }
-
   async function createCategory(
     spaceId: number,
     transaction_type: TransactionType,
@@ -156,13 +154,13 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
   }
 
   async function createTransaction(
-    wallet_id: number,
+    space_id: number,
     category_id: number,
     transaction_type: TransactionType,
     amount: string,
     timestamp: Date,
+    assignment: Pick<Transaction, 'assignment_kind' | 'assigned_user_id'> = SPACE_ASSIGNMENT,
   ): Promise<Transaction> {
-    const { space_id } = await walletRepository.findOneByOrFail({ id: wallet_id });
     // some spaces here have no member; the author is not what these tests read
     const member = await spaceMemberRepository.findOneBy({ space_id });
 
@@ -171,8 +169,7 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
         space_id,
         author_user_id: member?.user_id ?? null,
         author_source: AuthorSource.RECORDED,
-        ...SPACE_ASSIGNMENT,
-        wallet_id,
+        ...assignment,
         category_id,
         transaction_type,
         amount,
@@ -180,55 +177,6 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       }),
     );
   }
-
-  describe('wallet balances and period totals', () => {
-    it('aggregates multiple wallets and categories, honors inclusive period boundaries, and defaults empty ones to zero', async () => {
-      const spaceId = await createSpace();
-      const income = await createCategory(spaceId, TransactionType.INCOME, { name: 'Salary' });
-      const expense = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'Food' });
-
-      const w1 = await createWallet(spaceId, 'W1');
-      const w2 = await createWallet(spaceId, 'W2');
-      const w3 = await createWallet(spaceId, 'W3 (untouched)');
-
-      const from = new Date(2026, 0, 1, 0, 0, 0, 0);
-      const to = new Date(2026, 0, 31, 23, 59, 59, 999);
-
-      await createTransaction(w1.id, income.id, TransactionType.INCOME, '1000', new Date(2025, 11, 15)); // before period, all-time only
-      await createTransaction(w1.id, income.id, TransactionType.INCOME, '500', from); // exactly on the lower boundary
-      await createTransaction(w1.id, expense.id, TransactionType.EXPENSE, '120.5', new Date(2026, 0, 15));
-      await createTransaction(w1.id, expense.id, TransactionType.EXPENSE, '50', to); // exactly on the upper boundary
-      await createTransaction(w1.id, income.id, TransactionType.INCOME, '200', new Date(to.getTime() + 1)); // after period, all-time only
-      await createTransaction(w2.id, expense.id, TransactionType.EXPENSE, '30', new Date(2026, 0, 10));
-
-      const walletIds = [w1.id, w2.id, w3.id];
-
-      const balances = await transactionQueriesService.getBalances(walletIds);
-      expect(balances.get(w1.id)).toBe(152950n);
-      expect(balances.get(w2.id)).toBe(-3000n);
-      expect(balances.get(w3.id)).toBe(0n);
-
-      const periodTotals = await transactionQueriesService.getPeriodTotals(walletIds, from, to);
-      expect(periodTotals.get(w1.id)).toEqual({ income: 50000n, spend: 17050n });
-      expect(periodTotals.get(w2.id)).toEqual({ income: 0n, spend: 3000n });
-      expect(periodTotals.get(w3.id)).toEqual({ income: 0n, spend: 0n });
-    });
-
-    it('builds the full wallets overview from the aggregated maps, including total_balance and delta_percent', async () => {
-      const spaceId = await createSpace();
-      const userId = await createUserWithMembership(spaceId);
-      const income = await createCategory(spaceId, TransactionType.INCOME, { name: 'Salary' });
-      const wallet = await createWallet(spaceId, 'Main');
-
-      await createTransaction(wallet.id, income.id, TransactionType.INCOME, '400', new Date());
-
-      const overview = await walletsService.getOverview(userId, spaceId, new Date(2000, 0, 1), new Date(2100, 0, 1));
-
-      expect(overview.total_balance).toBe(400);
-      expect(overview.wallets).toHaveLength(1);
-      expect(overview.wallets[0]).toMatchObject({ total_income: 400, total_spend: 0 });
-    });
-  });
 
   describe('space isolation', () => {
     it('never mixes one space expense totals into another, even with identically-named categories', async () => {
@@ -238,12 +186,10 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const to = new Date(2026, 1, 28, 23, 59, 59, 999);
 
       const catA = await createCategory(spaceA, TransactionType.EXPENSE, { name: 'Groceries' });
-      const walletA = await createWallet(spaceA, 'A');
-      await createTransaction(walletA.id, catA.id, TransactionType.EXPENSE, '70', new Date(2026, 1, 10));
+      await createTransaction(spaceA, catA.id, TransactionType.EXPENSE, '70', new Date(2026, 1, 10));
 
       const catB = await createCategory(spaceB, TransactionType.EXPENSE, { name: 'Groceries' });
-      const walletB = await createWallet(spaceB, 'B');
-      await createTransaction(walletB.id, catB.id, TransactionType.EXPENSE, '999', new Date(2026, 1, 10));
+      await createTransaction(spaceB, catB.id, TransactionType.EXPENSE, '999', new Date(2026, 1, 10));
 
       const totalsA = await transactionQueriesService.getExpensesByCategory(spaceA, from, to);
       const totalsB = await transactionQueriesService.getExpensesByCategory(spaceB, from, to);
@@ -255,46 +201,27 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
     });
   });
 
-  describe('deleted wallets: excluded from wallet summaries, still counted by limits', () => {
-    it('keeps a soft-deleted wallet history in the category aggregate used by limits, but out of getAll/getBalances', async () => {
+  describe('every expense of the space counts toward limits, whoever it is assigned to', () => {
+    it('sums member, space and unassigned expenses of the period by category, bounds included', async () => {
       const spaceId = await createSpace();
       const userId = await createUserWithMembership(spaceId);
       const catA = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'A' });
       const catB = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'B' });
       const catIncome = await createCategory(spaceId, TransactionType.INCOME, { name: 'Income' });
-
-      const kept = await createWallet(spaceId, 'kept');
-      const deleted = await createWallet(spaceId, 'to be deleted');
+      const member = { assignment_kind: AssignmentKind.MEMBER, assigned_user_id: userId };
+      const nobody = { assignment_kind: AssignmentKind.UNASSIGNED, assigned_user_id: null };
 
       const from = new Date(2026, 2, 1, 0, 0, 0, 0);
       const to = new Date(2026, 2, 31, 23, 59, 59, 999);
 
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '100.25', new Date(2026, 2, 10));
-      await createTransaction(kept.id, catB.id, TransactionType.EXPENSE, '40', from); // lower boundary
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '15', to); // upper boundary
-      await createTransaction(kept.id, catIncome.id, TransactionType.INCOME, '500', new Date(2026, 2, 12));
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '5', new Date(from.getTime() - 1)); // outside
-      await createTransaction(kept.id, catA.id, TransactionType.EXPENSE, '7', new Date(to.getTime() + 1)); // outside
-      await createTransaction(deleted.id, catA.id, TransactionType.EXPENSE, '60', new Date(2026, 2, 11));
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '100.25', new Date(2026, 2, 10), member);
+      await createTransaction(spaceId, catB.id, TransactionType.EXPENSE, '40', from, nobody); // lower boundary
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '15', to); // upper boundary
+      await createTransaction(spaceId, catIncome.id, TransactionType.INCOME, '500', new Date(2026, 2, 12));
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '5', new Date(from.getTime() - 1)); // outside
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '7', new Date(to.getTime() + 1)); // outside
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '60', new Date(2026, 2, 11), nobody);
 
-      await walletsService.delete(userId, spaceId, deleted.id);
-
-      const visibleWallets = await walletsService.getAll(spaceId);
-      expect(visibleWallets.map((w) => w.id)).toEqual([kept.id]);
-
-      const balances = await transactionQueriesService.getBalances(visibleWallets.map((w) => w.id));
-      expect(balances.get(kept.id)).toBe(33275n);
-      expect(balances.has(deleted.id)).toBe(false);
-
-      const periodTotals = await transactionQueriesService.getPeriodTotals(
-        visibleWallets.map((w) => w.id),
-        from,
-        to,
-      );
-      expect(periodTotals.get(kept.id)).toEqual({ income: 50000n, spend: 15525n });
-
-      // limits scope by space, not by wallet visibility - the deleted
-      // wallet's history still counts against a category limit
       const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
       expect(categoryTotals.get(catA.id)).toBe(17525n);
       expect(categoryTotals.get(catB.id)).toBe(4000n);
@@ -308,15 +235,14 @@ describe('Wallet & limit summary queries against a real database (e2e)', () => {
       const catX = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'X' });
       const catY = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'Y' });
       const catZ = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'Z (no limit)' });
-      const wallet = await createWallet(spaceId, 'W');
 
       const from = new Date(2026, 3, 1, 0, 0, 0, 0);
       const to = new Date(2026, 3, 30, 23, 59, 59, 999);
 
-      await createTransaction(wallet.id, catX.id, TransactionType.EXPENSE, '12.34', new Date(2026, 3, 5));
-      await createTransaction(wallet.id, catX.id, TransactionType.EXPENSE, '0.01', new Date(2026, 3, 6));
-      await createTransaction(wallet.id, catY.id, TransactionType.EXPENSE, '45.65', new Date(2026, 3, 7));
-      await createTransaction(wallet.id, catZ.id, TransactionType.EXPENSE, '100', new Date(2026, 3, 8));
+      await createTransaction(spaceId, catX.id, TransactionType.EXPENSE, '12.34', new Date(2026, 3, 5));
+      await createTransaction(spaceId, catX.id, TransactionType.EXPENSE, '0.01', new Date(2026, 3, 6));
+      await createTransaction(spaceId, catY.id, TransactionType.EXPENSE, '45.65', new Date(2026, 3, 7));
+      await createTransaction(spaceId, catZ.id, TransactionType.EXPENSE, '100', new Date(2026, 3, 8));
 
       const userId = await createUserWithMembership(spaceId);
       await limitsService.create(userId, spaceId, { amount: '50' }); // monthly total, less than the group's own amount

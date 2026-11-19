@@ -1,10 +1,7 @@
-import { buildCategoryBreakdown, buildWalletBreakdown, foldGroups } from './statistics-breakdown';
+import { buildCategoryBreakdown, foldGroups } from './statistics-breakdown';
 import { AppColor } from '@shared/enums';
 import { parseMoney } from '@shared/utils';
-import type {
-  StatisticsCategoryGroup,
-  StatisticsWalletGroup,
-} from '@modules/transaction-queries/transaction-queries.service';
+import type { StatisticsCategoryGroup } from '@modules/transaction-queries/transaction-queries.service';
 
 const groups = (...amounts: string[]) => amounts.map((amount, i) => ({ id: i + 1, amount: parseMoney(amount) }));
 const ids = (list: { id: number }[]) => list.map((group) => group.id);
@@ -24,15 +21,6 @@ const category = (id: number, name: string, amount: string, overrides: Partial<S
   amount: parseMoney(amount),
   count: 1,
   ...overrides,
-});
-
-const wallet = (id: number, amount: string, isDeleted = false): StatisticsWalletGroup => ({
-  id,
-  name: `Wallet ${id}`,
-  design: AppColor.SLATE,
-  isDeleted,
-  amount: parseMoney(amount),
-  count: 1,
 });
 
 describe('foldGroups', () => {
@@ -101,20 +89,15 @@ describe('foldGroups', () => {
 });
 
 describe('segments', () => {
-  const segments = (breakdown: { primary_items: unknown[]; other: unknown; deleted_wallets?: unknown }) =>
-    breakdown.primary_items.length + (breakdown.other ? 1 : 0) + (breakdown.deleted_wallets ? 1 : 0);
+  const segments = (breakdown: { primary_items: unknown[]; other: unknown }) =>
+    breakdown.primary_items.length + (breakdown.other ? 1 : 0);
 
   it.each([1, 2, 6, 7, 8, 20, 100])('never exceed seven for %i equal groups', (count) => {
     const ids = Array.from({ length: count }, (_, i) => i + 1);
     const categories = buildCategoryBreakdown(ids.map((id) => category(id, `C${id}`, '10.00')));
-    const wallets = buildWalletBreakdown(ids.map((id) => wallet(id, '10.00')));
-    const withDeleted = buildWalletBreakdown([...ids.map((id) => wallet(id, '10.00')), wallet(0, '10.00', true)]);
 
     expect(segments(categories)).toBeLessThanOrEqual(7);
-    expect(segments(wallets)).toBeLessThanOrEqual(7);
-    expect(segments(withDeleted)).toBeLessThanOrEqual(7);
     expect(categories.source_count).toBe(count);
-    expect(withDeleted.source_count).toBe(count + 1);
   });
 });
 
@@ -199,81 +182,6 @@ describe('buildCategoryBreakdown', () => {
       source_count: 0,
       primary_items: [],
       other: null,
-    });
-  });
-});
-
-describe('buildWalletBreakdown', () => {
-  it('keeps deleted wallets as one service group and five primary slots', () => {
-    const result = buildWalletBreakdown([
-      wallet(1, '30.00'),
-      wallet(2, '20.00'),
-      wallet(3, '15.00'),
-      wallet(4, '10.00'),
-      wallet(5, '8.00'),
-      wallet(6, '7.00'),
-      wallet(7, '6.00', true),
-      wallet(8, '4.00', true),
-      wallet(9, '0.00', true),
-    ]);
-
-    expect(result.total_amount).toBe('100.00');
-    // real wallets with positive expenses, deleted ones included
-    expect(result.source_count).toBe(8);
-    expect(result.primary_items.map((item) => item.id)).toEqual([1, 2, 3, 4, 5]);
-    expect(result.primary_items[0]).toMatchObject({
-      kind: 'wallet',
-      key: 'wallet:1',
-      icon: null,
-      is_archived: false,
-      opens_history: true,
-    });
-    expect(result.deleted_wallets).toEqual({
-      kind: 'deleted_wallets',
-      key: 'deleted_wallets',
-      id: null,
-      name: null,
-      icon: null,
-      color: null,
-      amount: '10.00',
-      percent: 10,
-      is_archived: false,
-      opens_history: false,
-      wallets_count: 2,
-    });
-    expect(result.other).toMatchObject({ amount: '7.00', percent: 7, children: [expect.objectContaining({ id: 6 })] });
-  });
-
-  it('keeps a small deleted group outside the threshold and six slots without it', () => {
-    const withSmallDeleted = buildWalletBreakdown([wallet(1, '99.00'), wallet(2, '1.00', true)]);
-
-    expect(withSmallDeleted.deleted_wallets).toMatchObject({ amount: '1.00', percent: 1 });
-    expect(withSmallDeleted.other).toBeNull();
-
-    const seven = buildWalletBreakdown([1, 2, 3, 4, 5, 6, 7].map((id) => wallet(id, '10.00')));
-
-    expect(seven.primary_items).toHaveLength(6);
-    expect(seven.deleted_wallets).toBeNull();
-    expect(seven.other?.children).toHaveLength(1);
-  });
-
-  it('keeps the deleted group apart from many regular wallets', () => {
-    const regular = Array.from({ length: 12 }, (_, i) => wallet(i + 1, `${100 - i}.00`));
-    const deleted = [wallet(20, '1.00', true), wallet(21, '0.50', true)];
-
-    const result = buildWalletBreakdown([...deleted, ...regular]);
-
-    expect(result.source_count).toBe(14);
-    expect(result.primary_items.map((item) => item.id)).toEqual([1, 2, 3, 4, 5]);
-    expect(result.deleted_wallets).toMatchObject({ amount: '1.50', wallets_count: 2 });
-    expect(result.other?.children.map((item) => item.id)).toEqual([6, 7, 8, 9, 10, 11, 12]);
-    expect(result.other?.children.every((item) => item.kind === 'wallet')).toBe(true);
-  });
-
-  it('does not show a zero deleted group', () => {
-    expect(buildWalletBreakdown([wallet(1, '5.00'), wallet(2, '0.00', true)])).toMatchObject({
-      source_count: 1,
-      deleted_wallets: null,
     });
   });
 });

@@ -52,109 +52,15 @@ describe('TransactionQueriesService', () => {
     service = module.get(TransactionQueriesService);
   });
 
-  describe('getBalances', () => {
-    it('returns an empty map without querying when there are no wallets', async () => {
-      const result = await service.getBalances([]);
-
-      expect(result).toEqual(new Map());
-      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
-    });
-
-    it('defaults every requested wallet to 0 when none has transactions', async () => {
-      const result = await service.getBalances([1, 2]);
-
-      expect(result).toEqual(
-        new Map([
-          [1, 0n],
-          [2, 0n],
-        ]),
-      );
-    });
-
-    it('sums income and expense transactions per wallet', async () => {
-      queryBuilder.getRawMany.mockResolvedValue([
-        { wallet_id: '1', balance: '150.10' },
-        { wallet_id: '2', balance: '-20.05' },
-      ]);
-
-      const result = await service.getBalances([1, 2, 3]);
-
-      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
-        walletIds: [1, 2, 3],
-      });
-      expect(queryBuilder.setParameter).toHaveBeenCalledWith('income', TransactionType.INCOME);
-      expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
-      expect(result).toEqual(
-        new Map([
-          [1, 15010n],
-          [2, -2005n],
-          [3, 0n],
-        ]),
-      );
-    });
-  });
-
-  it('keeps a SUM above the single-amount range exact', async () => {
-    queryBuilder.getRawMany.mockResolvedValue([{ wallet_id: '1', balance: '1234567890123.45' }]);
-
-    const result = await service.getBalances([1]);
-
-    expect(result.get(1)).toBe(123456789012345n);
-  });
-
-  describe('getPeriodTotals', () => {
-    it('leaves initial balances out of income', async () => {
-      await service.getPeriodTotals([1], new Date(), new Date());
-
-      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
-    });
-
-    it('returns an all-zero map without querying when there are no wallets', async () => {
-      const result = await service.getPeriodTotals([], new Date(), new Date());
-
-      expect(result).toEqual(new Map());
-      expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
-    });
-
-    it('defaults every requested wallet to zero totals when none has transactions', async () => {
-      const result = await service.getPeriodTotals([1, 2], new Date(), new Date());
-
-      expect(result).toEqual(
-        new Map([
-          [1, { income: 0n, spend: 0n }],
-          [2, { income: 0n, spend: 0n }],
-        ]),
-      );
-    });
-
-    it('sums income and expense transactions per wallet within the date range in one grouped query', async () => {
-      const from = new Date('2026-01-01');
-      const to = new Date('2026-01-31');
-      queryBuilder.getRawMany.mockResolvedValue([
-        { wallet_id: '1', income: '200.00', spend: '0.00' },
-        { wallet_id: '2', income: '0.00', spend: '50.30' },
-      ]);
-
-      const result = await service.getPeriodTotals([1, 2, 3], from, to);
-
-      expect(queryBuilder.where).toHaveBeenCalledWith('transaction.wallet_id IN (:...walletIds)', {
-        walletIds: [1, 2, 3],
-      });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(2, 'transaction.timestamp >= :from', { from });
-      expect(queryBuilder.andWhere).toHaveBeenNthCalledWith(3, 'transaction.timestamp <= :to', { to });
-      expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.wallet_id');
-      expect(result).toEqual(
-        new Map([
-          [1, { income: 20000n, spend: 0n }],
-          [2, { income: 0n, spend: 5030n }],
-          [3, { income: 0n, spend: 0n }],
-        ]),
-      );
-    });
-  });
-
   describe('getExpensesByCategory', () => {
+    it('keeps a SUM above the single-amount range exact', async () => {
+      queryBuilder.getRawMany.mockResolvedValue([{ category_id: 1, spent: '1234567890123.45' }]);
+
+      const result = await service.getExpensesByCategory(9, new Date(), new Date());
+
+      expect(result.get(1)).toBe(123456789012345n);
+    });
+
     it('sums expenses per category for a space in one grouped query', async () => {
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
@@ -233,22 +139,22 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('FALSE');
     });
 
-    it('counts the records of the space by their own space, without the wallet', async () => {
+    it('counts the records of the space by their own space', async () => {
       await count();
 
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 9 });
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
-      expect(queryBuilder.innerJoin).not.toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoin).toHaveBeenCalledTimes(1);
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
 
     it('adds only the filters that are set', async () => {
-      await count({ transactionType: TransactionType.EXPENSE, walletId: 3 });
+      await count({ transactionType: TransactionType.EXPENSE });
 
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :transactionType', {
         transactionType: 'expense',
       });
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.wallet_id = :walletId', { walletId: 3 });
+      expect(queryBuilder.andWhere).toHaveBeenCalledTimes(3);
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(
         'transaction.category_id = :categoryId',
         expect.anything(),
@@ -328,28 +234,14 @@ describe('TransactionQueriesService', () => {
       expect(parameters).toEqual({ searchPattern: '%latte%' });
       expect(condition).toContain('transaction.description');
       expect(condition).toContain('category.name');
-      expect(condition).not.toContain('wallet');
       expect(condition.match(/COLLATE utf8mb4_0900_ai_ci/g)).toHaveLength(4);
       expect(condition).not.toContain('latte');
-      expect(queryBuilder.innerJoin).not.toHaveBeenCalledWith('transaction.wallet', 'wallet');
-    });
-
-    it('also searches wallet names for v1', async () => {
-      queryBuilder.getCount.mockResolvedValue(0);
-
-      await count({ search: 'card', searchesWallets: true });
-
-      expect(searchCondition()[0]).toContain(
-        'transaction.wallet_id IN (SELECT `wallet`.`id` FROM `wallets` `wallet` WHERE `wallet`.`space_id` = :spaceId',
-      );
-      expect(searchCondition()[0]).toContain('`wallet`.`wallet_name`');
-      expect(queryBuilder.innerJoin).not.toHaveBeenCalledWith('transaction.wallet', 'wallet');
     });
 
     it('adds no text condition for blank text', async () => {
       queryBuilder.getCount.mockResolvedValue(0);
 
-      await count({ search: '   ', searchesWallets: true });
+      await count({ search: '   ' });
 
       expect(queryBuilder.andWhere).toHaveBeenCalledTimes(2);
     });
@@ -361,8 +253,8 @@ describe('TransactionQueriesService', () => {
     it('reads one more id than the page in the history order, then loads the page', async () => {
       queryBuilder.getRawMany.mockResolvedValueOnce([{ id: 'b' }, { id: 'a' }, { id: 'z' }]);
       queryBuilder.getMany.mockResolvedValue([
-        { id: 'a', wallet: {}, category: {} },
-        { id: 'b', wallet: {}, category: {} },
+        { id: 'a', category: {} },
+        { id: 'b', category: {} },
       ]);
 
       const page = await service.getFeedPage(selection, { limit: 2 });
@@ -378,8 +270,8 @@ describe('TransactionQueriesService', () => {
       const position = { timestamp: new Date('2026-01-10T00:00:00Z'), id: 'm' };
       queryBuilder.getRawMany.mockResolvedValueOnce([{ id: 'n' }, { id: 'o' }]);
       queryBuilder.getMany.mockResolvedValue([
-        { id: 'n', wallet: {}, category: {} },
-        { id: 'o', wallet: {}, category: {} },
+        { id: 'n', category: {} },
+        { id: 'o', category: {} },
       ]);
 
       const page = await service.getFeedPage(selection, { limit: 5, before: position });
@@ -437,7 +329,7 @@ describe('TransactionQueriesService', () => {
 
       expect(await service.getOneInSpace(9, 'tx-1')).toBeNull();
 
-      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledTimes(1);
       expect(queryBuilder.innerJoinAndSelect).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.id = :transactionId', { transactionId: 'tx-1' });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 9 });
@@ -494,7 +386,7 @@ describe('TransactionQueriesService', () => {
       expect(result).toEqual({ income: 300000n, incomeCount: 1, expense: 81050n, expenseCount: 9 });
       expect(manager.createQueryBuilder).toHaveBeenCalledWith(Transaction, 'transaction');
       expect(transactionRepository.createQueryBuilder).not.toHaveBeenCalled();
-      expect(queryBuilder.innerJoin).not.toHaveBeenCalledWith('transaction.wallet', 'wallet');
+      expect(queryBuilder.innerJoin).toHaveBeenCalledTimes(1);
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 7 });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
@@ -575,23 +467,6 @@ describe('TransactionQueriesService', () => {
         transactionType: 'expense',
       });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('category.id');
-    });
-
-    it('sums the transactions of the type per wallet, deleted ones included', async () => {
-      queryBuilder.getRawMany.mockResolvedValue([
-        { id: '3', name: 'Old card', design: 'slate', is_deleted: '1', amount: '105.50', count: '2' },
-      ]);
-
-      const result = await service.getStatisticsByWallet(7, TransactionType.INCOME, from, to, manager);
-
-      expect(result).toEqual([{ id: 3, name: 'Old card', design: 'slate', isDeleted: true, amount: 10550n, count: 2 }]);
-      expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.wallet', 'wallet');
-      expect(queryBuilder.groupBy).toHaveBeenCalledWith('wallet.id');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :transactionType', {
-        transactionType: 'income',
-      });
-      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('is_deleted'));
     });
   });
 

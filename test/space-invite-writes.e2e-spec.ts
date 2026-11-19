@@ -447,24 +447,19 @@ describe('Space invitation writes (e2e)', () => {
     }
 
     async function spaceData(owner: Member, spaceId: number) {
-      const wallet = await api(owner)
-        .post(`/api/v1/spaces/${spaceId}/wallets`)
-        .send({ wallet_name: 'Card', initial_balance: '100', design: 'slate' })
-        .expect(201);
       const categories = await api(owner).get(`/api/v1/spaces/${spaceId}/categories`).expect(200);
       const transaction = await api(owner)
-        .post(`/api/v1/spaces/${spaceId}/transactions`)
+        .post(`/api/v2/spaces/${spaceId}/transactions`)
         .send({
-          wallet_id: wallet.body.wallet.id,
           category_id: categories.body.expenses[0].id,
           transaction_type: 'expense',
           amount: '12.30',
           timestamp: '2026-09-15T10:00:00.000Z',
+          assignment: { kind: 'member', user_id: owner.userId },
         })
         .expect(201);
 
       return {
-        walletId: wallet.body.wallet.id as number,
         categoryId: categories.body.expenses[0].id as number,
         transactionId: transaction.body.transaction.id as number,
       };
@@ -491,15 +486,16 @@ describe('Space invitation writes (e2e)', () => {
       expect(await roles(spaceId)).toEqual([{ user_id: recipient.userId, role: 'owner' }]);
 
       const [stored] = await testApp.dataSource.query(
-        `SELECT w.id AS wallet_id, t.id AS transaction_id, t.category_id
-         FROM wallets w JOIN transactions t ON t.wallet_id = w.id
-         WHERE w.space_id = ? AND t.id = ?`,
+        `SELECT t.id AS transaction_id, t.category_id, t.author_user_id, t.assignment_kind, t.assigned_user_id
+         FROM transactions t WHERE t.space_id = ? AND t.id = ?`,
         [spaceId, data.transactionId],
       );
       expect(stored).toEqual({
-        wallet_id: data.walletId,
         transaction_id: data.transactionId,
         category_id: data.categoryId,
+        author_user_id: owner.userId,
+        assignment_kind: 'member',
+        assigned_user_id: owner.userId,
       });
       await api(recipient).get(`/api/v1/spaces/${spaceId}`).expect(200);
       await api(owner).get(`/api/v1/spaces/${spaceId}`).expect(403);

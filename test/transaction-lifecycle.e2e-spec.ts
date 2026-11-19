@@ -36,6 +36,10 @@ describe('Transaction lifecycle (e2e)', () => {
     return `/api/v1/spaces/${member.spaceId}`;
   }
 
+  function v2(): string {
+    return `/api/v2/spaces/${member.spaceId}`;
+  }
+
   function api() {
     const agent = request(testApp.app.getHttpServer());
     const withAuth =
@@ -46,41 +50,35 @@ describe('Transaction lifecycle (e2e)', () => {
     return { get: withAuth('get'), post: withAuth('post'), patch: withAuth('patch'), delete: withAuth('delete') };
   }
 
-  async function createWallet(name: string, initialBalance = '0'): Promise<number> {
-    const res = await api()
-      .post(`${base()}/wallets`)
-      .send({ wallet_name: name, initial_balance: initialBalance, design: 'slate' })
-      .expect(201);
-    return res.body.wallet.id;
-  }
-
   function create(body: Record<string, unknown>) {
-    return api().post(`${base()}/transactions`).send(body);
+    return api()
+      .post(`${v2()}/transactions`)
+      .send({ assignment: { kind: 'space' }, ...body });
   }
 
   function patch(id: string, version: number, body: object) {
-    return api().patch(`${base()}/transactions/${id}`).set('If-Match', `"${version}"`).send(body);
+    return api().patch(`${v2()}/transactions/${id}`).set('If-Match', `"${version}"`).send(body);
   }
 
   function remove(id: string, version: number) {
-    return api().delete(`${base()}/transactions/${id}`).set('If-Match', `"${version}"`);
+    return api().delete(`${v2()}/transactions/${id}`).set('If-Match', `"${version}"`);
   }
 
   // every derived figure of the space for the current month in ZONE
   async function snapshot() {
     const month = monthPeriodAt(new Date(), ZONE);
     const bounds = { from: month.from.toISOString(), to: month.to.toISOString() };
-    const [wallets, limits, summary, count, list] = await Promise.all([
-      api().get(`${base()}/wallets`).query(bounds).expect(200),
+    const [limits, summary, breakdown, count, list] = await Promise.all([
       api().get(`${base()}/limits`).query({ time_zone: ZONE }).expect(200),
-      api().get(`${base()}/statistics/summary`).query({ period: 'month', time_zone: ZONE }).expect(200),
-      api().get(`${base()}/transactions/count`).query(bounds).expect(200),
+      api().get(`${v2()}/statistics/summary`).query({ period: 'month', time_zone: ZONE }).expect(200),
+      api().get(`${v2()}/statistics/breakdown`).query({ period: 'month', time_zone: ZONE }).expect(200),
+      api().get(`${v2()}/transactions/count`).query(bounds).expect(200),
       api().get(`${base()}/categories`).expect(200),
     ]);
-    const balances = Object.fromEntries(
-      wallets.body.wallets.map((entry: { wallet: { wallet_name: string; balance: number } }) => [
-        entry.wallet.wallet_name,
-        entry.wallet.balance,
+    const assignments = Object.fromEntries(
+      breakdown.body.by_assignment.primary_items.map((item: { key: string; amount: string }) => [
+        item.key,
+        item.amount,
       ]),
     );
     const counters = [...list.body.incomes, ...list.body.expenses]
@@ -88,8 +86,7 @@ describe('Transaction lifecycle (e2e)', () => {
       .map((category: { id: number; transaction_count: number }) => [category.id, category.transaction_count]);
 
     return {
-      balances,
-      total_balance: wallets.body.total_balance,
+      assignments,
       spent: limits.body.total?.spent ?? null,
       income: summary.body.income,
       expense: summary.body.expense,
@@ -98,26 +95,23 @@ describe('Transaction lifecycle (e2e)', () => {
     };
   }
 
-  it('keeps every derived figure consistent through create, edits, a move, delete and undo', async () => {
-    const card = await createWallet('Card', '100');
-    const pocket = await createWallet('Pocket');
+  it('keeps every derived figure consistent through create, edits, a reassignment, delete and undo', async () => {
     const [salary] = categories.incomes;
     const [food, transport] = categories.expenses;
     await api().post(`${base()}/limits`).send({ amount: '1000' }).expect(201);
     const now = () => new Date(Date.now() - 1000).toISOString();
+    const me = `member:${member.userId}`;
 
     expect(await snapshot()).toEqual({
-      balances: { Card: 100, Pocket: 0, Cash: 0 },
-      total_balance: 100,
+      assignments: {},
       spent: 0,
       income: { amount: '0.00', count: 0 },
       expense: { amount: '0.00', count: 0 },
-      rows: 1,
+      rows: 0,
       counters: [],
     });
 
     const created = await create({
-      wallet_id: card,
       category_id: food.id,
       transaction_type: 'expense',
       amount: '12.30',
@@ -125,44 +119,39 @@ describe('Transaction lifecycle (e2e)', () => {
       description: 'Lunch',
     }).expect(201);
     const id = created.body.transaction.id;
-    expect(created.body).toEqual(
-      expect.objectContaining({ previous_balance: 100, wallet: expect.objectContaining({ balance: 87.7 }) }),
-    );
-    const read = await api().get(`${base()}/transactions/${id}`).expect(200);
+    const read = await api().get(`${v2()}/transactions/${id}`).expect(200);
     expect(read.body).toEqual(created.body.transaction);
-    expect(await snapshot()).toEqual(
-      expect.objectContaining({
-        balances: { Card: 87.7, Pocket: 0, Cash: 0 },
-        spent: 12.3,
-        expense: { amount: '12.30', count: 1 },
-        rows: 2,
-        counters: [[food.id, 1]],
-      }),
-    );
+    expect(await snapshot()).toEqual({
+      assignments: { space: '12.30' },
+      spent: 12.3,
+      income: { amount: '0.00', count: 0 },
+      expense: { amount: '12.30', count: 1 },
+      rows: 1,
+      counters: [[food.id, 1]],
+    });
 
     await patch(id, 1, { amount: '20.00', category_id: transport.id }).expect(200);
     expect(await snapshot()).toEqual(
       expect.objectContaining({
-        balances: { Card: 80, Pocket: 0, Cash: 0 },
+        assignments: { space: '20.00' },
         spent: 20,
         expense: { amount: '20.00', count: 1 },
         counters: [[transport.id, 1]],
       }),
     );
 
-    const moved = await patch(id, 2, { wallet_id: pocket }).expect(200);
-    expect(moved.body.wallets).toEqual([
-      { id: card, balance: 100, is_deleted: false },
-      { id: pocket, balance: -20, is_deleted: false },
-    ]);
-    expect(await snapshot()).toEqual(
-      expect.objectContaining({ balances: { Card: 100, Pocket: -20, Cash: 0 }, total_balance: 80, spent: 20 }),
-    );
+    const reassigned = await patch(id, 2, { assignment: { kind: 'member', user_id: member.userId } }).expect(200);
+    expect(reassigned.body.transaction).toMatchObject({
+      version: 3,
+      assignment: { kind: 'member', user_id: member.userId, status: 'member' },
+      author: { user_id: member.userId, source: 'recorded' },
+    });
+    expect(await snapshot()).toEqual(expect.objectContaining({ assignments: { [me]: '20.00' }, spent: 20, rows: 1 }));
 
     await patch(id, 3, { transaction_type: 'income', category_id: salary.id }).expect(200);
     expect(await snapshot()).toEqual(
       expect.objectContaining({
-        balances: { Card: 100, Pocket: 20, Cash: 0 },
+        assignments: {},
         spent: 0,
         income: { amount: '20.00', count: 1 },
         expense: { amount: '0.00', count: 0 },
@@ -172,57 +161,31 @@ describe('Transaction lifecycle (e2e)', () => {
 
     await patch(id, 4, { transaction_type: 'expense', category_id: food.id }).expect(200);
     expect(await snapshot()).toEqual(
-      expect.objectContaining({ balances: { Card: 100, Pocket: -20, Cash: 0 }, spent: 20, counters: [[food.id, 1]] }),
+      expect.objectContaining({ assignments: { [me]: '20.00' }, spent: 20, counters: [[food.id, 1]] }),
     );
 
     await remove(id, 5).expect(200);
     expect(await snapshot()).toEqual({
-      balances: { Card: 100, Pocket: 0, Cash: 0 },
-      total_balance: 100,
+      assignments: {},
       spent: 0,
       income: { amount: '0.00', count: 0 },
       expense: { amount: '0.00', count: 0 },
-      rows: 1,
+      rows: 0,
       counters: [],
     });
 
     // undo: the delete of the record just created, with the version POST returned
     const again = await create({
-      wallet_id: card,
       category_id: food.id,
       transaction_type: 'expense',
       amount: '5',
       timestamp: now(),
     }).expect(201);
     await remove(again.body.transaction.id, again.body.transaction.version).expect(200);
-    expect(await snapshot()).toEqual(
-      expect.objectContaining({ balances: { Card: 100, Pocket: 0, Cash: 0 }, spent: 0, rows: 1 }),
-    );
-  });
-
-  it('moves a transaction off a deleted wallet onto an active one', async () => {
-    const old = await createWallet('Old');
-    const active = await createWallet('Active', '50');
-    const created = await create({
-      wallet_id: old,
-      category_id: categories.expenses[0].id,
-      transaction_type: 'expense',
-      amount: '10',
-      timestamp: '2026-09-15T10:00:00.000Z',
-    }).expect(201);
-    await api().delete(`${base()}/wallets/${old}`).expect(200);
-
-    const res = await patch(created.body.transaction.id, 1, { wallet_id: active }).expect(200);
-
-    expect(res.body.wallets).toEqual([
-      { id: old, balance: 0, is_deleted: true },
-      { id: active, balance: 40, is_deleted: false },
-    ]);
-    expect(res.body.transaction.wallet).toEqual(expect.objectContaining({ id: active }));
+    expect(await snapshot()).toEqual(expect.objectContaining({ assignments: {}, spent: 0, rows: 0 }));
   });
 
   it('refuses moving to another archived category while keeping its own', async () => {
-    const wallet = await createWallet('Card');
     const archive = async (name: string) => {
       const category = await api()
         .post(`${base()}/categories`)
@@ -233,7 +196,6 @@ describe('Transaction lifecycle (e2e)', () => {
     const own = await archive('Own');
     const other = await archive('Other');
     const created = await create({
-      wallet_id: wallet,
       category_id: own,
       transaction_type: 'expense',
       amount: '1',
@@ -241,7 +203,6 @@ describe('Transaction lifecycle (e2e)', () => {
     }).expect(201);
     // gives Other history too, so deleting it archives it
     const keepOther = await create({
-      wallet_id: wallet,
       category_id: other,
       transaction_type: 'expense',
       amount: '1',
@@ -260,9 +221,7 @@ describe('Transaction lifecycle (e2e)', () => {
   });
 
   it('keeps a legacy future timestamp on an unrelated edit and refuses a new future one', async () => {
-    const wallet = await createWallet('Card');
     const created = await create({
-      wallet_id: wallet,
       category_id: categories.expenses[0].id,
       transaction_type: 'expense',
       amount: '1',
@@ -284,9 +243,7 @@ describe('Transaction lifecycle (e2e)', () => {
   });
 
   it('refuses a delete of the version an edit is replacing: the delete waits, then conflicts', async () => {
-    const wallet = await createWallet('Card');
     const created = await create({
-      wallet_id: wallet,
       category_id: categories.expenses[0].id,
       transaction_type: 'expense',
       amount: '1',
@@ -307,14 +264,13 @@ describe('Transaction lifecycle (e2e)', () => {
     expect(edited.status).toBe(200);
     expect(deleted.status).toBe(409);
     expect(deleted.body.code).toBe('TRANSACTION_VERSION_CONFLICT');
-    expect((await api().get(`${base()}/transactions/${id}`).expect(200)).body).toEqual(
+    expect((await api().get(`${v2()}/transactions/${id}`).expect(200)).body).toEqual(
       expect.objectContaining({ amount: '2.00', version: 2 }),
     );
   });
 
   it('bounds a local day across a DST change the same way in history and statistics', async () => {
     const zone = 'America/New_York';
-    const wallet = await createWallet('Card');
     // 2026-03-08 is 23 hours long in New York: clocks go from 02:00 EST to 03:00 EDT
     const day = DateTime.fromISO('2026-03-08', { zone });
     const from = day.startOf('day').toJSDate();
@@ -322,7 +278,6 @@ describe('Transaction lifecycle (e2e)', () => {
     expect(to.getTime() - from.getTime()).toBe(23 * 3_600_000 - 1);
     const add = async (timestamp: string) =>
       create({
-        wallet_id: wallet,
         category_id: categories.expenses[0].id,
         transaction_type: 'expense',
         amount: '1',
@@ -334,11 +289,11 @@ describe('Transaction lifecycle (e2e)', () => {
     await add('2026-03-09T04:30:00.000Z');
 
     const count = await api()
-      .get(`${base()}/transactions/count`)
+      .get(`${v2()}/transactions/count`)
       .query({ from: from.toISOString(), to: to.toISOString() })
       .expect(200);
     const statistics = await api()
-      .get(`${base()}/statistics/summary`)
+      .get(`${v2()}/statistics/summary`)
       .query({ period: 'custom', from_date: '2026-03-08', to_date: '2026-03-08', time_zone: zone })
       .expect(200);
 
@@ -349,11 +304,11 @@ describe('Transaction lifecycle (e2e)', () => {
     // moving it by an hour, across midnight, takes it out of the day everywhere
     await patch(late.body.transaction.id, 1, { timestamp: '2026-03-09T04:15:00.000Z' }).expect(200);
     const after = await api()
-      .get(`${base()}/transactions/count`)
+      .get(`${v2()}/transactions/count`)
       .query({ from: from.toISOString(), to: to.toISOString() })
       .expect(200);
     const statisticsAfter = await api()
-      .get(`${base()}/statistics/summary`)
+      .get(`${v2()}/statistics/summary`)
       .query({ period: 'custom', from_date: '2026-03-08', to_date: '2026-03-08', time_zone: zone })
       .expect(200);
     expect(after.body).toEqual({ count: 0 });

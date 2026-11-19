@@ -6,7 +6,6 @@ import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
 
 import { User } from '@entities/user.entity';
-import { Wallet } from '@entities/wallet.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import type { CreateUserDto } from './dto/create-user.dto';
@@ -16,7 +15,7 @@ import { ConfirmationCodesService } from '@modules/confirmation-codes/confirmati
 import { MailService } from '@modules/mail/mail.service';
 import { createDefaultCategories, createSpaceWithOwner } from '@modules/spaces/space-setup';
 import { ApiException } from '@shared/api.exception';
-import { ConfirmationType, AppColor, SpaceType } from '@shared/enums';
+import { ConfirmationType, SpaceType } from '@shared/enums';
 import { MAX_CONFIRMATION_CODE_ATTEMPTS, PASSWORD_HASH_ROUNDS } from '@shared/constants';
 import { assertFound, constantTimeEquals, isDuplicateKey } from '@shared/utils';
 import type { AccessTokenPayload } from '@shared/types';
@@ -266,18 +265,6 @@ export class UsersService {
     // POST /spaces and create another one before this point
     const spaceMember = await manager.getRepository(SpaceMember).findOneOrFail({ where: { user_id: userId } });
     const space = await manager.getRepository(Space).findOneOrFail({ where: { id: spaceMember.space_id } });
-
-    // Release A only: builds older than the v2 transactions API record
-    // nothing without a wallet; v2 needs none, and retired builds write none
-    if (this.configService.get('LEGACY_WRITES', { infer: true }) !== 'retired') {
-      await manager.getRepository(Wallet).save(
-        manager.getRepository(Wallet).create({
-          space_id: space.id,
-          wallet_name: 'Cash',
-          design: AppColor.SLATE,
-        }),
-      );
-    }
 
     await createDefaultCategories(manager, space.id);
   }

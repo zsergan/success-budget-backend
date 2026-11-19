@@ -12,13 +12,7 @@ import {
   type TransactionSelection,
 } from '@modules/transaction-queries/transaction-queries.service';
 import { calendarDateAt, endOfDay, formatCalendarDate, startOfDay } from '@modules/statistics/statistics-calendar';
-import {
-  type FeedApiVersion,
-  type FeedCursor,
-  decodeFeedCursor,
-  encodeFeedCursor,
-  selectionDigest,
-} from './feed-cursor';
+import { type FeedCursor, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
 import type {
   TransactionFeedDayTotal,
   TransactionFeedPageInfo,
@@ -31,8 +25,6 @@ export interface FeedRequest {
   limit: number;
   cursor?: string;
   aroundId?: string;
-  // a cursor of one version is refused by the other
-  version: FeedApiVersion;
 }
 
 export interface FeedResult<V> {
@@ -54,8 +46,8 @@ const positionOf = (transaction: Pick<Transaction, 'timestamp' | 'id'>): FeedPos
   id: transaction.id,
 });
 
-// The feed of either API version: cursor pages, the window around a record,
-// and the totals of the whole selection, read in one snapshot.
+// The feed: cursor pages, the window around a record, and the totals of the
+// whole selection, read in one snapshot.
 @Injectable()
 export class TransactionFeedReader {
   constructor(
@@ -71,7 +63,7 @@ export class TransactionFeedReader {
     toViews: (items: LoadedTransaction[], manager: EntityManager) => Promise<V[]>,
   ): Promise<FeedResult<V>> {
     const { selection, timeZone, limit, aroundId } = request;
-    const digest = selectionDigest(selection, timeZone, request.version);
+    const digest = selectionDigest(selection, timeZone);
 
     if (request.cursor !== undefined && aroundId !== undefined) {
       throw new BadRequestException([{ field: 'cursor', error: 'cursor and around_id cannot be used together' }]);

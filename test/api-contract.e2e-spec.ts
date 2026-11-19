@@ -4,10 +4,11 @@ import type { OpenAPIObject } from '@nestjs/swagger';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { createOpenApiDocument } from './support/openapi';
 
-// The rules of docs/transactions-contract.md a client relies on, pinned in
-// one place: editing is PATCH, writes to an existing record need its version,
-// every request amount stops at 99999999.99, and the monthly total limit
-// counts every expense of the month.
+// The rules of docs/transactions-contract.md and docs/transactions-v2-contract.md
+// a client relies on, pinned in one place: editing is PATCH, writes to an
+// existing record need its version, every request amount stops at
+// 99999999.99, the monthly total limit counts every expense of the month, and
+// the retired v1 transaction, statistics and wallet routes answer 410.
 describe('API contract (e2e)', () => {
   let testApp: TestApp;
   let document: OpenAPIObject;
@@ -28,7 +29,6 @@ describe('API contract (e2e)', () => {
 
   interface Space {
     member: Member;
-    walletId: number;
     expenses: number[];
     incomeId: number;
   }
@@ -36,26 +36,26 @@ describe('API contract (e2e)', () => {
   async function space(): Promise<Space> {
     const member = await createVerifiedMember(testApp, 'api-contract');
     userIds.push(member.userId);
-    const wallet = await api(member)
-      .post('/wallets')
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
     const categories = await api(member).get('/categories').expect(200);
 
     return {
       member,
-      walletId: wallet.body.wallet.id,
       expenses: categories.body.expenses.map((category: { id: number }) => category.id),
       incomeId: categories.body.incomes[0].id,
     };
   }
 
+  // transactions under /api/v2, everything else under /api/v1
   function api(member: Member) {
     const agent = request(testApp.app.getHttpServer());
+    const version = (path: string) => (path.startsWith('/transactions') ? 'v2' : 'v1');
     const withAuth =
       (method: 'get' | 'post' | 'put' | 'patch' | 'delete') =>
       (path: string): request.Test =>
-        agent[method](`/api/v1/spaces/${member.spaceId}${path}`).set('Authorization', `Bearer ${member.token}`);
+        agent[method](`/api/${version(path)}/spaces/${member.spaceId}${path}`).set(
+          'Authorization',
+          `Bearer ${member.token}`,
+        );
 
     return {
       get: withAuth('get'),
@@ -70,11 +70,11 @@ describe('API contract (e2e)', () => {
     return api(s.member)
       .post('/transactions')
       .send({
-        wallet_id: s.walletId,
         category_id: categoryId,
         transaction_type: type,
         amount,
         timestamp: new Date(Date.now() - 1000).toISOString(),
+        assignment: { kind: 'space' },
       });
   }
 
@@ -109,38 +109,36 @@ describe('API contract (e2e)', () => {
       },
     );
 
-    it.each([0, -1, 1.5, 2147483648])(
-      'rejects invalid transaction ids %s before looking up a wallet or category',
-      async (id) => {
-        const s = await space();
-        const created = await createTransaction(s, s.expenses[0], '10').expect(201);
-        for (const field of ['wallet_id', 'category_id']) {
-          const create = await api(s.member)
-            .post('/transactions')
-            .send({
-              wallet_id: s.walletId,
-              category_id: s.expenses[0],
-              transaction_type: 'expense',
-              amount: '10',
-              timestamp: '2026-09-15T10:00:00.000Z',
-              [field]: id,
-            })
-            .expect(400);
-          const update = await api(s.member)
-            .patch(`/transactions/${created.body.transaction.id}`)
-            .set('If-Match', '1')
-            .send({ [field]: id })
-            .expect(400);
-          expect(create.body.code).toBe('VALIDATION_FAILED');
-          expect(update.body.code).toBe('VALIDATION_FAILED');
-        }
-      },
-    );
+    it.each([0, -1, 1.5, 2147483648])('rejects invalid ids %s before looking up a category or a member', async (id) => {
+      const s = await space();
+      const created = await createTransaction(s, s.expenses[0], '10').expect(201);
+      for (const field of ['category_id', 'assignment']) {
+        const value = field === 'assignment' ? { kind: 'member', user_id: id } : id;
+        const create = await api(s.member)
+          .post('/transactions')
+          .send({
+            category_id: s.expenses[0],
+            assignment: { kind: 'space' },
+            transaction_type: 'expense',
+            amount: '10',
+            timestamp: '2026-09-15T10:00:00.000Z',
+            [field]: value,
+          })
+          .expect(400);
+        const update = await api(s.member)
+          .patch(`/transactions/${created.body.transaction.id}`)
+          .set('If-Match', '1')
+          .send({ [field]: value })
+          .expect(400);
+        expect(create.body.code).toBe('VALIDATION_FAILED');
+        expect(update.body.code).toBe('VALIDATION_FAILED');
+      }
+    });
   });
 
   describe('transaction routes', () => {
     it('reads the history only through the feed: the unpaged list is gone', async () => {
-      const prefix = '/api/v1/spaces/{spaceId}/transactions';
+      const prefix = '/api/v2/spaces/{spaceId}/transactions';
       const routes = Object.fromEntries(
         Object.entries(document.paths)
           .filter(([path]) => path === prefix || path.startsWith(`${prefix}/`))
@@ -152,6 +150,7 @@ describe('API contract (e2e)', () => {
         '/feed': ['get'],
         '/count': ['get'],
         '/latest': ['get'],
+        '/assignees': ['get'],
         '/operations/{operationId}': ['get'],
         '/{transactionId}': ['delete', 'get', 'patch'],
       });
@@ -168,6 +167,36 @@ describe('API contract (e2e)', () => {
 
       const read = await api(s.member).get(`/transactions/${created.body.transaction.id}`).expect(200);
       expect(read.body).toMatchObject({ amount: '10.00', version: 1 });
+    });
+  });
+
+  describe('retired v1 routes', () => {
+    it('documents no v1 transaction, statistics or wallet route and answers each with 410', async () => {
+      const s = await space();
+      const v1 = (path: string) => `/api/v1/spaces/${s.member.spaceId}${path}`;
+      const agent = request(testApp.app.getHttpServer());
+      const auth = { Authorization: `Bearer ${s.member.token}` };
+
+      expect(
+        Object.keys(document.paths).filter((path) =>
+          /^\/api\/v1\/spaces\/\{spaceId\}\/(transactions|statistics|wallets)/.test(path),
+        ),
+      ).toEqual([]);
+
+      for (const res of [
+        await agent.get(v1('/transactions/latest')).set(auth),
+        await agent.post(v1('/transactions')).set(auth).send({}),
+        await agent.get(v1('/statistics/summary')).set(auth),
+        await agent.get(v1('/wallets')).set(auth),
+        await agent.post(v1('/wallets')).set(auth).send({}),
+      ]) {
+        expect(res.status).toBe(410);
+        expect(res.body).toMatchObject({
+          code: 'LEGACY_API_RETIRED',
+          message: 'This version of the app is no longer supported; update the app',
+          requestId: expect.any(String),
+        });
+      }
     });
   });
 
@@ -245,15 +274,6 @@ describe('API contract (e2e)', () => {
           const limit = await api(s.member).post('/limits').send({ amount: '1' }).expect(201);
           return api(s.member).put(`/limits/${limit.body.id}`).send({ amount });
         },
-      ],
-      [
-        'POST /wallets',
-        'initial_balance',
-        (s, amount) =>
-          api(s.member)
-            .post('/wallets')
-            .send({ wallet_name: 'Max', initial_balance: amount, design: 'slate' })
-            .then((r) => r),
       ],
     ];
 

@@ -53,18 +53,14 @@ describe('Email verification (e2e)', () => {
     return request(testApp.app.getHttpServer()).post('/api/v1/users/verify-email').send({ email, code });
   }
 
-  async function starterData(userId: number): Promise<{ verified: number; wallets: number; categories: number }> {
+  async function starterData(userId: number): Promise<{ verified: number; categories: number }> {
     const [user] = await testApp.dataSource.query('SELECT email_verified FROM users WHERE id = ?', [userId]);
-    const [{ wallets }] = await testApp.dataSource.query(
-      'SELECT COUNT(*) AS wallets FROM wallets w INNER JOIN space_members m ON m.space_id = w.space_id WHERE m.user_id = ?',
-      [userId],
-    );
     const [{ categories }] = await testApp.dataSource.query(
       'SELECT COUNT(*) AS categories FROM categories c INNER JOIN space_members m ON m.space_id = c.space_id WHERE m.user_id = ?',
       [userId],
     );
 
-    return { verified: user.email_verified, wallets: Number(wallets), categories: Number(categories) };
+    return { verified: user.email_verified, categories: Number(categories) };
   }
 
   async function activeCode(userId: number): Promise<{ attempts: number } | undefined> {
@@ -75,8 +71,8 @@ describe('Email verification (e2e)', () => {
     return row;
   }
 
-  const NOTHING_CREATED = { verified: 0, wallets: 0, categories: 0 };
-  const ONE_STARTER_SET = { verified: 1, wallets: 1, categories: STARTER_CATEGORIES };
+  const NOTHING_CREATED = { verified: 0, categories: 0 };
+  const ONE_STARTER_SET = { verified: 1, categories: STARTER_CATEGORIES };
 
   it('lets only the first of two overlapping confirmations through, with one set of starter data', async () => {
     const { userId, email, code } = await registerWithCode();

@@ -15,8 +15,6 @@ import type { AuthedRequest } from '@shared/types';
 
 const CONTRACT = 'Rules: docs/statistics-contract.md and docs/transactions-v2-contract.md#statistics-v2.';
 
-// The v1 blocks over the records of the space; the breakdown groups by
-// assignment instead of by wallet.
 @ApiTags('statistics v2')
 @ApiBearerAuth()
 @ApiBadRequestResponse({ description: 'Invalid or inconsistent query parameters, as `message: [{ field, error }]`.' })
@@ -58,6 +56,6 @@ export class StatisticsV2Controller {
     @Param('spaceId', ParseIntPipe) spaceId: number,
     @Query() query: StatisticsBreakdownQueryDto,
   ) {
-    return this.statisticsService.getBreakdownV2(req.user.id, spaceId, query);
+    return this.statisticsService.getBreakdown(req.user.id, spaceId, query);
   }
 }

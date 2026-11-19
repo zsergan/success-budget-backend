@@ -8,7 +8,6 @@ const MONTH = { period: 'month', time_zone: 'Europe/Moscow', as_of: AS_OF };
 
 interface Space {
   member: Member;
-  walletId: number;
   categoryIds: Record<'expense' | 'income', number>;
 }
 
@@ -43,9 +42,9 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
     }
   });
 
-  function api(member: Member) {
+  function api(member: Member, version = 'v2') {
     const agent = request(testApp.app.getHttpServer());
-    const base = `/api/v1/spaces/${member.spaceId}`;
+    const base = `/api/${version}/spaces/${member.spaceId}`;
     const withAuth =
       (method: 'get' | 'post' | 'delete') =>
       (path: string): request.Test =>
@@ -58,39 +57,34 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
     const member = await createVerifiedMember(testApp, prefix);
     userIds.push(member.userId);
 
-    const categories = await api(member).get('/categories').expect(200);
-    const wallet = await api(member)
-      .post('/wallets')
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
+    const categories = await api(member, 'v1').get('/categories').expect(200);
 
     return {
       member,
-      walletId: wallet.body.wallet.id,
       categoryIds: { expense: categories.body.expenses[0].id, income: categories.body.incomes[0].id },
     };
   }
 
   async function addTransaction(
-    { member, walletId, categoryIds }: Space,
+    { member, categoryIds }: Space,
     amount: string,
     type: 'expense' | 'income' = 'expense',
   ): Promise<string> {
     const res = await api(member)
       .post('/transactions')
       .send({
-        wallet_id: walletId,
         category_id: categoryIds[type],
         transaction_type: type,
         amount,
         timestamp: '2026-09-20T10:00:00.000Z',
+        assignment: { kind: 'space' },
       })
       .expect(201);
 
     return res.body.transaction.id;
   }
 
-  function pauseBefore(method: 'getStatisticsByWallet' | 'getLastStatisticsTimestamp'): Pause {
+  function pauseBefore(method: 'getStatisticsByAssignment' | 'getLastStatisticsTimestamp'): Pause {
     let reached!: () => void;
     let release!: () => void;
     const reachedPromise = new Promise<void>((resolve) => (reached = resolve));
@@ -127,12 +121,12 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
   }
 
   it.each(['expense', 'income'] as const)(
-    'breakdown: an %s added between the category and the wallet reads is in neither',
+    'breakdown: an %s added between the category and the assignment reads is in neither',
     async (type) => {
       const space = await createSpace(`statistics-breakdown-race-${type}`);
       const query = { ...MONTH, transaction_type: type };
       await addTransaction(space, '100', type);
-      const pause = pauseBefore('getStatisticsByWallet');
+      const pause = pauseBefore('getStatisticsByAssignment');
 
       const { response } = await startHeld(space.member, 'breakdown', pause, query);
       await addTransaction(space, '50', type);
@@ -143,11 +137,11 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
       expect(res.body.transaction_type).toBe(type);
       expect(res.body.total).toEqual({ amount: '100.00', count: 1 });
       expect(res.body.by_category.total_amount).toBe('100.00');
-      expect(res.body.by_wallet.total_amount).toBe('100.00');
+      expect(res.body.by_assignment.total_amount).toBe('100.00');
 
       const next = await api(space.member).get('/statistics/breakdown').query(query).expect(200);
       expect(next.body.total).toEqual({ amount: '150.00', count: 2 });
-      expect(next.body.by_wallet.total_amount).toBe('150.00');
+      expect(next.body.by_assignment.total_amount).toBe('150.00');
     },
   );
 

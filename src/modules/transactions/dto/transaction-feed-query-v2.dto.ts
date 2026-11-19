@@ -1,4 +1,4 @@
-import { ApiPropertyOptional, OmitType, PickType } from '@nestjs/swagger';
+import { ApiPropertyOptional, PickType } from '@nestjs/swagger';
 import { IsString, ValidateBy } from 'class-validator';
 
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
@@ -8,7 +8,7 @@ import { TransactionFeedQueryDto } from './transaction-feed-query.dto';
 const ASSIGNMENT_FILTER = 'assignment must be space, unassigned, deleted_member or member:<user_id>';
 
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
-export class TransactionFeedQueryV2Dto extends OmitType(TransactionFeedQueryDto, ['wallet_id'] as const) {
+export class TransactionFeedQueryV2Dto extends TransactionFeedQueryDto {
   @ApiPropertyOptional({
     example: 'member:31',
     description:

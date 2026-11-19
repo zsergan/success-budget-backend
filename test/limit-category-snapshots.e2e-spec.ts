@@ -8,7 +8,6 @@ import { pauseAfterFirstCall } from './support/concurrency';
 
 interface Space {
   member: Member;
-  walletId: number;
   categoryId: number;
 }
 
@@ -18,10 +17,10 @@ interface Pause {
   release(): void;
 }
 
-// A write commits while GET /wallets or GET /limits is between two of its
+// A write commits while GET /limits or GET /categories is between two of its
 // reads. The request is held at the start of its later read until the test
 // releases it, so the order is fixed without timers.
-describe('Wallet overview and limits under concurrent writes (e2e)', () => {
+describe('Limits and categories under concurrent writes (e2e)', () => {
   let testApp: TestApp;
   let queries: TransactionQueriesService;
   const userIds: number[] = [];
@@ -59,28 +58,25 @@ describe('Wallet overview and limits under concurrent writes (e2e)', () => {
     userIds.push(member.userId);
 
     const categories = await api(member).get('/categories').expect(200);
-    const wallet = await api(member)
-      .post('/wallets')
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
 
-    return { member, walletId: wallet.body.wallet.id, categoryId: categories.body.expenses[0].id };
+    return { member, categoryId: categories.body.expenses[0].id };
   }
 
-  async function addExpense({ member, walletId, categoryId }: Space, amount: string): Promise<void> {
-    await api(member)
-      .post('/transactions')
+  async function addExpense({ member, categoryId }: Space, amount: string): Promise<void> {
+    await request(testApp.app.getHttpServer())
+      .post(`/api/v2/spaces/${member.spaceId}/transactions`)
+      .set('Authorization', `Bearer ${member.token}`)
       .send({
-        wallet_id: walletId,
         category_id: categoryId,
         transaction_type: 'expense',
         amount,
         timestamp: new Date(Date.now() - 1000).toISOString(),
+        assignment: { kind: 'space' },
       })
       .expect(201);
   }
 
-  function pauseBefore(method: 'getBalances' | 'getExpensesByCategory'): Pause {
+  function pauseBefore(method: 'getExpensesByCategory'): Pause {
     let reached!: () => void;
     let release!: () => void;
     const reachedPromise = new Promise<void>((resolve) => (reached = resolve));
@@ -114,27 +110,6 @@ describe('Wallet overview and limits under concurrent writes (e2e)', () => {
 
     return { response };
   }
-
-  it('GET /wallets: an expense added between the period totals and the balances is in neither', async () => {
-    const space = await createSpace('overview-race');
-    await addExpense(space, '100');
-    const pause = pauseBefore('getBalances');
-
-    const { response } = await startHeld(space.member, '/wallets', pause);
-    await addExpense(space, '50');
-    pause.release();
-    const res = await response;
-
-    expect(res.status).toBe(200);
-    const card = res.body.wallets.find((summary: { wallet: { id: number } }) => summary.wallet.id === space.walletId);
-    expect(card).toMatchObject({ wallet: { balance: -100 }, total_spend: 100 });
-
-    const next = await api(space.member).get('/wallets').expect(200);
-    const nextCard = next.body.wallets.find(
-      (summary: { wallet: { id: number } }) => summary.wallet.id === space.walletId,
-    );
-    expect(nextCard).toMatchObject({ wallet: { balance: -150 }, total_spend: 150 });
-  });
 
   it('GET /limits: a limit change and an expense between the limits and the spending reads are in neither', async () => {
     const space = await createSpace('limits-race');

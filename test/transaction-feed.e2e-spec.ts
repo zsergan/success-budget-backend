@@ -11,7 +11,6 @@ describe('Transactions feed pages (e2e)', () => {
   let testApp: TestApp;
   let owner: Member;
   let outsider: Member;
-  let walletId: number;
   let categoryId: number;
   let foreignId: string;
   // the records the tests created in the period, and the order the feed must list them in
@@ -40,24 +39,24 @@ describe('Transactions feed pages (e2e)', () => {
     '2026-09-09T10:00:00.000Z',
   ];
 
-  const base = (member: Member) => `/api/v1/spaces/${member.spaceId}/transactions`;
+  const base = (member: Member) => `/api/v2/spaces/${member.spaceId}/transactions`;
   const get = (member: Member, url: string) =>
     request(testApp.app.getHttpServer()).get(url).set('Authorization', `Bearer ${member.token}`);
   const feed = async (query: string, member = owner): Promise<FeedBody> =>
     (await get(member, `${base(member)}/feed?${period}&${query}`).expect(200)).body;
   const ids = (body: FeedBody) => body.items.map((item) => item.id);
 
-  async function createTransaction(member: Member, wallet: number, category: number, timestamp: string, n: number) {
+  async function createTransaction(member: Member, category: number, timestamp: string, n: number) {
     const res = await request(testApp.app.getHttpServer())
       .post(base(member))
       .set('Authorization', `Bearer ${member.token}`)
       .send({
-        wallet_id: wallet,
         category_id: category,
         transaction_type: 'expense',
         amount: '1.00',
         timestamp,
         description: `row ${n}`,
+        assignment: { kind: 'space' },
       })
       .expect(201);
 
@@ -65,15 +64,9 @@ describe('Transactions feed pages (e2e)', () => {
   }
 
   async function setUp(member: Member) {
-    const server = testApp.app.getHttpServer();
-    const wallet = await request(server)
-      .post(`/api/v1/spaces/${member.spaceId}/wallets`)
-      .set('Authorization', `Bearer ${member.token}`)
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
     const categories = await get(member, `/api/v1/spaces/${member.spaceId}/categories`).expect(200);
 
-    return { wallet: wallet.body.wallet.id as number, category: categories.body.expenses[0].id as number };
+    return { category: categories.body.expenses[0].id as number };
   }
 
   async function walk(query: string): Promise<string[]> {
@@ -94,14 +87,14 @@ describe('Transactions feed pages (e2e)', () => {
     owner = await createVerifiedMember(testApp, 'feed-owner');
     outsider = await createVerifiedMember(testApp, 'feed-outsider');
 
-    ({ wallet: walletId, category: categoryId } = await setUp(owner));
+    ({ category: categoryId } = await setUp(owner));
 
     for (const [n, timestamp] of timestamps.entries()) {
-      records.push({ id: await createTransaction(owner, walletId, categoryId, timestamp, n), timestamp });
+      records.push({ id: await createTransaction(owner, categoryId, timestamp, n), timestamp });
     }
 
     const foreign = await setUp(outsider);
-    foreignId = await createTransaction(outsider, foreign.wallet, foreign.category, timestamps[0], 0);
+    foreignId = await createTransaction(outsider, foreign.category, timestamps[0], 0);
 
     history = expectedHistory();
   });
@@ -183,7 +176,7 @@ describe('Transactions feed pages (e2e)', () => {
         records.findIndex((record) => record.id === history[2]),
         1,
         {
-          id: await createTransaction(owner, walletId, categoryId, boundary.body.timestamp, 99),
+          id: await createTransaction(owner, categoryId, boundary.body.timestamp, 99),
           timestamp: boundary.body.timestamp,
         },
       );

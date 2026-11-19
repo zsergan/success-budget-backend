@@ -11,7 +11,6 @@ import { envValidationSchema } from '@config/env.validation';
 import { getLoggerConfig } from '@config/logger.config';
 import { UsersModule } from '@modules/users/users.module';
 import { CategoriesModule } from '@modules/categories/categories.module';
-import { WalletsModule } from '@modules/wallets/wallets.module';
 import { TransactionsModule } from '@modules/transactions/transactions.module';
 import { CurrenciesModule } from '@modules/currencies/currencies.module';
 import { ConfirmationCodesModule } from '@modules/confirmation-codes/confirmation-codes.module';
@@ -21,6 +20,7 @@ import { InvitePageModule } from '@modules/invite-page/invite-page.module';
 import { StatisticsModule } from '@modules/statistics/statistics.module';
 import { HealthModule } from '@modules/health/health.module';
 import { PasswordResetModule } from '@modules/password-reset/password-reset.module';
+import { RetiredRoutesModule } from '@modules/retired-routes/retired-routes.module';
 import { JwtStrategy } from '@shared/strategies/jwt.strategy';
 import { JwtAuthGuard } from '@shared/guards/jwt-auth.guard';
 import { SchemaCheck } from './database/schema-check';
@@ -42,7 +42,6 @@ import { SchemaCheck } from './database/schema-check';
     UsersModule,
     PasswordResetModule,
     CategoriesModule,
-    WalletsModule,
     TransactionsModule,
     CurrenciesModule,
     ConfirmationCodesModule,
@@ -50,6 +49,7 @@ import { SchemaCheck } from './database/schema-check';
     SpacesModule,
     InvitePageModule,
     StatisticsModule,
+    RetiredRoutesModule,
   ],
   controllers: [],
   providers: [

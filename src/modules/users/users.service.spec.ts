@@ -7,7 +7,6 @@ import * as jwt from 'jsonwebtoken';
 
 import { UsersService } from './users.service';
 import { User } from '@entities/user.entity';
-import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
@@ -36,7 +35,6 @@ describe('UsersService', () => {
   let lockedUser: { getOne: jest.Mock };
   let userLockQueryBuilder: { setLock: jest.Mock; where: jest.Mock; getOne: (...args: unknown[]) => unknown };
   let manager: { getRepository: jest.Mock; createQueryBuilder: jest.Mock };
-  let walletRepositoryInTx: { create: jest.Mock; save: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
   let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; update: jest.Mock; findOneOrFail: jest.Mock };
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; findOneOrFail: jest.Mock };
@@ -53,7 +51,6 @@ describe('UsersService', () => {
       where: jest.fn().mockReturnThis(),
       getOne: (...args: unknown[]) => lockedUser.getOne(...args),
     };
-    walletRepositoryInTx = { create: jest.fn(), save: jest.fn() };
     categoryRepositoryInTx = { save: jest.fn() };
     spaceRepositoryInTx = {
       create: jest.fn((entity) => entity),
@@ -69,7 +66,6 @@ describe('UsersService', () => {
       }),
       getRepository: jest.fn((entity) => {
         if (entity === User) return userRepositoryInTx;
-        if (entity === Wallet) return walletRepositoryInTx;
         if (entity === Category) return categoryRepositoryInTx;
         if (entity === Space) return spaceRepositoryInTx;
         if (entity === SpaceMember) return spaceMemberRepositoryInTx;
@@ -339,10 +335,9 @@ describe('UsersService', () => {
     beforeEach(() => {
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
-      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
     });
 
-    it('locks the user, marks it verified and provisions the starter data in one transaction', async () => {
+    it('locks the user, marks it verified and provisions the starter categories in one transaction', async () => {
       await service.completeEmailVerification(1);
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
@@ -350,26 +345,10 @@ describe('UsersService', () => {
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
       expect(spaceMemberRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { user_id: 1 } });
       expect(spaceRepositoryInTx.findOneOrFail).toHaveBeenCalledWith({ where: { id: 20 } });
-      expect(walletRepositoryInTx.create).toHaveBeenCalledWith(
-        expect.objectContaining({ space_id: 20, wallet_name: 'Cash' }),
-      );
-      expect(walletRepositoryInTx.save).toHaveBeenCalledWith({ id: 10 });
       expect(categoryRepositoryInTx.save).toHaveBeenCalledWith(
         expect.arrayContaining([expect.objectContaining({ space_id: 20, name: 'Initial balance', is_system: 1 })]),
       );
       expect(categoryRepositoryInTx.save.mock.calls[0][0]).toHaveLength(21);
-    });
-
-    it('skips the transitional wallet once v1 writes are retired; v2 records need none', async () => {
-      const configService = service['configService'];
-      jest
-        .spyOn(configService, 'get')
-        .mockImplementation((key: string) => (key === 'LEGACY_WRITES' ? 'retired' : undefined));
-
-      await service.completeEmailVerification(1);
-
-      expect(walletRepositoryInTx.save).not.toHaveBeenCalled();
-      expect(categoryRepositoryInTx.save).toHaveBeenCalled();
     });
 
     it('is a no-op for a user that is already verified', async () => {
@@ -378,12 +357,11 @@ describe('UsersService', () => {
       await service.completeEmailVerification(1);
 
       expect(userRepositoryInTx.update).not.toHaveBeenCalled();
-      expect(walletRepositoryInTx.save).not.toHaveBeenCalled();
       expect(categoryRepositoryInTx.save).not.toHaveBeenCalled();
     });
 
     it('propagates a failure from inside the transaction', async () => {
-      walletRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
+      categoryRepositoryInTx.save.mockRejectedValue(new Error('db unavailable'));
 
       await expect(service.completeEmailVerification(1)).rejects.toThrow('db unavailable');
     });
@@ -396,7 +374,6 @@ describe('UsersService', () => {
       repository.findOne.mockResolvedValue(buildUser({ id: 1, email_verified: 0 }));
       spaceMemberRepositoryInTx.findOneOrFail.mockResolvedValue({ space_id: 20 });
       spaceRepositoryInTx.findOneOrFail.mockResolvedValue({ id: 20, currency_id: 5 });
-      walletRepositoryInTx.create.mockReturnValue({ id: 10 });
     });
 
     it('rejects when the user does not exist', async () => {
@@ -479,7 +456,6 @@ describe('UsersService', () => {
 
       expect(confirmationCodesService.expire).toHaveBeenCalledWith(7, manager);
       expect(userRepositoryInTx.update).toHaveBeenCalledWith(1, { email_verified: 1 });
-      expect(walletRepositoryInTx.save).toHaveBeenCalled();
       expect(categoryRepositoryInTx.save).toHaveBeenCalled();
       expect(signedInTransaction).toEqual([false]);
       expect(token).toBe('token');

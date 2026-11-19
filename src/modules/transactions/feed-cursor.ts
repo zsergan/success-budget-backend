@@ -25,17 +25,12 @@ interface CursorPayload {
   s: string;
 }
 
-export type FeedApiVersion = 1 | 2;
-
 // Not a secret: a cursor only moves within a selection the member may read,
-// so the digest just keeps a cursor from being replayed on another query or
-// API version. v1 digests are unchanged, so v1 cursors stay valid.
-export const selectionDigest = (
-  selection: TransactionSelection,
-  timeZone: string,
-  version: FeedApiVersion = 1,
-): string => {
+// so the digest just keeps a cursor from being replayed on another query.
+export const selectionDigest = (selection: TransactionSelection, timeZone: string): string => {
   const { spaceId, from, to, filters = {} } = selection;
+  // null and 'v2' stand where the retired v1 feed had its wallet filter and
+  // ended, so cursors issued before its removal keep their digest
   const parts: unknown[] = [
     spaceId,
     from.getTime(),
@@ -45,12 +40,10 @@ export const selectionDigest = (
     filters.transactionType ?? null,
     filters.kind ?? null,
     filters.categoryId ?? null,
-    filters.walletId ?? null,
+    null,
+    'v2',
+    filters.assignment ? assignmentKey(filters.assignment) : null,
   ];
-
-  if (version === 2) {
-    parts.push('v2', filters.assignment ? assignmentKey(filters.assignment) : null);
-  }
 
   return createHash('sha256').update(JSON.stringify(parts)).digest('base64url');
 };
