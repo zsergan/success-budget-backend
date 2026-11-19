@@ -1,13 +1,12 @@
 # Transactions and statistics API v2 contract
 
 Contract for transactions that belong directly to a space, record who
-created them and say who they are for. It replaces wallets as the owner of
+created them and say who they are for. It replaced wallets as the owner of
 a transaction. This document is the source of truth for the backend and the
-mobile v2 integration; the [v1 transactions contract](transactions-contract.md)
-and the [statistics contract](statistics-contract.md) stay valid for v1
-routes during the coexistence period and for every rule this document does
-not change (amounts, timestamps, descriptions, versions, idempotency,
-cursors, periods, money, Other).
+mobile v2 integration; the [transactions contract](transactions-contract.md)
+and the [statistics contract](statistics-contract.md) hold every rule this
+document does not change (amounts, timestamps, descriptions, versions,
+idempotency, cursors, periods, money, Other).
 
 ## Releases
 
@@ -17,37 +16,43 @@ cursors, periods, money, Other).
 | B       | v1 transaction, statistics and wallet routes, the wallet code and the `wallets` table go | Only builds that use v2                               |
 
 Release B ships only after mobile v2 is available, older builds have moved
-over, and the checks in [Release B readiness](#release-b-readiness) pass.
-Until then every v1 route answers as before, except where
-[What v1 clients notice](#what-v1-clients-notice) says otherwise.
+over, and the checks in [Release B](#release-b) pass. Under Release A every
+v1 route answers as before, except where
+[What v1 clients notice](#what-v1-clients-notice-release-a) says otherwise;
+under Release B every v1 transaction, statistics and wallet route is
+`410 LEGACY_API_RETIRED`.
 
 ## Implementation status
 
-| Part                                                                      | Status      |
-| ------------------------------------------------------------------------- | ----------- |
-| Schema: `space_id`, author, assignment, attribution source; history moved | implemented |
-| v2 create, edit, delete, details, latest, operation lookup                | implemented |
-| v2 feed and count with the `assignment` filter, `assignees`               | implemented |
-| v2 statistics summary, trend, breakdown `by_assignment`                   | implemented |
-| v1 reads and writes over the new schema; compatibility wallet             | implemented |
-| `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | implemented |
-| Release B removals                                                        | not started |
+| Part                                                                      | Release | Status      |
+| ------------------------------------------------------------------------- | ------- | ----------- |
+| Schema: `space_id`, author, assignment, attribution source; history moved | A       | implemented |
+| v2 create, edit, delete, details, latest, operation lookup                | A       | implemented |
+| v2 feed and count with the `assignment` filter, `assignees`               | A       | implemented |
+| v2 statistics summary, trend, breakdown `by_assignment`                   | A       | implemented |
+| v1 reads and writes over the new schema; compatibility wallet             | A       | removed (B) |
+| `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | A       | removed (B) |
+| v1 transaction, statistics and wallet routes answer `410`                 | B       | implemented |
+| Wallet code, `transactions.wallet_id` and the `wallets` table dropped     | B       | implemented |
 
 Code: `src/modules/transactions` (`transactions-v2.controller.ts`,
 `space-transactions.service.ts`, `transaction-writes.ts`,
 `transaction-feed-reader.ts`, `transaction-assignment.ts`,
-`compatibility-wallet.ts`, `transaction-view.ts`), `src/modules/statistics`
+`transaction-view.ts`), `src/modules/statistics`
 (`statistics-v2.controller.ts`, `assignment-breakdown.ts`),
-`src/modules/transaction-queries`, the migrations
-`1791200000000-AddTransactionSpaceOwnership` and
-`1791300000000-AddCompatibilityWallet`. Tests:
-`test/transactions-v2.e2e-spec.ts` (writes, both versions on one space,
-races with member removal, retries), `test/transactions-v2-reads.e2e-spec.ts`
+`src/modules/transaction-queries`, `src/modules/retired-routes`, the
+migrations `1791200000000-AddTransactionSpaceOwnership`,
+`1791300000000-AddCompatibilityWallet` (Release A) and
+`1791400000000-DropWallets` (Release B), the deploy checks in
+`src/database/transaction-ownership*.ts`. Tests:
+`test/transactions-v2.e2e-spec.ts` (writes, races with member removal,
+retries, stored v1 results), `test/transactions-v2-reads.e2e-spec.ts`
 (filters, totals, DST, statistics, limits, OpenAPI),
-`test/transaction-ownership-migration.e2e-spec.ts` (the migration and its
-reconciliation), `test/transaction-recovery.e2e-spec.ts` (pending writes of
-the installed build, `LEGACY_WRITES=retired`), and the unit specs next to the
-code.
+`test/transaction-ownership-migration.e2e-spec.ts` and
+`test/wallet-removal-migration.e2e-spec.ts` (both migrations and their
+reconciliation, on a disposable database), `test/transaction-recovery.e2e-spec.ts`
+(pending writes of older builds, the retired routes), and the unit specs
+next to the code.
 
 ## Versioning
 
@@ -60,10 +65,11 @@ shape or rules change have a v2 route:
 | Transactions (writes, reads, operation lookup)                            | `/api/v2/spaces/:spaceId/transactions/...` |
 | Statistics (summary, trend, breakdown)                                    | `/api/v2/spaces/:spaceId/statistics/...`   |
 | Spaces, members, invitations, categories, limits, currencies, users, auth | unchanged, `/api/v1/...`                   |
-| Wallets                                                                   | none: v1 only, removed in Release B        |
+| Wallets                                                                   | none: removed in Release B                 |
 
 A v2 client never calls `/api/v1/.../transactions`,
-`/api/v1/.../statistics` or `/api/v1/.../wallets`.
+`/api/v1/.../statistics` or `/api/v1/.../wallets`; since Release B they
+answer `410 LEGACY_API_RETIRED`.
 
 ## Domain rules
 
@@ -84,9 +90,9 @@ A v2 client never calls `/api/v1/.../transactions`,
 | Starting balances     | Existing initial balances stay historical, read-only records (`kind: 'initial_balance'`), excluded from income, expense, net, limits, trends and breakdowns.           |
 | Currency              | The space's, as before.                                                                                                                                                |
 
-A new initial balance can only be created through the v1 `POST /wallets`
-while it exists; v2 has no starting balance. A new v2 space needs no
-setup: its first `POST` creates a transaction right away.
+No new starting balance can be created: v2 has none, and the v1
+`POST /wallets` that created them is gone with Release B. A new space needs
+no setup: its first `POST` creates a transaction right away.
 
 ## Shared types
 
@@ -582,10 +588,11 @@ is extended:
 2. the space row (shared);
 3. the `Idempotency-Key`;
 4. the transaction row (exclusive) — `PATCH`, `DELETE`;
-5. wallet rows (exclusive, ascending id) — Release A only: the record's
-   wallet, or the compatibility wallet on create;
-6. category rows (shared);
-7. the operation row.
+5. category rows (shared);
+6. the operation row.
+
+Under Release A, writes also locked wallet rows between steps 4 and 5: the
+record's wallet, or the compatibility wallet on create.
 
 Member removal, leaving and space deletion lock every member row of the
 space (exclusive, ascending id) and then the space, so the two orders
@@ -598,9 +605,9 @@ Idempotency keys of v2 writes are scoped to their own operations
 (`transactions.v2.create`, `transactions.v2.update`,
 `transactions.v2.delete`). A key used with a v1 write is a different key
 for v2: a v2 request never receives a stored v1 result (which carries a
-wallet), and a v1 request never receives a v2 result.
-`client_operation_id` is different: one table for both versions, unique per
-space, so a create can happen once whichever version sends it.
+wallet). `client_operation_id` is different: one table for both versions,
+unique per space, so a create can happen once whichever version sent it,
+also when a v1 create committed before Release B.
 
 ## Errors
 
@@ -610,7 +617,7 @@ New codes; every other code keeps its v1 meaning.
 | ------ | --------------------- | ------------------------------------------------------------------------- |
 | 400    | `ASSIGNEE_NOT_MEMBER` | A new member assignment names a user who is not a member of the space now |
 | 403    | `FORBIDDEN_MEMBER`    | `assignment=member:<id>` names a user unknown to the space                |
-| 410    | `LEGACY_API_RETIRED`  | A v1 transaction or wallet write after v1 writes were retired             |
+| 410    | `LEGACY_API_RETIRED`  | A v1 transaction, statistics or wallet request: retired by Release B      |
 
 Changed failure cases:
 
@@ -624,7 +631,8 @@ Changed failure cases:
 | `GET` v2 `feed`, `count`                                  | `assignment=member:<id>` of a user never associated with the space                                              | 403    | `FORBIDDEN_MEMBER`                                                          | Drop the filter and reload `assignees`                                             |
 | `GET` v2 `feed`                                           | a v1 cursor, or a cursor of another `assignment`                                                                | 400    | `VALIDATION_FAILED` (`cursor`)                                              | Reload the first page                                                              |
 | `GET` v2 `feed`, `count`                                  | `wallet_id` sent                                                                                                | 400    | `VALIDATION_FAILED` (`wallet_id`)                                           | Drop the parameter                                                                 |
-| v1 `POST`/`PATCH`/`DELETE` transactions, v1 wallet writes | `LEGACY_WRITES=retired`                                                                                         | 410    | `LEGACY_API_RETIRED`                                                        | Old build: show "Update the app"; the write did not happen                         |
+| v1 `POST`/`PATCH`/`DELETE` transactions, v1 wallet writes | `LEGACY_WRITES=retired` (Release A)                                                                             | 410    | `LEGACY_API_RETIRED`                                                        | Old build: show "Update the app"; the write did not happen                         |
+| any v1 transaction, statistics or wallet route            | Release B                                                                                                       | 410    | `LEGACY_API_RETIRED`                                                        | Old build: show "Update the app"; nothing was read or written                      |
 
 ## Recovering writes across the upgrade
 
@@ -654,7 +662,7 @@ ids are kept through both releases.
 
 | Path                | When                                                                 | Request                                                                                                                                                                                                                                                                  |
 | ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Exact legacy replay | Release A only, while v1 writes are enabled; what the old build does | `POST /api/v1/spaces/{spaceId}/transactions`, the stored body byte for byte, `Idempotency-Key: {idempotencyKey}`                                                                                                                                                         |
+| Exact legacy replay | Release A only, while v1 writes are enabled; what the old build does | `POST /api/v1/spaces/{spaceId}/transactions`, the stored body byte for byte, `Idempotency-Key: {idempotencyKey}`; `410` under Release B                                                                                                                                  |
 | Converted v2 create | Release A and B; what the v2 build does                              | `POST /api/v2/spaces/{spaceId}/transactions`, `Idempotency-Key: {idempotencyKey}`, body: the stored `category_id`, `transaction_type`, `amount`, `timestamp`, `description`, `client_operation_id: {idempotencyKey}` and `assignment: { kind: 'space' }`; no `wallet_id` |
 
 A converted create records the authenticated user as the author
@@ -707,9 +715,12 @@ user acts on the record again only after it is resolved.
 | Delete                                 | `DELETE /api/v2/.../{transactionId}`, `If-Match: "{version}"`, `Idempotency-Key: {key}`                   | `200 true` or `404`: done. `409`: changed since; re-read and let the user decide                                                                     |
 
 During Release A the old build may replay its own edits and deletes through
-v1; with `LEGACY_WRITES=retired` they are `410 LEGACY_API_RETIRED`.
+v1; with `LEGACY_WRITES=retired`, and always under Release B, they are
+`410 LEGACY_API_RETIRED`. The wallet a stored write names (`wallet_id`)
+no longer exists in Release B, which changes nothing above: it is dropped
+from every converted request.
 
-## What v1 clients notice
+## What v1 clients notice (Release A)
 
 v1 routes keep their shapes. The visible differences:
 
@@ -752,18 +763,65 @@ its error lists the ids. See
 [`deployment.md`](deployment.md#rolling-out-space-owned-transactions) for the
 preflight, the write pause and the reconciliation.
 
-## Release B readiness
+### Removing the wallets
 
-Release B (not part of this change) removes the compatibility wallet, the
-wallet routes and table, and the v1 transaction and statistics routes. It
-needs:
+`DropWallets1791400000000` (Release B) drops the wallet column of
+`transactions`, with its foreign key and the index
+`IDX_transactions_wallet_id_timestamp_id`, and then the `wallets` table.
 
-- mobile v2 in the stores and installed builds below v2 under an agreed
-  share;
-- `LEGACY_WRITES=retired` in production for an agreed period with no
-  pending-write reports;
-- a backup, then a migration that drops `transactions.wallet_id` and its
-  index, then `wallets`.
+| Kept, unchanged                                                                                                | Gone                                                                       |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| every record: id, space, category, type, amount, timestamp, description, `version`, author, assignment        | wallet names, designs and deleted flags; which wallet held a record        |
+| starting balances, also those of deleted wallets (`kind: 'initial_balance'`, outside every total)              | per-wallet balances (never part of v2)                                     |
+| operation records (`transaction_operations`) and their ids, also of v1 creates                                 | the compatibility wallet                                                   |
 
-After it, legacy recovery works only through the converted v2 create; the
-lookup and the operation ids keep working.
+It refuses to change anything while a record's `space_id` differs from its
+wallet's space, and lists those records; Release A never writes such a
+record. A run stopped midway finishes when run again. Reverting it
+(`migration:revert`) gives every space with records one wallet,
+"Shared transactions", that holds all of them and is marked as the space's
+compatibility wallet: enough for a Release A image to run, but the wallets,
+their names and balances from before come back only with a backup. See
+[`deployment.md`](deployment.md#rolling-out-the-removal-of-wallets).
+
+## Release B
+
+Release B removes the v1 transaction routes, the v1 statistics routes, the
+wallet routes, the wallet code (module, entity, balances, starter wallets,
+the compatibility wallet, `LEGACY_WRITES`) and, with the migration above,
+the wallet column and table. v2 routes, shapes and errors do not change.
+
+**Older app builds become incompatible.** Every request of a build older
+than mobile v2 to `/api/v1/spaces/:spaceId/transactions...`,
+`/statistics/...` or `/wallets...` is `410 LEGACY_API_RETIRED`, reads
+included: such a build can no longer show history, statistics or wallets,
+nor save anything. Spaces, members, invitations, categories, limits and the
+account keep answering, so the build can still sign in. The user has to
+install mobile v2; their data is all there.
+
+**Readiness.** Each of these is needed before the deploy:
+
+- mobile v2 is in the stores, and the share of active installs below v2 is
+  under the agreed threshold;
+- the handling of the remaining installed legacy builds is agreed: what
+  they show on `410` (an "Update the app" message or a forced update) and
+  that their users are told before the date;
+- `LEGACY_WRITES=retired` has run in production for the agreed period
+  without pending-write reports;
+- Release A runs and was verified (its reconciliation passed);
+- the [runbook](deployment.md#rolling-out-the-removal-of-wallets) is
+  followed: preflight, a write pause, a verified backup, the migration and
+  the reconciliation.
+
+A lack of recent v1 requests in the logs alone does not prove that every
+installed device has upgraded: a phone that was offline, or a build that is
+not opened often, may still hold pending writes and send them weeks later.
+
+**Pending writes of older builds after Release B.** They are recovered only
+by the v2 build, once the user updates, as in
+[Recovering writes across the upgrade](#recovering-writes-across-the-upgrade):
+the operation lookup answers for every create that committed, through
+either version; a create that never committed is sent as the converted v2
+create; a stored edit or delete is sent through v2 without its
+`wallet_id`. The exact legacy replay is `410` and is not used. Operation
+records are kept for as long as their space.

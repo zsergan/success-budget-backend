@@ -8,9 +8,10 @@ the rules below apply to all three endpoints identically.
 
 Anything marked _open_ needs sign-off before the stage that implements it.
 
-**API v2.** `/api/v2/spaces/:spaceId/statistics/...` takes the same
-parameters and rules; its breakdown groups by assignment instead of by
-wallet. See the [v2 contract](transactions-v2-contract.md#statistics-v2).
+The routes are under `/api/v2`; the breakdown groups by category and by
+assignment, see the [v2 contract](transactions-v2-contract.md#statistics-v2).
+The `/api/v1` statistics, with their breakdown by wallet, were retired in
+Release B and answer `410 LEGACY_API_RETIRED`.
 
 ## Implementation
 
@@ -34,8 +35,8 @@ touch are the source of truth.
   agree; across the three blocks the control sums stay the check (see
   Consistency model).
 - **History template.** Every breakdown item opens the history with
-  `transaction_type=expense`, for categories too, not only for wallets
-  (see Opening a breakdown item). Clients that followed the earlier
+  `transaction_type=expense`, for every grouping (see Opening a breakdown
+  item). Clients that followed the earlier
   category example must add it.
 - **Swagger.** The three responses have full OpenAPI schemas (see
   Implementation).
@@ -48,30 +49,30 @@ touch are the source of truth.
 
 ## Endpoints
 
-All routes are under `/api/v1`, require the bearer token and membership in
+All routes are under `/api/v2`, require the bearer token and membership in
 the space; a non-member gets the usual `403 FORBIDDEN_SPACE`.
 
 | Method | Route                                   | Block                                                 |
 | ------ | --------------------------------------- | ----------------------------------------------------- |
 | `GET`  | `/spaces/:spaceId/statistics/summary`   | Income, Expense, Net, comparison with previous period |
 | `GET`  | `/spaces/:spaceId/statistics/trend`     | Income and Expense per bucket                         |
-| `GET`  | `/spaces/:spaceId/statistics/breakdown` | Expenses or income by category **and** by wallet      |
-| `GET`  | `/spaces/:spaceId/transactions/feed`    | History filtered by category or wallet, paged         |
+| `GET`  | `/spaces/:spaceId/statistics/breakdown` | Expenses or income by category **and** by assignment  |
+| `GET`  | `/spaces/:spaceId/transactions/feed`    | History filtered by category or assignment, paged     |
 
 The three blocks take the same period parameters and select transactions by
 the same rules; Breakdown alone also takes `transaction_type`. Each one fails
 on its own with an ordinary HTTP error (400, 403, 5xx), so the screen can
 show a local error and retry just that block. Breakdown returns both
-groupings at once: switching the By category / By wallet tab never sends a
-request.
+groupings at once: switching the By category / By assignment tab never
+sends a request.
 
 ## Calculation rules
 
-1. **One space.** Statistics cover the selected space only: every wallet of
-   the space, including soft-deleted ones. There is no cross-space total.
+1. **One space.** Statistics cover the selected space only: every record of
+   the space, whoever it is assigned to. There is no cross-space total.
 2. **Space currency.** All amounts are in `Space.currency`, returned as
-   `currency` (its code). There is no FX conversion; wallets and
-   transactions have no currency of their own.
+   `currency` (its code). There is no FX conversion; transactions have no
+   currency of their own.
 3. **Income excludes starting balances.** A transaction on the system
    category (`Category.is_system = 1`, "Initial balance") is excluded from
    every statistic: sums, counts, trend, breakdown,
@@ -80,11 +81,11 @@ request.
 4. **Type comes from the transaction.** A transaction counts as income or
    expense by `Transaction.transaction_type`, never by its category's type.
 5. **Net = Income − Expense.** Income and expense are non-negative sums;
-   net is signed. Net is not a wallet balance.
-6. **History is kept.** Transactions on archived categories and on
-   soft-deleted wallets are counted everywhere. An archived category keeps
-   its own row in the breakdown (`is_archived: true`); deleted wallets are
-   merged into one service group, `deleted_wallets`, that opens no history.
+   net is signed. Net is not a balance.
+6. **History is kept.** Transactions on archived categories, and those
+   assigned to former members or to deleted accounts, are counted
+   everywhere. An archived category keeps its own row in the breakdown
+   (`is_archived: true`).
 7. **No future transactions.** A transaction with `timestamp` after `as_of`
    is not part of any sum or count, even inside the selected period. The
    period's actual range ends at `min(period end, as_of)`.
@@ -338,26 +339,21 @@ apart from "no transactions".
 — the transactions of one type, `expense` when the parameter is absent. Both
 groupings come in one response, ready to draw: the client repeats neither
 the money arithmetic nor the grouping. Expense and income breakdowns follow
-the same rules (sums, Other, deleted wallets, archived categories); only
-the selected type differs.
+the same rules (sums, Other, archived categories); only the selected type
+differs.
 
 ```ts
 interface BreakdownItem {
-  kind: 'category' | 'wallet' | 'deleted_wallets' | 'other';
-  key: string; // stable: 'category:12', 'wallet:3', 'deleted_wallets', 'other'
-  id: number | null; // the category or wallet id; null for service groups
-  name: string | null; // null for service groups: the client names them
+  kind: 'category' | 'other';
+  key: string; // stable: 'category:12', 'other'
+  id: number | null; // the category id; null for Other
+  name: string | null; // null for Other: the client names it
   icon: CategoryIcon | null; // categories only
-  color: AppColor | null; // Category.color, Wallet.design; null for service groups
+  color: AppColor | null; // Category.color; null for Other
   amount: string;
   percent: number; // of total_amount, one decimal
   is_archived: boolean; // archived category
-  opens_history: boolean; // true for categories (archived too) and wallets, see History filters
-}
-
-interface DeletedWalletsItem extends BreakdownItem {
-  kind: 'deleted_wallets';
-  wallets_count: number;
+  opens_history: boolean; // true for categories (archived too), see History filters
 }
 
 interface OtherItem extends BreakdownItem {
@@ -372,14 +368,6 @@ interface CategoryBreakdown {
   other: OtherItem | null;
 }
 
-interface WalletBreakdown {
-  total_amount: string;
-  source_count: number; // real wallets with a positive sum, deleted ones included
-  primary_items: BreakdownItem[]; // kind 'wallet', active wallets only
-  deleted_wallets: DeletedWalletsItem | null;
-  other: OtherItem | null;
-}
-
 interface StatisticsBreakdown {
   period: StatisticsPeriod;
   currency: string;
@@ -387,23 +375,24 @@ interface StatisticsBreakdown {
   // control sum, equal to Summary expense or income (by transaction_type) of the same cycle
   total: MoneyCount;
   by_category: CategoryBreakdown;
-  by_wallet: WalletBreakdown;
+  by_assignment: AssignmentBreakdown; // see the v2 contract
 }
 ```
 
-- Sums per category and per wallet are computed in SQL (`GROUP BY`); only
-  the groups reach Node.js, never the transactions.
+`AssignmentBreakdown` and its items are in the
+[v2 contract](transactions-v2-contract.md#statistics-v2).
+
+- Sums per category and per assignment are computed in SQL (`GROUP BY`);
+  only the groups reach Node.js, never the transactions.
 - `total_amount` of each grouping is the sum of all its groups, so the
   items and Other add up to it exactly.
-- Segments are drawn in this order: `primary_items`, then
-  `deleted_wallets`, then `other`. Other is always last, even when it is
-  larger than a primary item.
+- Segments are drawn in this order: `primary_items`, then `other`. Other is
+  always last, even when it is larger than a primary item.
 - The center of the donut shows `source_count` ("10 categories"), not the
   number of segments. Expanding Other changes neither the donut, the total
   nor the count: its `children` are already in the response.
-- Category name, icon and color are the current values. Service groups
-  have no color token; the client uses its own, distinguishable neutral
-  shades for `deleted_wallets` and `other`.
+- Category name, icon and color are the current values. Other has no color
+  token; the client uses its own, distinguishable neutral shade.
 - Other is not a category: it has no id and opens no history. A real
   category named "Other" is `kind: 'category'` with an id; the two are
   told apart by `kind`, never by name.
@@ -443,13 +432,11 @@ taken from the mock-up data.
 | Ten mock-up categories | Six primary groups, four inside Other |
 | Eight about equal      | Six primary groups, two inside Other  |
 
-**Wallets.** The same function, with one service group added: all
-soft-deleted wallets with a positive sum form `deleted_wallets`. It is
-outside the threshold and never folded into Other, and it is `null` when
-its sum is zero. To stay within seven segments, primary wallets are
-limited to **5** when `deleted_wallets` is present and 6 otherwise. The
-threshold is still measured against the whole `total_amount`, deleted
-wallets included.
+**Assignments.** The same function for members, former members and deleted
+accounts; the whole space and nobody are never folded and take one of the
+six primary slots each when present
+([v2 contract](transactions-v2-contract.md#statistics-v2)). The threshold
+is measured against the whole `total_amount`.
 
 ## Consistency model
 
@@ -471,7 +458,7 @@ refreshes.
    Within **one** response it does: the reads of Summary and of Breakdown
    run in one short `REPEATABLE READ` transaction that only reads, without
    row locks, so they all see the same database state. In Breakdown,
-   `total`, `by_category.total_amount` and `by_wallet.total_amount` are
+   `total`, `by_category.total_amount` and `by_assignment.total_amount` are
    always equal, and Summary never reports sums together with
    `has_any_transactions: false`. Trend is a single query.
 5. To detect that, the client compares the control sums with Summary, both
@@ -502,25 +489,25 @@ optional filters (see the
 is the minimal support the Stats tab needs to let the user re-check a
 number; the History screen itself is not redesigned here.
 
-| Param              | Meaning                                                 |
-| ------------------ | ------------------------------------------------------- |
-| `transaction_type` | `income` or `expense`                                   |
-| `category_id`      | Only this category (archived allowed; system refused)   |
-| `wallet_id`        | Only this wallet (active wallets only; deleted refused) |
-| `kind`             | `regular` (no starting balances) or `initial_balance`   |
+| Param              | Meaning                                                                  |
+| ------------------ | ------------------------------------------------------------------------ |
+| `transaction_type` | `income` or `expense`                                                    |
+| `category_id`      | Only this category (archived allowed; system refused)                    |
+| `assignment`       | `member:<user_id>`, `space`, `unassigned` or `deleted_member`            |
+| `kind`             | `regular` (no starting balances) or `initial_balance`                    |
 
 - Filters combine with AND, together, with `from`/`to` and with the feed's
   `q`.
-- A foreign or missing category, the system category, a foreign or missing
-  wallet, or a soft-deleted wallet is the existing `403`
-  (`FORBIDDEN_CATEGORY` / `FORBIDDEN_WALLET`), checked after membership.
-- `kind` matches the `kind` of `TransactionView`: `initial_balance` is a
+- A foreign or missing category, or the system category, is
+  `403 FORBIDDEN_CATEGORY`; a member filter of a user the space never knew
+  is `403 FORBIDDEN_MEMBER`; both are checked after membership.
+- `kind` matches the `kind` of the transaction view: `initial_balance` is a
   transaction on the system category, `regular` is every other one.
-- A malformed value (`category_id=other`, `wallet_id=0`,
-  `transaction_type=transfer`, `kind=system`, a repeated parameter) is `400` with the
-  standard `message: [{ field, error }]`.
-- There is no filter for Other or for deleted wallets: only items with
-  `opens_history: true` open the history, with the template in
+- A malformed value (`category_id=other`, `assignment=wallet:3`,
+  `transaction_type=transfer`, `kind=system`, a repeated parameter) is `400`
+  with the standard `message: [{ field, error }]`.
+- There is no filter for Other: only items with `opens_history: true` open
+  the history, with the template in
   [Opening a breakdown item](#opening-a-breakdown-item).
 
 ### Bounds
@@ -553,17 +540,16 @@ GET /spaces/:spaceId/transactions/feed
     &time_zone={period.time_zone}
     &transaction_type={transaction_type}
     &kind=regular
-    &{category_id | wallet_id}={item.id}
+    &{category_id={item.id} | assignment={item.key}}
 ```
 
-- `category_id` for `kind: "category"`, `wallet_id` for `kind: "wallet"`;
+- `category_id` for `kind: "category"`, `assignment` for an assignment item;
   `period` and `transaction_type` are the ones of the same Breakdown
   response, not the current selection of the screen. `time_zone` only
   groups the feed's `day_totals`; then `cursor=next_cursor` while
   scrolling.
 - It applies alike to `primary_items` and to the `children` of `other`.
-  `other` itself and `deleted_wallets` have `opens_history: false` and open
-  nothing.
+  `other` itself has `opens_history: false` and opens nothing.
 - `transaction_type` is **always** sent, for categories too. The breakdown
   counts by the type of the transaction, not of the category. New
   transactions must match their category's type (`CATEGORY_TYPE_MISMATCH`
@@ -572,8 +558,8 @@ GET /spaces/:spaceId/transactions/feed
   income one, while its history without the type filter would list both.
 - `kind=regular` is **always** sent. Starting balances are income on the
   system category: statistics never count them, but the history does, so
-  the income history of a wallet would list its starting balance without
-  this filter.
+  the income history of the whole space would list its starting balances
+  without this filter.
 
 With this template the history lists only the transactions of the
 breakdown's type, without starting balances. The feed's `summary` of that
@@ -581,7 +567,7 @@ type (`summary.expense` or `summary.income`) equals the item's `amount`, in
 the same cycle and barring concurrent edits (see Consistency model);
 `summary.count`, like `GET .../transactions/count` with the same
 parameters, is the number of transactions behind it. The same check holds for the
-whole breakdown: the template minus `category_id`/`wallet_id` adds up to
+whole breakdown: the template minus `category_id`/`assignment` adds up to
 `total`.
 
 ## Worked examples
@@ -591,29 +577,29 @@ Fixed test clock: **`as_of = 2026-09-28T12:00:00.000Z`** (Monday, 15:00 in
 test fixtures only; nothing here (and nothing in the design mock-ups) is an
 application constant.
 
-Space currency `EUR`. Wallets: `1` Card, `2` Cash, `4` Savings (active),
-`3` Old card (deleted). Categories: `10` Groceries, `11` Restaurants, `12`
-Transport, `13` Health, `14` Gifts (archived), `15` Pets, `16` Fees, `20`
-Salary (income), `99` Initial balance (system).
+Space currency `EUR`. Members: `7` Zakhar and `31` Lena. Categories: `10`
+Groceries, `11` Restaurants, `12` Transport, `13` Health, `14` Gifts
+(archived), `15` Pets, `16` Fees, `20` Salary (income), `99` Initial
+balance (system).
 
-| Id  | Local time (MSK) | Type    | Category        | Wallet | Amount  | Note                               |
-| --- | ---------------- | ------- | --------------- | ------ | ------- | ---------------------------------- |
-| A1  | 2026-08-03 10:00 | income  | Salary          | 1      | 3000.00 |                                    |
-| A2  | 2026-08-10 12:00 | expense | Groceries       | 1      | 200.00  |                                    |
-| A3  | 2026-08-20 18:00 | expense | Restaurants     | 2      | 100.00  |                                    |
-| A4  | 2026-08-29 10:00 | expense | Groceries       | 1      | 300.00  | after the like-for-like cut        |
-| S0  | 2026-09-01 09:00 | income  | Initial balance | 4      | 1000.00 | excluded: system category          |
-| S1  | 2026-09-01 10:00 | income  | Salary          | 1      | 3000.00 |                                    |
-| S2  | 2026-09-02 19:30 | expense | Groceries       | 1      | 450.25  |                                    |
-| S3  | 2026-09-05 13:00 | expense | Restaurants     | 2      | 120.00  |                                    |
-| S4  | 2026-09-09 08:00 | expense | Transport       | 1      | 60.00   |                                    |
-| S5  | 2026-09-12 20:00 | expense | Gifts           | 3      | 80.00   | archived category, deleted wallet  |
-| S6  | 2026-09-15 11:00 | expense | Health          | 3      | 25.50   | deleted wallet                     |
-| S7  | 2026-09-18 16:00 | expense | Pets            | 2      | 15.00   |                                    |
-| S8  | 2026-09-21 09:00 | expense | Fees            | 1      | 0.00    | zero amount                        |
-| S9  | 2026-09-27 23:30 | expense | Groceries       | 1      | 49.75   | `2026-09-27T20:30Z`                |
-| S10 | 2026-09-28 00:30 | expense | Transport       | 2      | 10.00   | `2026-09-27T21:30Z`: Sep 27 in UTC |
-| F1  | 2026-09-29 10:00 | expense | Groceries       | 1      | 500.00  | after `as_of`: excluded            |
+| Id  | Local time (MSK) | Type    | Category        | Assigned to | Amount  | Note                               |
+| --- | ---------------- | ------- | --------------- | ----------- | ------- | ---------------------------------- |
+| A1  | 2026-08-03 10:00 | income  | Salary          | space       | 3000.00 |                                    |
+| A2  | 2026-08-10 12:00 | expense | Groceries       | space       | 200.00  |                                    |
+| A3  | 2026-08-20 18:00 | expense | Restaurants     | Lena        | 100.00  |                                    |
+| A4  | 2026-08-29 10:00 | expense | Groceries       | space       | 300.00  | after the like-for-like cut        |
+| S0  | 2026-09-01 09:00 | income  | Initial balance | space       | 1000.00 | excluded: system category          |
+| S1  | 2026-09-01 10:00 | income  | Salary          | space       | 3000.00 |                                    |
+| S2  | 2026-09-02 19:30 | expense | Groceries       | space       | 450.25  |                                    |
+| S3  | 2026-09-05 13:00 | expense | Restaurants     | Lena        | 120.00  |                                    |
+| S4  | 2026-09-09 08:00 | expense | Transport       | space       | 60.00   |                                    |
+| S5  | 2026-09-12 20:00 | expense | Gifts           | unassigned  | 80.00   | archived category                  |
+| S6  | 2026-09-15 11:00 | expense | Health          | unassigned  | 25.50   |                                    |
+| S7  | 2026-09-18 16:00 | expense | Pets            | Lena        | 15.00   |                                    |
+| S8  | 2026-09-21 09:00 | expense | Fees            | space       | 0.00    | zero amount                        |
+| S9  | 2026-09-27 23:30 | expense | Groceries       | space       | 49.75   | `2026-09-27T20:30Z`                |
+| S10 | 2026-09-28 00:30 | expense | Transport       | Lena        | 10.00   | `2026-09-27T21:30Z`: Sep 27 in UTC |
+| F1  | 2026-09-29 10:00 | expense | Groceries       | space       | 500.00  | after `as_of`: excluded            |
 
 ### Example 1 — current month
 
@@ -657,8 +643,8 @@ Salary (income), `99` Initial balance (system).
 }
 ```
 
-S0 (starting balance) and F1 (after `as_of`) are excluded; S5/S6 (deleted
-wallet, archived category) and S8 (zero amount) are included. A4 is after
+S0 (starting balance) and F1 (after `as_of`) are excluded; S5 (archived
+category), S5/S6 (assigned to nobody) and S8 (zero amount) are included. A4 is after
 the cut at August 28, 15:00 MSK. The latest transaction, S10, is on
 September 28 in Moscow.
 
@@ -778,23 +764,22 @@ Health (25.50 of 810.50, 3.15%) passes the 3% threshold; Pets (1.85%) is
 folded although a primary slot is free. Fees (S8) has a zero sum and is
 left out, so `source_count` is 6, not 7.
 
-`by_wallet`:
+`by_assignment`:
 
-| Part              | Item   | `amount` | `percent` |
-| ----------------- | ------ | -------- | --------- |
-| `primary_items`   | 1 Card | `560.00` | 69.1      |
-| `primary_items`   | 2 Cash | `145.00` | 17.9      |
-| `deleted_wallets` | —      | `105.50` | 13        |
+| Part            | `key`        | `amount` | `percent` |
+| --------------- | ------------ | -------- | --------- |
+| `primary_items` | `space`      | `560.00` | 69.1      |
+| `primary_items` | `member:31`  | `145.00` | 17.9      |
+| `primary_items` | `unassigned` | `105.50` | 13        |
 
-`source_count: 3` (Card, Cash, Old card); `deleted_wallets.wallets_count:
-1`; `other: null`. Savings (4) has no expenses and is absent.
+`source_count: 3`; `other: null`. Zakhar (7) has no expense assigned to
+him and is absent.
 
 With `transaction_type=income`: `"transaction_type": "income"`, `total:
 { "amount": "3000.00", "count": 1 }`, equal to `summary.income`. Both
-groupings have one item of 100%: category `20` Salary and wallet `1` Card;
-`other` and `deleted_wallets` are `null`. S0 (the starting balance of
-Savings) is not there, and the history of Card opened with `kind=regular`
-lists only S1.
+groupings have one item of 100%: category `20` Salary and `space`; `other`
+is `null`. S0 (the starting balance) is not there, and the history of
+`space` opened with `kind=regular` lists only S1.
 
 ### Example 2 — current week, zone boundary, zero comparison
 
@@ -853,32 +838,21 @@ In `America/Santiago` midnight of 2026-09-06 does not exist (clocks jump to
 ## Performance
 
 Every block is one or two SQL queries that aggregate in MySQL
-(`SUM`/`COUNT` with `GROUP BY` per category, per wallet or per trend
+(`SUM`/`COUNT` with `GROUP BY` per category, per assignment or per trend
 bucket); only aggregated rows reach Node.js. Summary: current and previous
 totals plus the latest timestamp (3 queries). Trend: 1 query for all
-buckets. Breakdown: 2 queries (categories, wallets). The queries of one
+buckets. Breakdown: 2 queries (categories, assignments). The queries of one
 block run one after another in its snapshot transaction (see Consistency
 model). A `future` period sends none for its own range.
 
-All period reads go through the space's wallets and then the
-`transactions` rows of each wallet in a time range. The index on
-`(wallet_id, timestamp)` (migration `AddTransactionWalletTimestampIndex`)
-serves them; it also serves the wallet foreign key, so it replaces the
-former single-column index on `wallet_id`. It has since been extended to
-`IDX_transactions_wallet_id_timestamp_id` with the same prefix (see
-[`feed-performance.md`](feed-performance.md#index)).
-Checked with `EXPLAIN ANALYZE` on MySQL 8.4 with 500,000 transactions
-(500 spaces, 4 wallets each, about 3 years) for one month:
-
-| Query                     | Before: rows read per wallet    | After: rows read per wallet               |
-| ------------------------- | ------------------------------- | ----------------------------------------- |
-| Totals, per-category sums | 250 (all its history), filtered | about 7 (range scan with index condition) |
-| History with a category   | 250, filtered                   | about 7                                   |
-
-`last_transaction_date` has only an upper bound (`as_of`), so it still
-reads the space's history up to `as_of` through the same index; a
-per-wallet reverse scan did not get a better plan from MySQL. This is linear
-in the size of one space's history and runs once per Summary.
+Every period read selects the space's records by their own `space_id` and
+a time range, over `IDX_transactions_space_timestamp_id` or, with an
+assignment, `IDX_transactions_space_assignment`; both cover the columns
+the sums read (see
+[`feed-performance.md`](feed-performance.md#space-owned-transactions)).
+`last_transaction_date` has only an upper bound (`as_of`), so it reads the
+space's history up to `as_of` through the same index. This is linear in the
+size of one space's history and runs once per Summary.
 
 ## Out of scope
 

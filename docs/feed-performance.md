@@ -5,6 +5,11 @@ How `GET /spaces/:spaceId/transactions/feed` (see
 behaves on a large history: the measurements, the query plans behind them,
 and why the feed reads the way it does and uses the index it does.
 
+The sections up to [Index](#index) record the measurements of the wallet
+era, when records belonged to wallets; the feed now reads as described in
+[Space-owned transactions](#space-owned-transactions), and the wallet index
+was dropped with the wallets in Release B.
+
 ## Setup
 
 - MySQL 8.4.11 in Docker (`docker-compose.yml`, default settings,
@@ -18,14 +23,15 @@ and why the feed reads the way it does and uses the index it does.
   income, 15 % without a description. On top of that, 5,000 records on one
   day (2026-06-15) and 2,000 records at one instant (2026-05-01T12:00:00Z).
   About 15 % of the descriptions contain "coffee".
-- Each figure is the median of 7 runs of `TransactionsService.getFeed()`
+- Each figure is the median of 7 runs of the feed service's `getFeed()`
   after a warm-up run: the whole response with its access check, snapshot
   transaction, page, `summary` and `day_totals`, without HTTP and JSON.
 
-Reproduce with `npm run bench:feed -- --noise 380000` (on a disposable
-database; it refuses to run with `NODE_ENV=production`). It prints the
-timings and the `EXPLAIN ANALYZE` of every query it ran, and removes its
-data unless `--keep` is given.
+`npm run bench:feed -- --noise 380000` (on a disposable database; it
+refuses to run with `NODE_ENV=production`) measures the current feed: it
+prints the timings and the `EXPLAIN ANALYZE` of every query it ran, and
+removes its data unless `--keep` is given. The wallet-era figures below
+were taken with its earlier version.
 
 ## Results
 
@@ -209,14 +215,10 @@ assigned_user_id, timestamp, id, category_id, transaction_type, amount)`:
   prefix and looked up every row (an all-history summary took 274 ms
   instead of 56 ms).
 
-`IDX_transactions_wallet_id_timestamp_id` stays for the v1 `wallet_id`
-filter, wallet balances and the wallet foreign key until wallets are
-removed.
-
-v1 search still matches wallet names. A join to `wallets` made MySQL drive
-the read from every wallet of the database, dropping the space range (a
-month search took 662 ms); the names are matched in a subquery of the
-space's wallets instead, and the plan stays on the space range.
+`IDX_transactions_wallet_id_timestamp_id` served the v1 `wallet_id` filter,
+wallet balances and the wallet foreign key; `DropWallets1791400000000`
+dropped it with them in Release B. Search matches descriptions and category
+names only.
 
 Measured as above (500,000 rows, 120,000 in the space; the space's records
 60 % assigned to the whole space, 25 % to its member, 15 % to nobody),
