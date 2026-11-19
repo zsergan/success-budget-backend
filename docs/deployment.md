@@ -646,8 +646,10 @@ minutes; a larger database needs longer for the backup and its restore.
 
 4. **Back up and verify the backup**. This dump is what an abandoned
    rollout is restored from, so it is taken only now, when nothing writes
-   any more. Restore it into a new, empty database (created by an account
-   that may) and read its history:
+   any more. Restore it into a new, empty database that the app's account
+   can use (create it and grant the access as in
+   [A database to restore into](#a-database-to-restore-into)) and read its
+   history:
 
    ```bash
    DB_HOST=... DB_PORT=... DB_USERNAME=... DB_PASSWORD=... DB_DATABASE=<database> \
@@ -660,7 +662,8 @@ minutes; a larger database needs longer for the backup and its restore.
    ```
 
    Copy the dump off the database host, and leave `<database>_rollback`
-   untouched until the new image serves.
+   untouched until the new image serves. Remove it, with its grant, once
+   the rollback limits below make it of no further use.
 
 5. **Capture the reconciliation ledger** of the live database and compare
    it with the backup's:
@@ -729,8 +732,9 @@ pre-migration schema again:
 
 1. Restore the backup into a new, empty database with
    `scripts/db-restore.sh`, as in step 4 (`<database>_rollback` serves if
-   nothing has connected to it since). Leave the migrated database as it
-   is, for the investigation.
+   nothing has connected to it since). A new one needs the app account's
+   access too ([A database to restore into](#a-database-to-restore-into)).
+   Leave the migrated database as it is, for the investigation.
 2. Verify it: the previous image's schema check passes with no warning
    about migrations it does not know, and its history equals the ledger:
 
@@ -746,7 +750,8 @@ pre-migration schema again:
 
 3. Point the previous image's `DB_DATABASE` at the restored database,
    start it, and run the health check and the smoke tests. This ends the
-   pause.
+   pause. The restored database is now the live one: keep its grants, and
+   point the backups at it.
 
 **Rollback limits** once the new image accepted writes (step 9):
 
@@ -879,6 +884,45 @@ backup. Once a hosting provider is chosen, add here:
 - retention period for automatic backups
 - where they're stored (a different region/provider than the database
   itself, ideally)
+
+### A database to restore into
+
+The app's account usually has privileges on its own database only: the
+Compose files give `MYSQL_USER` all privileges on `MYSQL_DATABASE` and
+nothing else. Such an account cannot see a new database, so
+`db-restore.sh` run with it stops at `Database ... does not exist`, and a
+restore made by an administrator leaves a database that the ledger
+commands of a rollout (run with `.env.production` and another
+`DB_DATABASE`) and an image started on it after a rollback cannot open.
+Before restoring, create the database and give the app's account the
+privileges it holds on the live one, as an account that may (`root` on
+the Compose setups; on a managed MySQL, the provider's admin user or
+console):
+
+```sql
+CREATE DATABASE `success_budget_rollback`;
+SHOW GRANTS FOR 'success_budget'@'%';
+-- repeat each privilege listed for `success\_budget`.* on the new database:
+GRANT ALL PRIVILEGES ON `success\_budget\_rollback`.* TO 'success_budget'@'%';
+```
+
+In a `GRANT`, `_` and `%` in a database name are wildcards; escape them as
+above. Then check, logged in as the app's account, that it sees the new
+database:
+
+```sql
+SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'success_budget_rollback';
+```
+
+When the database is no longer needed (the new release serves and its
+rollback window has passed), remove it with its access:
+
+```sql
+REVOKE ALL PRIVILEGES ON `success\_budget\_rollback`.* FROM 'success_budget'@'%';
+DROP DATABASE `success_budget_rollback`;
+```
+
+If it became the live database after a rollback, keep the grants instead.
 
 ### Verifying a restore works
 
