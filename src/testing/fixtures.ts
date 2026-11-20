@@ -7,7 +7,6 @@ import { SpaceInvite } from '@entities/space-invite.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { Transaction } from '@entities/transaction.entity';
 import { User } from '@entities/user.entity';
-import { Wallet } from '@entities/wallet.entity';
 import {
   AppColor,
   AssignmentKind,
@@ -96,23 +95,6 @@ export function buildSpaceInvite(overrides: Partial<SpaceInvite> = {}): SpaceInv
   );
 }
 
-export function buildWallet(overrides: Partial<Wallet> = {}): Wallet {
-  return Object.assign(
-    new Wallet(),
-    {
-      id: 1,
-      space_id: 1,
-      wallet_name: 'Cash',
-      design: AppColor.SLATE,
-      is_deleted: 0,
-      deleted_at: null,
-      created_at: CREATED_AT,
-      updated_at: CREATED_AT,
-    },
-    overrides,
-  );
-}
-
 export function buildCategory(overrides: Partial<Category> = {}): Category {
   return Object.assign(
     new Category(),
@@ -156,7 +138,6 @@ export function buildTransaction(overrides: Partial<Transaction> = {}): Transact
     {
       id: '1',
       space_id: 1,
-      wallet_id: 1,
       category_id: 1,
       transaction_type: TransactionType.EXPENSE,
       amount: '10.00',

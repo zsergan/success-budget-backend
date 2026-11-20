@@ -9,11 +9,13 @@ const NEW_INDEX = 'IDX_transactions_wallet_id_timestamp_id';
 // MySQL commits each ALTER TABLE on its own, so a deploy stopped between the
 // steps of a migration, or after them but before the migration is recorded,
 // leaves part of the change behind. The next deploy runs the migration again
-// and must finish it. Runs on a copy of the table, never on transactions.
+// and must finish it. Runs on a copy of the table as it was then, with a
+// parent of its own in place of the wallets table, never on transactions.
 describe('ExtendTransactionWalletTimestampIndex migration (e2e)', () => {
   let testApp: TestApp;
   const migration = new ExtendTransactionWalletTimestampIndex1790500000000();
   const table = `migration_probe_${process.pid}`;
+  const parent = `migration_probe_wallets_${process.pid}`;
 
   // the wallet foreign key needs an index led by wallet_id after every statement
   let walletKeyCovered: boolean[];
@@ -65,7 +67,7 @@ describe('ExtendTransactionWalletTimestampIndex migration (e2e)', () => {
         timestamp timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
         PRIMARY KEY (id),
         ${keys.map((key) => `${key},`).join('\n')}
-        CONSTRAINT \`FK_${table}_wallet\` FOREIGN KEY (wallet_id) REFERENCES wallets (id) ON DELETE CASCADE
+        CONSTRAINT \`FK_${table}_wallet\` FOREIGN KEY (wallet_id) REFERENCES \`${parent}\` (id) ON DELETE CASCADE
       ) ENGINE=InnoDB`,
     );
   }
@@ -77,6 +79,7 @@ describe('ExtendTransactionWalletTimestampIndex migration (e2e)', () => {
 
   beforeAll(async () => {
     testApp = await createTestApp();
+    await testApp.dataSource.query(`CREATE TABLE \`${parent}\` (id int NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB`);
   });
 
   beforeEach(() => {
@@ -89,7 +92,11 @@ describe('ExtendTransactionWalletTimestampIndex migration (e2e)', () => {
   });
 
   afterAll(async () => {
-    await testApp.app.close();
+    try {
+      await testApp.dataSource.query(`DROP TABLE IF EXISTS \`${parent}\``);
+    } finally {
+      await testApp.app.close();
+    }
   });
 
   describe('up', () => {

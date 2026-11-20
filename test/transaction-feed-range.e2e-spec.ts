@@ -19,18 +19,13 @@ describe('Transactions feed period bounds (e2e)', () => {
 
   const get = (url: string) =>
     request(testApp.app.getHttpServer()).get(url).set('Authorization', `Bearer ${owner.token}`);
-  const base = () => `/api/v1/spaces/${owner.spaceId}/transactions`;
+  const base = () => `/api/v2/spaces/${owner.spaceId}/transactions`;
 
   beforeAll(async () => {
     testApp = await createTestApp();
     owner = await createVerifiedMember(testApp, 'feed-range');
     const server = testApp.app.getHttpServer();
     const auth = { Authorization: `Bearer ${owner.token}` };
-    const wallet = await request(server)
-      .post(`/api/v1/spaces/${owner.spaceId}/wallets`)
-      .set(auth)
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
     const categories = await get(`/api/v1/spaces/${owner.spaceId}/categories`).expect(200);
     const create = async (timestamp: string, amount: string) =>
       (
@@ -38,11 +33,11 @@ describe('Transactions feed period bounds (e2e)', () => {
           .post(base())
           .set(auth)
           .send({
-            wallet_id: wallet.body.wallet.id,
             category_id: categories.body.expenses[0].id,
             transaction_type: 'expense',
             amount,
             timestamp,
+            assignment: { kind: 'space' },
           })
           .expect(201)
       ).body.transaction.id as string;

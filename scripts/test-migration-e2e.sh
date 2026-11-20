@@ -11,8 +11,9 @@ set -euo pipefail
 #      nothing is read from .env (dotenv never overrides a set variable).
 #
 # Containers are named "migration-e2e-<run id>-*", published on free
-# loopback ports, and only those are removed in the EXIT trap, whether the
-# run passes or fails. Extra arguments go to Jest.
+# loopback ports, and only those are removed in the EXIT trap, with their
+# anonymous volumes (the MySQL data directory), whether the run passes or
+# fails. Extra arguments go to Jest.
 #
 # Requires: Docker, and `npm ci` already run.
 #
@@ -28,7 +29,7 @@ DB_PASS=migration-e2e-password
 
 cleanup() {
   local status=$?
-  docker rm -f "$MYSQL_C" "$MAILDEV_C" >/dev/null 2>&1 || true
+  docker rm -f -v "$MYSQL_C" "$MAILDEV_C" >/dev/null 2>&1 || true
   exit $status
 }
 trap cleanup EXIT
@@ -61,7 +62,6 @@ export MAIL_FROM='Success Budget <no-reply@success-budget.local>'
 export PUBLIC_WEB_ORIGIN=http://localhost:3000
 export NODE_ENV=test
 export LOG_LEVEL=warn
-export LEGACY_WRITES=enabled
 
 cd "$REPO_ROOT"
 

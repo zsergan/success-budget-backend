@@ -32,39 +32,40 @@ describe('Transaction operations (e2e)', () => {
 
   interface Setup {
     member: Member;
-    walletId: number;
     categoryId: number;
   }
 
   async function setup(): Promise<Setup> {
     const member = await createVerifiedMember(testApp, 'tx-operations');
     userIds.push(member.userId);
-    const wallet = await api(member)
-      .post('/wallets')
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
-    const categories = await api(member).get('/categories').expect(200);
+    const categories = await api(member, 'v1').get('/categories').expect(200);
 
-    return { member, walletId: wallet.body.wallet.id, categoryId: categories.body.expenses[0].id };
+    return { member, categoryId: categories.body.expenses[0].id };
   }
 
-  function api(member: Member) {
+  function api(member: Member, version = 'v2') {
     const agent = request(testApp.app.getHttpServer());
     const withAuth =
-      (method: 'get' | 'post' | 'patch' | 'delete') =>
+      (method: 'get' | 'post' | 'put' | 'patch' | 'delete') =>
       (path: string): request.Test =>
-        agent[method](`/api/v1/spaces/${member.spaceId}${path}`).set('Authorization', `Bearer ${member.token}`);
+        agent[method](`/api/${version}/spaces/${member.spaceId}${path}`).set('Authorization', `Bearer ${member.token}`);
 
-    return { get: withAuth('get'), post: withAuth('post'), patch: withAuth('patch'), delete: withAuth('delete') };
+    return {
+      get: withAuth('get'),
+      post: withAuth('post'),
+      put: withAuth('put'),
+      patch: withAuth('patch'),
+      delete: withAuth('delete'),
+    };
   }
 
-  const expense = ({ walletId, categoryId }: Setup, operationId: string, amount = '12.30') => ({
-    wallet_id: walletId,
+  const expense = ({ categoryId }: Setup, operationId: string, amount = '12.30') => ({
     category_id: categoryId,
     transaction_type: 'expense',
     amount,
     timestamp: '2026-09-15T10:00:00.000Z',
     client_operation_id: operationId,
+    assignment: { kind: 'space' },
   });
 
   function create(s: Setup, body: object, key?: string): request.Test {
@@ -84,9 +85,9 @@ describe('Transaction operations (e2e)', () => {
     ]);
   }
 
-  async function transactionCount(walletId: number): Promise<number> {
-    const [row] = await testApp.dataSource.query('SELECT COUNT(*) AS count FROM transactions WHERE wallet_id = ?', [
-      walletId,
+  async function transactionCount(spaceId: number): Promise<number> {
+    const [row] = await testApp.dataSource.query('SELECT COUNT(*) AS count FROM transactions WHERE space_id = ?', [
+      spaceId,
     ]);
     return Number(row.count);
   }
@@ -125,14 +126,14 @@ describe('Transaction operations (e2e)', () => {
 
     expect(late.body.code).toBe('TRANSACTION_OPERATION_EXISTS');
     expect(withoutKey.body.code).toBe('TRANSACTION_OPERATION_EXISTS');
-    expect(await transactionCount(s.walletId)).toBe(1);
+    expect(await transactionCount(s.member.spaceId)).toBe(1);
   });
 
-  it('refuses a late retry as already created even when its wallet was deleted since', async () => {
+  it('refuses a late retry as already created even when its category was archived since', async () => {
     const s = await setup();
     const operationId = randomUUID();
     await create(s, expense(s, operationId)).expect(201);
-    await api(s.member).delete(`/wallets/${s.walletId}`).expect(200);
+    await api(s.member, 'v1').put(`/categories/${s.categoryId}`).send({ is_active: 0 }).expect(200);
 
     const res = await create(s, expense(s, operationId)).expect(409);
 
@@ -174,7 +175,7 @@ describe('Transaction operations (e2e)', () => {
     const document = createOpenApiDocument(testApp.app);
     const schema = okResponseSchema(document, '/transactions/operations/{operationId}');
     expect(schemaErrors(document, schema, res.body)).toEqual([]);
-    expect(await transactionCount(s.walletId)).toBe(0);
+    expect(await transactionCount(s.member.spaceId)).toBe(0);
   });
 
   it('reports a refused create as not found, and lets the same operation be sent again', async () => {
@@ -215,12 +216,8 @@ describe('Transaction operations (e2e)', () => {
     expect(res.body.code).toBe('VALIDATION_FAILED');
   });
 
-  it('creates one transaction for two concurrent creates of one operation on different wallets', async () => {
+  it('creates one transaction for two concurrent creates of one operation with different bodies', async () => {
     const s = await setup();
-    const other = await api(s.member)
-      .post('/wallets')
-      .send({ wallet_name: 'Other', initial_balance: '0', design: 'slate' })
-      .expect(201);
     const operationId = randomUUID();
     // held after recording the operation, before the commit
     const insideWrite = (_self: unknown, args: unknown[]) => args.length === 3 && args[2] !== undefined;
@@ -231,13 +228,13 @@ describe('Transaction operations (e2e)', () => {
       checkpoint,
       RECORD_OPERATION,
       () => create(s, expense(s, operationId)),
-      () => create(s, { ...expense(s, operationId), wallet_id: other.body.wallet.id }),
+      () => create(s, { ...expense(s, operationId), assignment: { kind: 'unassigned' } }),
     );
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(409);
     expect(second.body.code).toBe('TRANSACTION_OPERATION_EXISTS');
-    expect(await transactionCount(s.walletId)).toBe(1);
-    expect(await transactionCount(other.body.wallet.id)).toBe(0);
+    expect(await transactionCount(s.member.spaceId)).toBe(1);
+    expect((await lookup(s, operationId).expect(200)).body.transaction.assignment.kind).toBe('space');
   });
 });

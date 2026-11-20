@@ -3,6 +3,7 @@ import type { QueryRunner } from 'typeorm';
 
 import { AddTransactionSpaceOwnership1791200000000 } from '../src/migrations/1791200000000-AddTransactionSpaceOwnership';
 import { AddCompatibilityWallet1791300000000 } from '../src/migrations/1791300000000-AddCompatibilityWallet';
+import { DropWallets1791400000000 } from '../src/migrations/1791400000000-DropWallets';
 import {
   compareLedgers,
   findOwnershipProblems,
@@ -26,15 +27,17 @@ interface OwnedRow {
 }
 
 // Runs the migration over the whole database, like the CLI would: the schema
-// is taken back to before it, legacy rows are written the way the previous
-// app wrote them, and the migration runs again. Every test leaves the
-// database migrated. Only `npm run test:e2e:migrations` runs it, on a
-// disposable database (test/jest-migration-e2e.config.js).
+// is taken back to before it (through DropWallets1791400000000, which came
+// later), legacy rows are written the way the previous app wrote them, and
+// the migration runs again. Every test leaves the database fully migrated.
+// Only `npm run test:e2e:migrations` runs it, on a disposable database
+// (test/jest-migration-e2e.config.js).
 describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   let testApp: TestApp;
   let disposable = false;
   const ownership = new AddTransactionSpaceOwnership1791200000000();
   const compatibility = new AddCompatibilityWallet1791300000000();
+  const walletRemoval = new DropWallets1791400000000();
   let userIds: number[];
   let strayIds: { spaceIds: number[] };
 
@@ -80,8 +83,28 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   }
 
   async function revert(): Promise<void> {
+    if (!(await hasColumn('transactions', 'wallet_id'))) {
+      const queryRunner = testApp.dataSource.createQueryRunner();
+
+      try {
+        await walletRemoval.down(queryRunner);
+      } finally {
+        await queryRunner.release();
+      }
+    }
+
     await compatibility.down(runner());
     await ownership.down(runner());
+  }
+
+  async function removeWallets(): Promise<void> {
+    const queryRunner = testApp.dataSource.createQueryRunner();
+
+    try {
+      await walletRemoval.up(queryRunner);
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async function insertWallet(spaceId: number, name: string, deleted = false): Promise<number> {
@@ -129,7 +152,8 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
     ]);
   }
 
-  // Built on the migrated schema, then taken back before the legacy rows.
+  // Written on the schema before the migration: the users and spaces through
+  // the app, the wallets and records as the previous app wrote them.
   async function seed(): Promise<void> {
     const creator = await createVerifiedMember(testApp, 'own-creator');
     const first = await createVerifiedMember(testApp, 'own-first');
@@ -156,7 +180,7 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
     };
     personal = {
       spaceId: solo.spaceId,
-      wallet: Number((await query<{ id: number }>('SELECT id FROM wallets WHERE space_id = ?', [solo.spaceId]))[0].id),
+      wallet: await insertWallet(solo.spaceId, 'Cash'),
       deletedWallet: await insertWallet(solo.spaceId, 'Closed', true),
       expected: solo.userId,
     };
@@ -214,8 +238,8 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
     userIds = [];
     ids = [];
     strayIds = { spaceIds: [] };
-    await seed();
     await revert();
+    await seed();
   });
 
   afterEach(async () => {
@@ -231,6 +255,10 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
       }
 
       await migrate();
+    }
+
+    if (await hasColumn('transactions', 'wallet_id')) {
+      await removeWallets();
     }
 
     if (strayIds.spaceIds.length) {

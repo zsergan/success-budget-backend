@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 
 // The newest migration this code needs. Kept equal to the newest file in
 // src/migrations by schema-check.spec.ts.
-export const REQUIRED_MIGRATION = 'AddCompatibilityWallet1791300000000';
+export const REQUIRED_MIGRATION = 'DropWallets1791400000000';
 
 export interface SchemaState {
   // migrations of this build the database has not run yet

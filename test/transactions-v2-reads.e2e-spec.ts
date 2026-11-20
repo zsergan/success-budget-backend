@@ -1,4 +1,7 @@
+import { createHash, randomUUID } from 'node:crypto';
 import request from 'supertest';
+
+import { encodeFeedCursor } from '@modules/transactions/feed-cursor';
 
 import {
   type Member,
@@ -42,7 +45,6 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
   let mark: Member;
   let gone: Member;
   let spaceId: number;
-  let walletId: number;
   let groceries: number;
   let eatingOut: number;
   let salary: number;
@@ -138,17 +140,19 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
     archived = named(categories.body.expenses, 'Travel');
     salary = named(categories.body.incomes, 'Salary');
 
-    // a v1 wallet with a starting balance at the very start of October in Berlin
-    const wallet = await api(owner)
-      .post(`/api/v1/spaces/${spaceId}/wallets`)
-      .send({ wallet_name: 'Card', initial_balance: '500', design: 'slate' })
-      .expect(201);
-    walletId = wallet.body.wallet.id;
-    await testApp.dataSource.query('UPDATE transactions SET timestamp = ? WHERE id = ?', [
-      new Date('2026-09-30T22:00:00.000Z'),
-      wallet.body.transaction.id,
+    // a starting balance a wallet left, at the very start of October in Berlin
+    const [system] = await testApp.dataSource.query('SELECT id FROM categories WHERE space_id = ? AND is_system = 1', [
+      spaceId,
     ]);
-    ids.initial = wallet.body.transaction.id;
+    ids.initial = randomUUID();
+    await insertLegacyTransaction(testApp.dataSource, {
+      id: ids.initial,
+      spaceId,
+      categoryId: system.id,
+      type: 'income',
+      amount: '500.00',
+      timestamp: new Date('2026-09-30T22:00:00.000Z'),
+    });
 
     await add('ownerGroceries', owner, forUser(owner), '1450.00', '2026-10-03T10:00:00.000Z');
     await add('rent', lena, { kind: 'space' }, '1100.00', '2026-10-01T08:00:00.000Z', eatingOut);
@@ -160,7 +164,7 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
     await add('november', owner, forUser(owner), '9.00', '2026-10-31T23:00:00.000Z');
     // imported from wallets: the whole space, the earliest member as the author
     await insertLegacyTransaction(testApp.dataSource, {
-      walletId,
+      spaceId,
       categoryId: groceries,
       type: 'expense',
       amount: '30.00',
@@ -279,13 +283,32 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
         .get(v2('/transactions/feed'))
         .query({ ...OCTOBER, assignment: 'unassigned', limit: 1, cursor })
         .expect(400);
-      const v1Feed = await api(owner)
-        .get(`/api/v1/spaces/${spaceId}/transactions/feed`)
-        .query({ ...OCTOBER, limit: 1 })
-        .expect(200);
+      // a cursor of the retired v1 feed for the same query: its digest had the wallet filter last
+      const v1Digest = createHash('sha256')
+        .update(
+          JSON.stringify([
+            spaceId,
+            Date.parse(OCTOBER.from),
+            Date.parse(OCTOBER.to),
+            OCTOBER.time_zone,
+            null,
+            null,
+            null,
+            null,
+            null,
+          ]),
+        )
+        .digest('base64url');
       const v1Cursor = await api(owner)
         .get(v2('/transactions/feed'))
-        .query({ ...OCTOBER, limit: 1, cursor: v1Feed.body.page_info.next_cursor })
+        .query({
+          ...OCTOBER,
+          limit: 1,
+          cursor: encodeFeedCursor(
+            { direction: 'older', position: { timestamp: new Date('2026-10-25T00:30:00.000Z'), id: ids.lenaLunch } },
+            v1Digest,
+          ),
+        })
         .expect(400);
 
       expect(other.body.message).toEqual([{ field: 'cursor', error: 'cursor does not belong to this query' }]);
@@ -309,7 +332,7 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
     it('refuses the v1 wallet filter', async () => {
       const refused = await api(owner)
         .get(v2('/transactions/feed'))
-        .query({ ...OCTOBER, wallet_id: walletId })
+        .query({ ...OCTOBER, wallet_id: 7 })
         .expect(400);
 
       expect(refused.body.message).toEqual([expect.objectContaining({ field: 'wallet_id' })]);
@@ -446,11 +469,10 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
       expect(body.by_assignment.primary_items).toEqual([expect.objectContaining({ key: 'space', amount: '3000.00' })]);
     });
 
-    it('keeps the v1 breakdown by wallet, the compatibility wallet included', async () => {
-      const { body } = await api(owner).get(`/api/v1/spaces/${spaceId}/statistics/breakdown`).query(MONTH).expect(200);
+    it('no longer serves the v1 breakdown by wallet', async () => {
+      const { body } = await api(owner).get(`/api/v1/spaces/${spaceId}/statistics/breakdown`).query(MONTH).expect(410);
 
-      expect(body.by_wallet.total_amount).toBe('3240.00');
-      expect(body).not.toHaveProperty('by_assignment');
+      expect(body.code).toBe('LEGACY_API_RETIRED');
     });
 
     it('matches the OpenAPI schema', async () => {

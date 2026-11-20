@@ -1,7 +1,7 @@
 # success-budget-backend
 
 NestJS 11 + TypeORM 1.x + MySQL 8 REST API for personal/shared budget
-spaces: wallets, transactions, categories, limits, statistics. Module map,
+spaces: transactions, categories, limits, statistics. Module map,
 local setup and seed users: `README.md`. Deploy runbook: `docs/deployment.md`.
 
 ## Commands
@@ -94,24 +94,25 @@ specs locally.
 
 ## Domain invariants
 
-- Currency belongs to `Space` only. Wallets and transactions have no
-  currency, and there is no FX conversion.
+- Currency belongs to `Space` only. Transactions have no currency, and
+  there is no FX conversion.
 - A transaction belongs to its space (`space_id`), has a server-set author
   that no edit changes, and is assigned to a member, the whole space or
-  nobody (`docs/transactions-v2-contract.md`). Until wallets are removed,
-  every record also keeps a wallet: v2 creates use the space's
-  compatibility wallet, which v2 never shows.
-- Wallet balance is derived (the sum of its transactions), never stored.
-  An initial balance is an `income` transaction in the system category
-  `Initial balance` (`Category.is_system`). It shows in history, cannot be
-  edited, and is excluded from income/expense totals and limits. System
-  categories are never exposed to clients as categories.
-- Deletion: wallets are soft-deleted (`is_deleted`/`deleted_at`). Category
-  `DELETE` hard-deletes an unused category and archives a used one
-  (`is_active`/`archived_at`). Transactions and limits are hard-deleted.
-  Do not add soft delete elsewhere without a concrete need.
+  nobody (`docs/transactions-v2-contract.md`). Wallets were removed in
+  Release B; the `/api/v1` transaction, statistics and wallet routes answer
+  `410 LEGACY_API_RETIRED`.
+- The starting balances wallets recorded are `income` transactions in the
+  system category `Initial balance` (`Category.is_system`, `kind:
+  'initial_balance'`). They show in history, cannot be edited or deleted,
+  and are excluded from income/expense totals and limits; no new one is
+  created. System categories are never exposed to clients as categories.
+- Deletion: category `DELETE` hard-deletes an unused category and archives
+  a used one (`is_active`/`archived_at`). Transactions and limits are
+  hard-deleted. Do not add soft delete without a concrete need.
 - Foreign keys to `categories` and `currencies` are `ON DELETE RESTRICT`.
-  Owned child data (space → wallets → transactions, etc.) cascades.
+  Owned child data (space → transactions, categories, limits, etc.)
+  cascades, but MySQL cascades from a space to its categories before its
+  transactions, so a space's transactions are deleted explicitly first.
 - Limits: 0 categories = monthly total, 1 = single category, 2+ = named
   group. The total counts all expenses, so it can disagree with category
   limits (`over_allocation`). The month is computed in the client's

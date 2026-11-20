@@ -4,8 +4,15 @@ import type { Repository } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { TransactionType } from '@shared/enums';
-import { SPACE_ASSIGNMENT, recordedAuthor } from '@shared/transaction-ownership';
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { recordedAuthor } from '@shared/transaction-ownership';
+import {
+  type Member,
+  type TestApp,
+  SPACE_ASSIGNMENT,
+  createTestApp,
+  createVerifiedMember,
+  deleteUsers,
+} from './support/app';
 
 interface FeedBody {
   items: { id: string; timestamp: string }[];
@@ -28,7 +35,7 @@ describe('Transactions feed at the last stored second (e2e)', () => {
 
   const get = (url: string) =>
     request(testApp.app.getHttpServer()).get(url).set('Authorization', `Bearer ${owner.token}`);
-  const base = () => `/api/v1/spaces/${owner.spaceId}/transactions`;
+  const base = () => `/api/v2/spaces/${owner.spaceId}/transactions`;
   const query = (params: Record<string, string | number>) => new URLSearchParams(params as never).toString();
   const feed = async (params: Record<string, string | number>): Promise<FeedBody> =>
     (await get(`${base()}/feed?${query({ time_zone: 'UTC', ...params })}`).expect(200)).body;
@@ -53,11 +60,6 @@ describe('Transactions feed at the last stored second (e2e)', () => {
   beforeAll(async () => {
     testApp = await createTestApp();
     owner = await createVerifiedMember(testApp, 'feed-upper-bound');
-    const wallet = await request(testApp.app.getHttpServer())
-      .post(`/api/v1/spaces/${owner.spaceId}/wallets`)
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
     const categories = await get(`/api/v1/spaces/${owner.spaceId}/categories`).expect(200);
     const transactions = testApp.app.get<Repository<Transaction>>(getRepositoryToken(Transaction));
 
@@ -67,7 +69,6 @@ describe('Transactions feed at the last stored second (e2e)', () => {
           space_id: owner.spaceId,
           ...recordedAuthor(owner.userId),
           ...SPACE_ASSIGNMENT,
-          wallet_id: wallet.body.wallet.id,
           category_id: (type === TransactionType.INCOME ? categories.body.incomes : categories.body.expenses)[0].id,
           transaction_type: type,
           amount,

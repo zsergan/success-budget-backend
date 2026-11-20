@@ -19,11 +19,11 @@ describe('IdempotencyService', () => {
   const request: IdempotentRequest = {
     userId: 1,
     spaceId: 10,
-    operation: 'transactions.create',
+    operation: 'transactions.v2.create',
     key: 'key-1',
-    payload: { amount: '10', wallet_id: 1 },
+    payload: { amount: '10', category_id: 1 },
   };
-  const scope = { user_id: 1, space_id: 10, operation: 'transactions.create', idempotency_key: 'key-1' };
+  const scope = { user_id: 1, space_id: 10, operation: 'transactions.v2.create', idempotency_key: 'key-1' };
 
   let service: IdempotencyService;
   let repository: { insert: jest.Mock; findOne: jest.Mock; update: jest.Mock };

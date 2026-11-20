@@ -1,21 +1,12 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index, VersionColumn } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { Wallet } from './wallet.entity';
 import { Category } from './category.entity';
 import { Space } from './space.entity';
 import { User } from './user.entity';
 import { AssignmentKind, AuthorSource, TransactionType } from '@shared/enums';
 
 @Entity('transactions')
-@Index('IDX_transactions_wallet_id_timestamp_id', [
-  'wallet_id',
-  'timestamp',
-  'id',
-  'category_id',
-  'transaction_type',
-  'amount',
-])
 @Index('IDX_transactions_space_timestamp_id', [
   'space_id',
   'timestamp',
@@ -45,11 +36,6 @@ export class Transaction {
   @Exclude()
   @Column({ type: 'int' })
   space_id!: number;
-
-  // Release A only: v1 clients read every record through a wallet
-  @Exclude()
-  @Column({ type: 'int' })
-  wallet_id!: number;
 
   @Exclude()
   @Column({ type: 'int' })
@@ -94,10 +80,6 @@ export class Transaction {
   @ManyToOne(() => Space, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'space_id', foreignKeyConstraintName: 'FK_transactions_space' })
   space?: Space;
-
-  @ManyToOne(() => Wallet, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'wallet_id' })
-  wallet?: Wallet;
 
   @ManyToOne(() => Category, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'category_id' })

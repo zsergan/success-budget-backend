@@ -85,12 +85,8 @@ describe('TestFlight account provisioning (e2e)', () => {
       users,
       members,
       spaces: await rows('SELECT * FROM spaces WHERE id IN (?) ORDER BY id', spaceIds),
-      wallets: await rows('SELECT * FROM wallets WHERE space_id IN (?) ORDER BY id', spaceIds),
       categories: await rows('SELECT * FROM categories WHERE space_id IN (?) ORDER BY id', spaceIds),
-      transactions: await rows(
-        'SELECT t.* FROM transactions t JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id IN (?) ORDER BY t.id',
-        spaceIds,
-      ),
+      transactions: await rows('SELECT * FROM transactions WHERE space_id IN (?) ORDER BY id', spaceIds),
       limits: await rows('SELECT * FROM limits WHERE space_id IN (?) ORDER BY id', spaceIds),
       limitCategories: await rows(
         'SELECT lc.* FROM limit_categories lc JOIN limits l ON l.id = lc.limit_id WHERE l.space_id IN (?) ' +
@@ -101,7 +97,7 @@ describe('TestFlight account provisioning (e2e)', () => {
   }
 
   async function tableCounts() {
-    const tables = ['users', 'spaces', 'space_members', 'wallets', 'categories', 'transactions', 'limits'];
+    const tables = ['users', 'spaces', 'space_members', 'categories', 'transactions', 'limits'];
     const counts = await Promise.all(
       tables.map(async (table) => {
         const [row] = await testApp.dataSource.query(`SELECT COUNT(*) AS count FROM \`${table}\``);
@@ -115,7 +111,6 @@ describe('TestFlight account provisioning (e2e)', () => {
     expect(state.users).toHaveLength(1);
     expect(state.members).toHaveLength(1);
     expect(state.spaces).toHaveLength(1);
-    expect(state.wallets).toHaveLength(1);
     expect(state.categories).toHaveLength(DEFAULT_CATEGORIES.length + 1);
     expect(state.transactions).toHaveLength(SAMPLE_TRANSACTIONS.length);
     expect(state.limits).toHaveLength(1);
@@ -154,7 +149,6 @@ describe('TestFlight account provisioning (e2e)', () => {
     expect(state.members[0]).toMatchObject({ user_id: user.id, role: 'owner' });
     const [usd] = await testApp.dataSource.query("SELECT id FROM currencies WHERE code = 'USD'");
     expect(state.spaces[0]).toMatchObject({ name: 'Personal', type: 'personal', currency_id: usd.id });
-    expect(state.wallets[0]).toMatchObject({ wallet_name: 'Cash', design: 'slate', is_deleted: 0 });
     expect(state.categories.filter((category) => category.is_system === 1)).toEqual([
       expect.objectContaining({ name: 'Initial balance' }),
     ]);
@@ -172,8 +166,8 @@ describe('TestFlight account provisioning (e2e)', () => {
       .post('/api/v1/users/login')
       .send({ email, password: DEMO_PASSWORD })
       .expect(201);
-    const api = (path: string) =>
-      request(server).get(`/api/v1${path}`).set('Authorization', `Bearer ${login.text}`).expect(200);
+    const api = (path: string, version = 'v1') =>
+      request(server).get(`/api/${version}${path}`).set('Authorization', `Bearer ${login.text}`).expect(200);
     const spaceId = state.spaces[0].id;
 
     const spaces = await api('/spaces');
@@ -189,13 +183,11 @@ describe('TestFlight account provisioning (e2e)', () => {
       names(TransactionType.EXPENSE),
     );
 
-    const wallets = await api(`/spaces/${spaceId}/wallets`);
-    expect(wallets.body.total_balance_currency).toBe('USD');
-    expect(Math.round(wallets.body.total_balance * 100)).toBe(
-      sampleTotal(TransactionType.INCOME) - sampleTotal(TransactionType.EXPENSE),
-    );
+    const month = await api(`/spaces/${spaceId}/statistics/summary?period=month&time_zone=UTC`, 'v2');
+    expect(month.body.currency).toBe('USD');
+    expect(cents(month.body.net)).toBe(sampleTotal(TransactionType.INCOME) - sampleTotal(TransactionType.EXPENSE));
 
-    const latest = await api(`/spaces/${spaceId}/transactions/latest`);
+    const latest = await api(`/spaces/${spaceId}/transactions/latest`, 'v2');
     const newest = SAMPLE_TRANSACTIONS.reduce((last, sample) => (sample.at > last.at ? sample : last));
     expect(latest.body).toMatchObject({ amount: newest.amount, description: newest.description });
 

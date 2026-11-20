@@ -28,24 +28,18 @@ describe('Database timestamps (e2e)', () => {
   ])('stores %s as the exact instant, including DST overlap and the minimum timestamp', async (timestamp) => {
     const member = await createVerifiedMember(testApp, 'database-timestamps');
     userIds.push(member.userId);
-    const base = `/api/v1/spaces/${member.spaceId}`;
     const auth = { Authorization: `Bearer ${member.token}` };
     const server = testApp.app.getHttpServer();
-    const wallet = await request(server)
-      .post(`${base}/wallets`)
-      .set(auth)
-      .send({ wallet_name: 'Card', initial_balance: '0', design: 'slate' })
-      .expect(201);
-    const categories = await request(server).get(`${base}/categories`).set(auth).expect(200);
+    const categories = await request(server).get(`/api/v1/spaces/${member.spaceId}/categories`).set(auth).expect(200);
     const created = await request(server)
-      .post(`${base}/transactions`)
+      .post(`/api/v2/spaces/${member.spaceId}/transactions`)
       .set(auth)
       .send({
-        wallet_id: wallet.body.wallet.id,
         category_id: categories.body.expenses[0].id,
         transaction_type: 'expense',
         amount: '10',
         timestamp,
+        assignment: { kind: 'space' },
       })
       .expect(201);
 

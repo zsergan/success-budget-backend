@@ -47,7 +47,7 @@ export class TransactionFeedQueryDto {
     maxLength: MAX_SEARCH_LENGTH,
     example: 'coffee',
     description:
-      'Matches description, category or wallet name, ignoring case and accents. Trimmed; blank means no search; ' +
+      'Matches description or category name, ignoring case and accents. Trimmed; blank means no search; ' +
       `more than ${MAX_SEARCH_LENGTH} characters after trimming is refused, not cut.`,
   })
   @Transform(trimSearch)
@@ -110,12 +110,4 @@ export class TransactionFeedQueryDto {
   @Min(1)
   @Max(2147483647)
   category_id?: number;
-
-  @ApiPropertyOptional({ type: 'integer', description: 'An active wallet of the space.' })
-  @QueryInteger()
-  @IsOptionalNonNull()
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
-  wallet_id?: number;
 }

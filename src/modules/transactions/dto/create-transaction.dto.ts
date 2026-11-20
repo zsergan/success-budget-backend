@@ -8,13 +8,6 @@ import { IsDescription, IsNotInFuture, IsPositiveAmount } from './transaction-fi
 
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
 export class CreateTransactionDto {
-  @ApiProperty({ type: 'integer', example: 7, description: 'An active wallet of the space.' })
-  @IsNotEmpty()
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
-  wallet_id!: number;
-
   @ApiProperty({
     type: 'integer',
     example: 12,

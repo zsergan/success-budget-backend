@@ -5,6 +5,7 @@ import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
+import { Transaction } from '@entities/transaction.entity';
 import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS } from '@shared/constants';
@@ -183,8 +184,11 @@ export class SpacesService {
     }
 
     // members, then the space, whose deletion cascades to its invitations:
-    // invitation acceptance locks the space before the invitation
+    // invitation acceptance locks the space before the invitation. The
+    // transactions go before the space: they reference its categories with
+    // RESTRICT, and MySQL cascades from the space to categories first.
     await manager.getRepository(SpaceMember).delete({ space_id: actor.space_id });
+    await manager.getRepository(Transaction).delete({ space_id: actor.space_id });
     await manager.getRepository(Space).delete(actor.space_id);
   }
 

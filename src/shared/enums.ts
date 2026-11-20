@@ -3,7 +3,7 @@ export enum TransactionType {
   EXPENSE = 'expense',
 }
 
-// shared by Wallet.design and Category.color - one closed palette of 6 tones
+// Category.color - one closed palette of 6 tones
 export enum AppColor {
   SLATE = 'slate',
   AMBER = 'amber',

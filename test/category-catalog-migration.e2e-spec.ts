@@ -42,7 +42,7 @@ interface CategoryRow {
 
 interface TransactionRow {
   id: string;
-  wallet_id: number;
+  space_id: number;
   category_id: number;
   transaction_type: Type;
   amount: string;
@@ -140,20 +140,12 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
     return Number(result.insertId);
   }
 
-  async function insertWallet(spaceId: number, name: string, deleted = false) {
-    const result: { insertId: number } = await testApp.dataSource.query(
-      'INSERT INTO wallets (wallet_name, design, is_deleted, deleted_at, space_id) VALUES (?, ?, ?, ?, ?)',
-      [name, 'slate', deleted ? 1 : 0, deleted ? new Date('2026-09-20T00:00:00Z') : null, spaceId],
-    );
-    return Number(result.insertId);
-  }
-
   let day = 0;
-  async function insertTransaction(walletId: number, categoryId: number, type: Type, amount: string) {
+  async function insertTransaction(spaceId: number, categoryId: number, type: Type, amount: string) {
     day = (day % 27) + 1;
     await insertLegacyTransaction(testApp.dataSource, {
       id: randomUUID(),
-      walletId,
+      spaceId,
       categoryId,
       type,
       amount,
@@ -186,30 +178,28 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
     }
     const id = (type: Type, name: string) => categories.get(key(type, name))!;
 
-    const [{ id: cash }] = await query<{ id: number }>('SELECT id FROM wallets WHERE space_id = ?', [spaceId]);
-    const closed = await insertWallet(spaceId, 'Closed card', true);
     const [{ id: system }] = await query<{ id: number }>(
       'SELECT id FROM categories WHERE space_id = ? AND is_system = 1',
       [spaceId],
     );
 
-    await insertTransaction(cash, system, 'income', '1000.00');
-    await insertTransaction(cash, id('income', 'Salary'), 'income', '3000.00');
-    await insertTransaction(closed, id('income', 'Bonus'), 'income', '500.00');
-    await insertTransaction(cash, id('income', 'Dividends'), 'income', '40.10');
-    await insertTransaction(cash, id('expense', 'Grocery'), 'expense', '80.50');
-    await insertTransaction(closed, id('expense', 'Grocery'), 'expense', '19.50');
-    await insertTransaction(cash, id('expense', 'Restaurant'), 'expense', '45.00');
-    await insertTransaction(closed, id('expense', 'Coffee shops'), 'expense', '12.30');
-    await insertTransaction(cash, id('expense', 'Pharmacy'), 'expense', '20.00');
-    await insertTransaction(closed, id('expense', 'Taxi'), 'expense', '15.00');
-    await insertTransaction(cash, id('expense', 'Transport'), 'expense', '7.77');
-    await insertTransaction(cash, id('expense', 'Pets'), 'expense', '60.00');
-    await insertTransaction(cash, id('expense', 'Mystery'), 'expense', '5.00');
-    await insertTransaction(cash, id('expense', 'Flowers'), 'expense', '25.00');
-    await insertTransaction(cash, id('expense', 'Fuel'), 'expense', '50.00');
-    await insertTransaction(cash, id('expense', 'Electronics'), 'expense', '999.99');
-    await insertTransaction(closed, id('expense', 'Subscriptions'), 'expense', '9.99');
+    await insertTransaction(spaceId, system, 'income', '1000.00');
+    await insertTransaction(spaceId, id('income', 'Salary'), 'income', '3000.00');
+    await insertTransaction(spaceId, id('income', 'Bonus'), 'income', '500.00');
+    await insertTransaction(spaceId, id('income', 'Dividends'), 'income', '40.10');
+    await insertTransaction(spaceId, id('expense', 'Grocery'), 'expense', '80.50');
+    await insertTransaction(spaceId, id('expense', 'Grocery'), 'expense', '19.50');
+    await insertTransaction(spaceId, id('expense', 'Restaurant'), 'expense', '45.00');
+    await insertTransaction(spaceId, id('expense', 'Coffee shops'), 'expense', '12.30');
+    await insertTransaction(spaceId, id('expense', 'Pharmacy'), 'expense', '20.00');
+    await insertTransaction(spaceId, id('expense', 'Taxi'), 'expense', '15.00');
+    await insertTransaction(spaceId, id('expense', 'Transport'), 'expense', '7.77');
+    await insertTransaction(spaceId, id('expense', 'Pets'), 'expense', '60.00');
+    await insertTransaction(spaceId, id('expense', 'Mystery'), 'expense', '5.00');
+    await insertTransaction(spaceId, id('expense', 'Flowers'), 'expense', '25.00');
+    await insertTransaction(spaceId, id('expense', 'Fuel'), 'expense', '50.00');
+    await insertTransaction(spaceId, id('expense', 'Electronics'), 'expense', '999.99');
+    await insertTransaction(spaceId, id('expense', 'Subscriptions'), 'expense', '9.99');
 
     const limits = {
       single: await insertLimit(spaceId, null, '300.00', [id('expense', 'Grocery')]),
@@ -236,9 +226,8 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
       [space.id],
     );
     const snacks = await insertCategory(space.id, 'expense', 'Snacks', 'Grocery');
-    const wallet = await insertWallet(space.id, 'Shared');
-    await insertTransaction(wallet, snacks, 'expense', '3.50');
-    await insertTransaction(wallet, groceries, 'expense', '10.00');
+    await insertTransaction(space.id, snacks, 'expense', '3.50');
+    await insertTransaction(space.id, groceries, 'expense', '10.00');
 
     return { spaceId: space.id, groceries, snacks };
   }
@@ -273,8 +262,8 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
 
   const transactionsOf = (spaceId: number) =>
     query<TransactionRow>(
-      `SELECT t.id, t.wallet_id, t.category_id, t.transaction_type, t.amount, t.timestamp, t.description, t.version
-       FROM transactions t INNER JOIN wallets w ON w.id = t.wallet_id WHERE w.space_id = ? ORDER BY t.id`,
+      `SELECT t.id, t.space_id, t.category_id, t.transaction_type, t.amount, t.timestamp, t.description, t.version
+       FROM transactions t WHERE t.space_id = ? ORDER BY t.id`,
       [spaceId],
     );
 
@@ -295,14 +284,13 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
 
   const money = (spaceId: number) =>
     query(
-      `SELECT w.id AS wallet_id, COUNT(t.id) AS count,
-              SUM(CASE t.transaction_type WHEN 'income' THEN t.amount ELSE -t.amount END) AS balance,
+      `SELECT COUNT(t.id) AS count,
+              SUM(CASE t.transaction_type WHEN 'income' THEN t.amount ELSE -t.amount END) AS net,
               SUM(CASE WHEN t.transaction_type = 'income' AND c.is_system = 0 THEN t.amount ELSE 0 END) AS income,
               SUM(CASE WHEN t.transaction_type = 'expense' THEN t.amount ELSE 0 END) AS expense
-       FROM wallets w
-       LEFT JOIN transactions t ON t.wallet_id = w.id
+       FROM transactions t
        LEFT JOIN categories c ON c.id = t.category_id
-       WHERE w.space_id = ? GROUP BY w.id ORDER BY w.id`,
+       WHERE t.space_id = ?`,
       [spaceId],
     );
 
@@ -312,8 +300,7 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
         await query<{ type: string; name: string; amount: string }>(
           `SELECT c.transaction_type AS type, c.name, SUM(t.amount) AS amount
            FROM transactions t INNER JOIN categories c ON c.id = t.category_id
-           INNER JOIN wallets w ON w.id = t.wallet_id
-           WHERE w.space_id = ? GROUP BY c.id ORDER BY c.id`,
+           WHERE t.space_id = ? GROUP BY c.id ORDER BY c.id`,
           [spaceId],
         )
       ).map((row) => [key(row.type, row.name), Number(row.amount)]),
@@ -457,10 +444,6 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
   });
 
   it('maps names and icons that are also inherited object properties like any other', async () => {
-    const [{ id: cash }] = await query<{ id: number }>(
-      "SELECT id FROM wallets WHERE space_id = ? AND wallet_name = 'Cash'",
-      [personal.spaceId],
-    );
     const cases: { type: Type; name: string; icon: string; target: string }[] = [
       { type: 'expense', name: 'Constructor', icon: 'Home goods', target: 'Home goods' },
       { type: 'expense', name: '__proto__', icon: 'Home goods', target: 'Home goods' },
@@ -471,7 +454,7 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
     for (const category of cases) {
       const id = await insertCategory(personal.spaceId, category.type, category.name, category.icon);
       legacyIds.set(id, category.target);
-      await insertTransaction(cash, id, category.type, '1.25');
+      await insertTransaction(personal.spaceId, id, category.type, '1.25');
     }
     const before = await transactionsOf(personal.spaceId);
 

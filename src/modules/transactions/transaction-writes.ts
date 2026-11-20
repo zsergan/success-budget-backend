@@ -3,7 +3,6 @@ import { DataSource, EntityManager } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { TRANSACTION_OPERATION_SCOPE, TransactionOperation } from '@entities/transaction-operation.entity';
-import { Wallet } from '@entities/wallet.entity';
 import { Category } from '@entities/category.entity';
 import type { SpaceMember } from '@entities/space-member.entity';
 import { ApiException } from '@shared/api.exception';
@@ -30,7 +29,7 @@ export interface WriteOptions {
   expectedVersion?: number;
 }
 
-// The operation name scopes the key: v1 and v2 keys never answer each other.
+// The operation name scopes the key: keys of different operations never answer each other.
 export interface IdempotentWrite {
   operation: string;
   key: string | undefined;
@@ -51,7 +50,7 @@ export function requireVersion({ expectedVersion }: WriteOptions): number {
   return expectedVersion;
 }
 
-// The write unit and the steps that v1 and v2 transaction writes share.
+// The write unit and the steps of the transaction writes.
 @Injectable()
 export class TransactionWrites {
   constructor(
@@ -63,8 +62,8 @@ export class TransactionWrites {
 
   // One DB transaction per write, locks taken in one order across the app:
   // the acting member's row, with the assignee's (shared, ascending id), the
-  // space row, the idempotency key, the transaction row, wallet rows by
-  // ascending id, category rows, the operation row. Access is checked under
+  // space row, the idempotency key, the transaction row, category rows, the
+  // operation row. Access is checked under
   // these locks, so a membership removed or a category archived meanwhile is
   // seen, and a repeat with the same key gets the stored result.
   run<T>(
@@ -102,7 +101,7 @@ export class TransactionWrites {
   }
 
   // The unique key settles a race the check above cannot see: a concurrent
-  // create with the same id, through either API version, makes this insert
+  // create with the same id makes this insert
   // wait for it, then fail.
   async recordOperation(
     manager: EntityManager,
@@ -188,8 +187,7 @@ export class TransactionWrites {
     }
   }
 
-  // Also the undo of a create. Deleting a record of a deleted wallet changes
-  // history, statistics and limits, but no active wallet's balance.
+  // Also the undo of a create.
   async deleteRecord(
     manager: EntityManager,
     spaceId: number,
@@ -199,8 +197,6 @@ export class TransactionWrites {
     const transaction = await this.lockTransaction(manager, spaceId, transactionId);
     assertNotSystem(transaction);
     assertVersion(transaction, expectedVersion);
-    // its balance changes: writes to one wallet queue on its row
-    await lockRows(manager, Wallet, [transaction.wallet_id], 'exclusive');
 
     await manager.getRepository(Transaction).delete(transaction.id);
     await manager
@@ -208,8 +204,8 @@ export class TransactionWrites {
       .update({ transaction_id: transaction.id }, { deleted_at: new Date() });
   }
 
-  // What became of a create sent with this client_operation_id, through
-  // either API version; null when none committed in the space.
+  // What became of a create sent with this client_operation_id, by any API
+  // version that ever served it; null when none committed in the space.
   async readOperation(
     manager: EntityManager,
     spaceId: number,

@@ -72,10 +72,6 @@ describe('StatisticsService', () => {
               },
               { id: 16, name: 'Fees', icon: 'receipt', color: 'slate', isArchived: false, amount: 1050n, count: 1 },
             ]),
-            getStatisticsByWallet: jest.fn().mockResolvedValue([
-              { id: 1, name: 'Card', design: 'slate', isDeleted: false, amount: 71050n, count: 7 },
-              { id: 3, name: 'Old card', design: 'rose', isDeleted: true, amount: 10000n, count: 2 },
-            ]),
             getStatisticsByAssignment: jest.fn().mockResolvedValue([
               { kind: 'member', userId: 31, name: 'Lena', isMember: false, amount: 45000n, count: 5 },
               { kind: 'space', userId: null, name: null, isMember: false, amount: 36050n, count: 4 },
@@ -236,13 +232,6 @@ describe('StatisticsService', () => {
       // 1.3% is under the threshold
       other: { kind: 'other', amount: '10.50', percent: 1.3, children: [{ key: 'category:16' }] },
     });
-    expect(result.by_wallet).toMatchObject({
-      total_amount: '810.50',
-      source_count: 2,
-      primary_items: [{ kind: 'wallet', key: 'wallet:1', amount: '710.50' }],
-      deleted_wallets: { kind: 'deleted_wallets', amount: '100.00', wallets_count: 1 },
-      other: null,
-    });
     expect(transactionQueriesService.getStatisticsByCategory).toHaveBeenCalledWith(
       spaceId,
       TransactionType.EXPENSE,
@@ -250,7 +239,7 @@ describe('StatisticsService', () => {
       now,
       manager,
     );
-    expect(transactionQueriesService.getStatisticsByWallet).toHaveBeenCalledWith(
+    expect(transactionQueriesService.getStatisticsByAssignment).toHaveBeenCalledWith(
       spaceId,
       TransactionType.EXPENSE,
       period.from,
@@ -265,7 +254,7 @@ describe('StatisticsService', () => {
     const result = await service.getBreakdown(userId, spaceId, { ...query, transaction_type: TransactionType.INCOME });
 
     expect(result).toMatchObject({ transaction_type: 'income', total: { amount: '810.50', count: 9 } });
-    for (const method of ['getStatisticsByCategory', 'getStatisticsByWallet'] as const) {
+    for (const method of ['getStatisticsByCategory', 'getStatisticsByAssignment'] as const) {
       expect(transactionQueriesService[method]).toHaveBeenCalledWith(
         spaceId,
         TransactionType.INCOME,
@@ -323,7 +312,7 @@ describe('StatisticsService', () => {
     expect(breakdown).toMatchObject({
       total: { amount: '0.00', count: 0 },
       by_category: { total_amount: '0.00', source_count: 0, primary_items: [], other: null },
-      by_wallet: { source_count: 0, primary_items: [], deleted_wallets: null, other: null },
+      by_assignment: { total_amount: '0.00', source_count: 0, primary_items: [], other: null },
     });
     expect(incomeBreakdown).toMatchObject({
       transaction_type: 'income',
@@ -331,7 +320,7 @@ describe('StatisticsService', () => {
       by_category: { source_count: 0, primary_items: [], other: null },
     });
     expect(transactionQueriesService.getStatisticsByCategory).not.toHaveBeenCalled();
-    expect(transactionQueriesService.getStatisticsByWallet).not.toHaveBeenCalled();
+    expect(transactionQueriesService.getStatisticsByAssignment).not.toHaveBeenCalled();
     expect(trend.totals).toEqual({ income: { amount: '0.00', count: 0 }, expense: { amount: '0.00', count: 0 } });
     expect(trend.buckets).toHaveLength(5);
     expect(trend.buckets.every((bucket) => bucket.state === 'future' && bucket.income === null)).toBe(true);
@@ -349,11 +338,10 @@ describe('StatisticsService', () => {
     expect(transactionQueriesService.getStatisticsTotals).not.toHaveBeenCalled();
   });
 
-  describe('getBreakdownV2', () => {
+  describe('getBreakdown by assignment', () => {
     it('groups by category and by assignment in one snapshot, both adding up to the total', async () => {
-      const result = await service.getBreakdownV2(userId, spaceId, query);
+      const result = await service.getBreakdown(userId, spaceId, query);
 
-      expect(result).not.toHaveProperty('by_wallet');
       expect(result.total).toEqual({ amount: '810.50', count: 9 });
       expect(result.by_category.total_amount).toBe('810.50');
       expect(result.by_assignment).toEqual(
@@ -375,11 +363,10 @@ describe('StatisticsService', () => {
         expect.any(Date),
         manager,
       );
-      expect(transactionQueriesService.getStatisticsByWallet).not.toHaveBeenCalled();
     });
 
     it('reads nothing for a period that has not started', async () => {
-      const result = await service.getBreakdownV2(userId, spaceId, {
+      const result = await service.getBreakdown(userId, spaceId, {
         ...query,
         anchor_date: '2026-11-15',
         as_of: '2026-09-28T12:00:00.000Z',

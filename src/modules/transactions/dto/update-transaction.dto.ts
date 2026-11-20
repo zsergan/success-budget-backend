@@ -9,19 +9,8 @@ import { IsDescription } from './transaction-field.decorators';
 
 // Only the format is checked here: whether an amount must be positive or a
 // timestamp not in the future depends on whether it differs from the stored
-// value, so TransactionsService.update() checks that.
+// value, so SpaceTransactionsService.update() checks that.
 export class UpdateTransactionDto {
-  @ApiPropertyOptional({
-    type: 'integer',
-    example: 8,
-    description: 'Absent or the current id keeps the wallet, even a deleted one.',
-  })
-  @IsOptionalNonNull()
-  @IsInt()
-  @Min(1)
-  @Max(2147483647)
-  wallet_id?: number;
-
   @ApiPropertyOptional({
     type: 'integer',
     example: 12,

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 
 import { FEED_CURSOR_MAX_LENGTH, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
@@ -16,6 +17,8 @@ const cursor = {
   direction: 'older' as const,
   position: { timestamp: new Date('2026-10-03T08:00:00.123Z'), id: '9b1d6c2e-1f0a-4c3b-8d2e-5a6b7c8d9e0f' },
 };
+
+const SPACE = { kind: AssignmentKind.SPACE } as const;
 
 const rawCursor = (payload: unknown) => Buffer.from(JSON.stringify(payload)).toString('base64url');
 const errorOf = (run: () => unknown) => {
@@ -49,7 +52,11 @@ describe('feed cursor', () => {
       'Europe/Moscow',
     ],
     ['category', { filters: { search: 'coffee', kind: TransactionKind.REGULAR, categoryId: 5 } }, 'Europe/Moscow'],
-    ['wallet', { filters: { search: 'coffee', kind: TransactionKind.REGULAR, walletId: 5 } }, 'Europe/Moscow'],
+    [
+      'assignment',
+      { filters: { search: 'coffee', kind: TransactionKind.REGULAR, assignment: SPACE } },
+      'Europe/Moscow',
+    ],
     ['time zone', {}, 'Europe/Berlin'],
   ])('refuses a cursor of another %s', (_, change, timeZone) => {
     const other = selectionDigest({ ...selection, ...change }, timeZone);
@@ -102,19 +109,25 @@ describe('feed cursor', () => {
   });
 });
 
-describe('selectionDigest versions', () => {
+describe('selectionDigest of earlier releases', () => {
   const selection = { spaceId: 1, from: new Date('2026-10-01'), to: new Date('2026-10-31') };
+  const hash = (parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts)).digest('base64url');
+  const common = [1, selection.from.getTime(), selection.to.getTime(), 'UTC', null, null, null, null, null];
 
-  it('keeps a v1 cursor apart from a v2 one for the same query', () => {
-    expect(selectionDigest(selection, 'UTC', 2)).not.toBe(selectionDigest(selection, 'UTC', 1));
-    expect(selectionDigest(selection, 'UTC')).toBe(selectionDigest(selection, 'UTC', 1));
+  it('keeps the digest of a cursor issued by the v2 feed before v1 was removed', () => {
+    expect(selectionDigest(selection, 'UTC')).toBe(hash([...common, 'v2', null]));
   });
 
-  it('binds a v2 cursor to its assignment filter', () => {
-    const lena = { ...selection, filters: { assignment: { kind: AssignmentKind.MEMBER, userId: 31 } as const } };
-    const space = { ...selection, filters: { assignment: { kind: AssignmentKind.SPACE } as const } };
+  it('refuses a cursor of the retired v1 feed', () => {
+    expect(selectionDigest(selection, 'UTC')).not.toBe(hash(common));
+  });
 
-    expect(selectionDigest(lena, 'UTC', 2)).not.toBe(selectionDigest(space, 'UTC', 2));
-    expect(selectionDigest(lena, 'UTC', 2)).not.toBe(selectionDigest(selection, 'UTC', 2));
+  it('binds a cursor to its assignment filter', () => {
+    const lena = { ...selection, filters: { assignment: { kind: AssignmentKind.MEMBER, userId: 31 } as const } };
+    const space = { ...selection, filters: { assignment: SPACE } };
+
+    expect(selectionDigest(lena, 'UTC')).toBe(hash([...common, 'v2', 'member:31']));
+    expect(selectionDigest(lena, 'UTC')).not.toBe(selectionDigest(space, 'UTC'));
+    expect(selectionDigest(lena, 'UTC')).not.toBe(selectionDigest(selection, 'UTC'));
   });
 });

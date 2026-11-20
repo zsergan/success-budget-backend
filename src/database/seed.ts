@@ -8,7 +8,7 @@ import { CurrenciesService } from '@modules/currencies/currencies.service';
 // role/permission model (see src/entities/user.entity.ts), so "admin" here
 // is only a readable label for manual testing, not an elevated-permission
 // account. The "unverified" user intentionally skips verification to give
-// a reproducible edge case (no wallet/categories yet, email_verified: 0).
+// a reproducible edge case (no categories yet, email_verified: 0).
 const SEED_PASSWORD = process.env.SEED_USER_PASSWORD || 'DevTest#2026';
 
 interface SeedUser {

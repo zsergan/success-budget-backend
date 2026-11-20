@@ -12,20 +12,15 @@ import { type AssignmentFilter, DELETED_MEMBER_KEY } from './assignment-filter';
 
 // author and assignedUser carry only id and name; null when not loaded
 // (no such reference, or the account was deleted)
-export type LoadedTransaction = WithRelations<Transaction, 'wallet' | 'category'>;
+export type LoadedTransaction = WithRelations<Transaction, 'category'>;
 
 export interface TransactionFilters {
   transactionType?: TransactionType;
   kind?: TransactionKind;
   categoryId?: number;
-  // v1 only
-  walletId?: number;
-  // v2 only
   assignment?: AssignmentFilter;
-  // trimmed here too; blank means no text condition
+  // trimmed here too; blank means no text condition; matches descriptions and category names
   search?: string;
-  // v1 searches wallet names too; v2 only descriptions and category names
-  searchesWallets?: boolean;
 }
 
 // What the history and the feed select: one space, both bounds inclusive.
@@ -82,12 +77,6 @@ const searchable = (expression: string) => `CONVERT(${expression} USING utf8mb4)
 export const searchMatch = (column: string, pattern: string): string =>
   `${searchable(column)} LIKE ${searchable(pattern)} ESCAPE '${SEARCH_ESCAPE}'`;
 
-// in cents
-export interface WalletPeriodTotals {
-  income: bigint;
-  spend: bigint;
-}
-
 type TotalsRow = Record<'income' | 'income_count' | 'expense' | 'expense_count', string | null>;
 
 const toStatisticsTotals = (row: TotalsRow | undefined): StatisticsTotals => ({
@@ -103,16 +92,6 @@ export interface StatisticsCategoryGroup {
   icon: string;
   color: AppColor;
   isArchived: boolean;
-  // in cents
-  amount: bigint;
-  count: number;
-}
-
-export interface StatisticsWalletGroup {
-  id: number;
-  name: string;
-  design: AppColor;
-  isDeleted: boolean;
   // in cents
   amount: bigint;
   count: number;
@@ -153,32 +132,6 @@ export class TransactionQueriesService {
     private readonly transactionRepository: Repository<Transaction>,
   ) {}
 
-  // Balances are in cents. Transaction writes pass their manager, holding
-  // the wallet rows locked, so the balance cannot change before they commit.
-  async getBalances(walletIds: number[], manager?: EntityManager): Promise<Map<number, bigint>> {
-    const balances = new Map(walletIds.map((id) => [id, 0n]));
-
-    if (walletIds.length === 0) {
-      return balances;
-    }
-
-    const rows = await this.repository(manager)
-      .createQueryBuilder('transaction')
-      .select('transaction.wallet_id', 'wallet_id')
-      .addSelect(
-        'SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE -transaction.amount END)',
-        'balance',
-      )
-      .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
-      .setParameter('income', TransactionType.INCOME)
-      .groupBy('transaction.wallet_id')
-      .getRawMany<{ wallet_id: string; balance: string }>();
-
-    rows.forEach((row) => balances.set(Number(row.wallet_id), parseMoney(row.balance)));
-
-    return balances;
-  }
-
   // Scoped by the transaction's own space, so a transaction of another space
   // is not found rather than forbidden.
   async getOneInSpace(
@@ -191,7 +144,7 @@ export class TransactionQueriesService {
       .andWhere('transaction.space_id = :spaceId', { spaceId })
       .getOne();
 
-    return transaction && withRelations(transaction, 'wallet', 'category');
+    return transaction && withRelations(transaction, 'category');
   }
 
   // the users who are members of the space now: the rest of the users a
@@ -206,46 +159,9 @@ export class TransactionQueriesService {
     return new Set(rows.map((row) => Number(row.user_id)));
   }
 
-  // one aggregated query for GET /spaces/:spaceId/wallets - the period
-  // income/spend per wallet, grouped in SQL. Initial balances are not income
-  // here, as in statistics; they only count in the balance (getBalances()).
-  async getPeriodTotals(
-    walletIds: number[],
-    from: Date,
-    to: Date,
-    manager?: EntityManager,
-  ): Promise<Map<number, WalletPeriodTotals>> {
-    const totals = new Map<number, WalletPeriodTotals>(walletIds.map((id) => [id, { income: 0n, spend: 0n }]));
-
-    if (walletIds.length === 0) {
-      return totals;
-    }
-
-    const rows = await this.repository(manager)
-      .createQueryBuilder('transaction')
-      .innerJoin('transaction.category', 'category')
-      .select('transaction.wallet_id', 'wallet_id')
-      .addSelect('SUM(CASE WHEN transaction.transaction_type = :income THEN transaction.amount ELSE 0 END)', 'income')
-      .addSelect('SUM(CASE WHEN transaction.transaction_type = :expense THEN transaction.amount ELSE 0 END)', 'spend')
-      .where('transaction.wallet_id IN (:...walletIds)', { walletIds })
-      .andWhere('category.is_system = 0')
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to })
-      .setParameter('income', TransactionType.INCOME)
-      .setParameter('expense', TransactionType.EXPENSE)
-      .groupBy('transaction.wallet_id')
-      .getRawMany<{ wallet_id: string; income: string; spend: string }>();
-
-    rows.forEach((row) =>
-      totals.set(Number(row.wallet_id), { income: parseMoney(row.income), spend: parseMoney(row.spend) }),
-    );
-
-    return totals;
-  }
-
   // one aggregated query for GET /spaces/:spaceId/limits - every category's
   // expense spend for the period, grouped in SQL: every expense of the space,
-  // whoever it is assigned to and whatever its wallet. Sums are in cents.
+  // whoever it is assigned to. Sums are in cents.
   async getExpensesByCategory(
     spaceId: number,
     from: Date,
@@ -399,7 +315,7 @@ export class TransactionQueriesService {
       .limit(1)
       .getOne();
 
-    return transaction && withRelations(transaction, 'wallet', 'category');
+    return transaction && withRelations(transaction, 'category');
   }
 
   // The statistics reads below take the manager of the block's transaction,
@@ -476,41 +392,6 @@ export class TransactionQueriesService {
       icon: row.icon,
       color: row.color,
       isArchived: Number(row.is_active) === 0,
-      amount: parseMoney(row.amount),
-      count: Number(row.count),
-    }));
-  }
-
-  async getStatisticsByWallet(
-    spaceId: number,
-    transactionType: TransactionType,
-    from: Date,
-    to: Date,
-    manager: EntityManager,
-  ): Promise<StatisticsWalletGroup[]> {
-    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
-      .innerJoin('transaction.wallet', 'wallet')
-      .select('wallet.id', 'id')
-      .addSelect('wallet.wallet_name', 'name')
-      .addSelect('wallet.design', 'design')
-      .addSelect('wallet.is_deleted', 'is_deleted')
-      .addSelect('SUM(transaction.amount)', 'amount')
-      .addSelect('COUNT(*)', 'count')
-      .groupBy('wallet.id')
-      .getRawMany<{
-        id: number | string;
-        name: string;
-        design: AppColor;
-        is_deleted: number | string;
-        amount: string;
-        count: number | string;
-      }>();
-
-    return rows.map((row) => ({
-      id: Number(row.id),
-      name: row.name,
-      design: row.design,
-      isDeleted: Number(row.is_deleted) === 1,
       amount: parseMoney(row.amount),
       count: Number(row.count),
     }));
@@ -637,14 +518,13 @@ export class TransactionQueriesService {
     }
 
     const rows = await this.loadQuery(manager).where('transaction.id IN (:...ids)', { ids }).getMany();
-    const byId = new Map(rows.map((row) => [row.id, withRelations(row, 'wallet', 'category')]));
+    const byId = new Map(rows.map((row) => [row.id, withRelations(row, 'category')]));
 
     return ids.map((id) => byId.get(id)!);
   }
 
   // The one selection of the feed, its count and every total of it: the
-  // records of the space by their own space_id, deleted wallets and archived
-  // categories included. The space is a constant, so MySQL ranges over
+  // records of the space by their own space_id, archived categories included. The space is a constant, so MySQL ranges over
   // (space_id, timestamp, ...) instead of scanning other spaces.
   private selectionScope(
     { spaceId, from, to, filters = {} }: TransactionSelection,
@@ -678,28 +558,15 @@ export class TransactionQueriesService {
       query.andWhere('transaction.category_id = :categoryId', { categoryId: filters.categoryId });
     }
 
-    if (filters.walletId) {
-      query.andWhere('transaction.wallet_id = :walletId', { walletId: filters.walletId });
-    }
-
     if (filters.assignment) {
       applyAssignmentFilter(query, filters.assignment);
     }
 
     if (search) {
       const matches = (column: string) => searchMatch(column, ':searchPattern');
-      const conditions = [matches('transaction.description'), matches('category.name')];
-
-      // a subquery of the space's few wallets, not a join: joined, MySQL
-      // drives the read from every wallet instead of the space's range
-      if (filters.searchesWallets) {
-        conditions.push(
-          'transaction.wallet_id IN (SELECT `wallet`.`id` FROM `wallets` `wallet` ' +
-            `WHERE \`wallet\`.\`space_id\` = :spaceId AND ${matches('`wallet`.`wallet_name`')})`,
-        );
-      }
-
-      query.andWhere(`(${conditions.join(' OR ')})`, { searchPattern: toSearchPattern(search) });
+      query.andWhere(`(${matches('transaction.description')} OR ${matches('category.name')})`, {
+        searchPattern: toSearchPattern(search),
+      });
     }
 
     return query;
@@ -709,12 +576,11 @@ export class TransactionQueriesService {
     return manager?.getRepository(Transaction) ?? this.transactionRepository;
   }
 
-  // A record with what every view needs: wallet, category, and the id and
-  // name of its author and assignee, never other user columns.
+  // A record with what every view needs: its category, and the id and name
+  // of its author and assignee, never other user columns.
   private loadQuery(manager?: EntityManager): SelectQueryBuilder<Transaction> {
     return this.repository(manager)
       .createQueryBuilder('transaction')
-      .innerJoinAndSelect('transaction.wallet', 'wallet')
       .innerJoinAndSelect('transaction.category', 'category')
       .leftJoin('transaction.author', 'author')
       .addSelect(['author.id', 'author.name'])
@@ -746,7 +612,7 @@ export class TransactionQueriesService {
   }
 
   // The selection every statistics block shares (docs/statistics-contract.md):
-  // every record of the space, whatever its wallet or assignment, without
+  // every record of the space, whatever its assignment, without
   // starting balances, both bounds inclusive.
   private statisticsScope(
     manager: EntityManager,

@@ -64,7 +64,6 @@ manager, etc.), never in a committed file.
 | `INVITE_TOKEN_SECRET` | Yes | Signs invitation links. At least 32 characters and different from `JWT_SECRET`; generate it (`openssl rand -base64 48`) and keep it secret. Rotating it makes every emailed invitation link unusable; six-digit codes keep working. |
 | `APPLE_APP_ID` | **Yes, with `NODE_ENV=production`** | The iOS app invitation links open, as `<Team ID>.<bundle ID>` (e.g. `ABCDE12345.com.zsergan.successbudget`). |
 | `TESTFLIGHT_URL` | No | An `https://testflight.apple.com/join/...` link offered on the `/invite` page. |
-| `LEGACY_WRITES` | No | `enabled` (default) or `retired`: retired refuses the v1 transaction and wallet writes of app builds older than the v2 transactions API with `410 LEGACY_API_RETIRED`. See "Rolling out space-owned transactions" below. |
 | `TESTFLIGHT_USER_EMAIL`, `TESTFLIGHT_USER_PASSWORD` | Only for `seed-testflight.js` | Not read by the app. Pass them to that one command (see "TestFlight demo account" below), never keep them in the app's environment. |
 
 ### Reverse proxy / client IP
@@ -215,6 +214,10 @@ signing certificate fingerprints are confirmed.
    its space and needs a write pause: deploy it with "Rolling out
    space-owned transactions" below.
 
+   `DropWallets1791400000000` drops the wallets and needs a write pause
+   too: deploy it with "Rolling out the removal of wallets" below, on a
+   database that already runs Release A.
+
 3. **Check the schema** matches the build - the same check the app makes on
    boot, as a step of its own, so a pipeline can stop before switching
    traffic:
@@ -321,8 +324,8 @@ command creates:
 
 - a verified user named `TestFlight Demo`;
 - its personal USD space with the starter categories;
-- a Cash wallet;
-- a dozen synthetic transactions dated earlier in the current month;
+- a dozen synthetic transactions dated earlier in the current month, some
+  assigned to the demo user and some to the whole space;
 - a Groceries limit.
 
 Running it again writes nothing. If the email already exists, it only checks
@@ -437,29 +440,29 @@ and the same `.env.production` as the rest of this procedure.
    with its credentials passed to that invocation only.
 
 6. **Verify the account through the API**: login, categories, history,
-   wallet balance and limit progress. Run this with `curl` and `jq`, with
+   the month's net and limit progress. Run this with `curl` and `jq`, with
    `TESTFLIGHT_USER_EMAIL` and `TESTFLIGHT_USER_PASSWORD` still exported:
 
    ```bash
    API=https://<host>
    token=$(curl -sf -X POST "$API/api/v1/users/login" -H 'Content-Type: application/json' \
      -d "$(jq -n --arg email "$TESTFLIGHT_USER_EMAIL" --arg password "$TESTFLIGHT_USER_PASSWORD" '{$email, $password}')")
-   get() { curl -sf "$API/api/v1$1" -H "Authorization: Bearer $token"; }
+   get() { curl -sf "$API/api/${2:-v1}$1" -H "Authorization: Bearer $token"; }
    space=$(get /spaces | jq '.[0].id')
    from=$(date -u +%Y-%m-01T00:00:00Z); to=$(date -u +%Y-%m-%dT%H:%M:%SZ)
    get "/spaces/$space/categories" | jq -c '{incomes: [.incomes[].name], expenses: (.expenses | length)}'
-   get "/spaces/$space/transactions/feed?from=$from&to=$to&time_zone=UTC&limit=3" \
+   get "/spaces/$space/transactions/feed?from=$from&to=$to&time_zone=UTC&limit=3" v2 \
      | jq -c '[.items[] | {amount, description, category: .category.name}]'
-   get "/spaces/$space/wallets" | jq -c '{total_balance, total_balance_currency}'
+   get "/spaces/$space/statistics/summary?period=month&time_zone=UTC" v2 | jq -c '{net, currency}'
    get "/spaces/$space/limits?time_zone=UTC" | jq -c '.categories[] | {amount, spent, in_percent}'
    # {"incomes":["Salary","Freelance","Gifts","Other income"],"expenses":16}
    # [{"amount":"15.20","description":"Pharmacy","category":"Health"}, ...]
-   # {"total_balance":2106.31,"total_balance_currency":"USD"}
+   # {"net":"2106.31","currency":"USD"}
    # {"amount":"400.00","spent":189.7,"in_percent":47}
    ```
 
    Running this with a tester's own login checks a migrated space the same
-   way: its balance is the same as before the migration.
+   way: its month's net is the same as before the migration.
 
 7. **Reopen the mobile app and share the login.**
    - Ask testers to reopen the app, so it reloads the categories.
@@ -586,6 +589,11 @@ over plain SMTP and a desktop browser):
 
 ### Rolling out space-owned transactions
 
+This runbook is run with the Release A image, the last one before
+`DropWallets1791400000000`: `<tag>` below is that image. A database that
+has not run it yet takes Release A this way first, then Release B with
+[Rolling out the removal of wallets](#rolling-out-the-removal-of-wallets).
+
 Release A of the [v2 transactions contract](transactions-v2-contract.md):
 `AddTransactionSpaceOwnership1791200000000` gives every transaction its
 own space, author and assignment, and `AddCompatibilityWallet1791300000000`
@@ -646,8 +654,10 @@ minutes; a larger database needs longer for the backup and its restore.
 
 4. **Back up and verify the backup**. This dump is what an abandoned
    rollout is restored from, so it is taken only now, when nothing writes
-   any more. Restore it into a new, empty database (created by an account
-   that may) and read its history:
+   any more. Restore it into a new, empty database that the app's account
+   can use (create it and grant the access as in
+   [A database to restore into](#a-database-to-restore-into)) and read its
+   history:
 
    ```bash
    DB_HOST=... DB_PORT=... DB_USERNAME=... DB_PASSWORD=... DB_DATABASE=<database> \
@@ -660,7 +670,8 @@ minutes; a larger database needs longer for the backup and its restore.
    ```
 
    Copy the dump off the database host, and leave `<database>_rollback`
-   untouched until the new image serves.
+   untouched until the new image serves. Remove it, with its grant, once
+   the rollback limits below make it of no further use.
 
 5. **Capture the reconciliation ledger** of the live database and compare
    it with the backup's:
@@ -729,8 +740,9 @@ pre-migration schema again:
 
 1. Restore the backup into a new, empty database with
    `scripts/db-restore.sh`, as in step 4 (`<database>_rollback` serves if
-   nothing has connected to it since). Leave the migrated database as it
-   is, for the investigation.
+   nothing has connected to it since). A new one needs the app account's
+   access too ([A database to restore into](#a-database-to-restore-into)).
+   Leave the migrated database as it is, for the investigation.
 2. Verify it: the previous image's schema check passes with no warning
    about migrations it does not know, and its history equals the ledger:
 
@@ -746,7 +758,8 @@ pre-migration schema again:
 
 3. Point the previous image's `DB_DATABASE` at the restored database,
    start it, and run the health check and the smoke tests. This ends the
-   pause.
+   pause. The restored database is now the live one: keep its grants, and
+   point the backups at it.
 
 **Rollback limits** once the new image accepted writes (step 9):
 
@@ -764,13 +777,195 @@ pre-migration schema again:
   the previous image stopped until its database is verified as in
   "Recovering before the new image starts".
 
-**Retiring v1 writes** (before the release that removes wallets): set
-`LEGACY_WRITES=retired` and restart every instance together. Builds older
-than the v2 API then get `410 LEGACY_API_RETIRED` on every transaction and
-wallet write and keep reading; email verification stops creating the
-"Cash" wallet. Setting it back to `enabled` undoes it. The removal release
-itself, and its readiness checks, are in the
-[contract](transactions-v2-contract.md#release-b-readiness).
+**Retiring v1 writes** (Release A images, before the release that removes
+wallets): set `LEGACY_WRITES=retired` and restart every instance together.
+Builds older than the v2 API then get `410 LEGACY_API_RETIRED` on every
+transaction and wallet write and keep reading; email verification stops
+creating the "Cash" wallet. Setting it back to `enabled` undoes it. Release B
+images no longer read the variable; an environment may keep it. The removal
+release itself, and its readiness checks, are in the
+[contract](transactions-v2-contract.md#release-b) and below.
+
+### Rolling out the removal of wallets
+
+Release B of the [v2 transactions contract](transactions-v2-contract.md#release-b):
+`DropWallets1791400000000` drops `transactions.wallet_id`, its foreign key
+and index, and the `wallets` table. The new image has no wallet code and
+answers every `/api/v1` transaction, statistics and wallet route with
+`410 LEGACY_API_RETIRED`. Every record keeps its space, author, assignment
+and values; starting balances and operation records stay.
+
+**Before the rollout**, these are decided and done; none of them is a
+technical step of the deploy:
+
+- Release A runs in production and its reconciliation passed;
+  `LEGACY_WRITES=retired` has run for the agreed period without
+  pending-write reports.
+- Mobile v2 is in the stores, the share of active installs below v2 is under
+  the agreed threshold, and the handling of the remaining ones is in place.
+  **After this deploy, builds older than mobile v2 are incompatible**: every
+  transaction, statistics and wallet request of theirs is `410`, so they
+  can neither show history nor save, until the user updates. A lack of
+  recent v1 requests in the logs does not prove every installed device has
+  updated: an offline device can come back weeks later.
+- The database is on Release A: with the new image,
+  `node ./node_modules/typeorm/cli.js migration:show -d dist/config/typeorm-cli.data-source.js`
+  lists `DropWallets1791400000000` as the only pending migration. More
+  pending means Release A never ran there: roll it out first.
+
+**The previous image cannot work after the migration.** Its inserts name
+`wallet_id`, and its v1 reads join `wallets`, so both fail once they are
+gone. The rollout therefore runs in a **write pause**, as Release A did: no
+instance of the previous image runs from step 3 until the new image starts
+(step 9), or until the database is back on the Release A schema and
+verified (below). Measured locally on 500,000 transactions: the preflight
+takes about 5 s, each ledger snapshot or reconciliation about 6 s on a warm
+database, and the migration about 2 s (MySQL 8.4 drops the column in
+place); backup and restore take as long as for Release A. The pause lasts a
+few minutes.
+
+1. **Build** the new image.
+2. **Preflight**, while the previous image still serves traffic (it only
+   reads):
+
+   ```bash
+   docker run --rm --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js preflight
+   # Preflight OK: every transaction belongs to its wallet's space; the wallets can be dropped.
+   ```
+
+   It exits with `1` and lists the transactions whose `space_id` differs
+   from their wallet's space; the migration would refuse to change anything
+   then. Release A never writes such a record: find out how it came to be,
+   then set its `space_id` to its wallet's space by hand, and run the
+   preflight again.
+
+3. **Pause writes and drain them** exactly as in step 3 of
+   [Rolling out space-owned transactions](#rolling-out-space-owned-transactions):
+   stop every instance of the previous image, wait until each has exited,
+   and confirm that nothing is still connected with the app's account.
+4. **Back up and verify the backup**, as in step 4 there: the dump, its
+   restore into `<database>_rollback` with the app account's access
+   ([A database to restore into](#a-database-to-restore-into)), and the
+   ledger of the restored copy with this image:
+
+   ```bash
+   docker run --rm --env-file .env.production -e DB_DATABASE=<database>_rollback \
+     success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js snapshot - > ledger-backup.json
+   ```
+
+5. **Capture the reconciliation ledger** of the live database and compare
+   it with the backup's:
+
+   ```bash
+   docker run --rm --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js snapshot - > ledger-before.json
+   diff <(jq 'del(.taken_at)' ledger-backup.json) <(jq 'del(.taken_at)' ledger-before.json)
+   ```
+
+   No output means the backup holds every transaction; on a difference
+   something still writes: stop it and repeat from step 4. This ledger
+   reads each record's space from `space_id` and never its wallet, and
+   carries a digest of its author and assignment, so it stays comparable
+   across the migration.
+
+6. **Migrate** with the command of step 2 of the deploy procedure. A run
+   stopped midway finishes when run again. A run that refuses with "Cannot
+   drop wallets" changed nothing: resolve the records it lists as in step 2
+   and run it again.
+7. **Check the schema** and the reference data (steps 3 and 4 of the
+   deploy procedure).
+8. **Reconcile** the history with the ledger:
+
+   ```bash
+   docker run --rm -i --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js verify - < ledger-before.json
+   # Reconciliation OK: <n> transactions in <m> spaces match -.
+   ```
+
+   It compares every record's id, space, category, type, amount,
+   timestamp, description, version, author and assignment, the ordinary
+   income and expense of every space and month, and the starting balances.
+   On any difference, do not start the new image: keep the pause and
+   recover (below), or investigate and fix forward.
+
+9. **Start the new image** and run the health check and the smoke tests
+   (steps 5 to 7 of the deploy procedure), then the smoke test below.
+   Writes resume here, and the rollback limits below apply from now on.
+10. **Watch** the `410` responses in the logs: they come from installed
+    builds older than mobile v2. Follow them up as agreed (support, the
+    "Update the app" message); their users' data is all there once they
+    update, and their pending writes are recovered by the v2 build
+    ([contract](transactions-v2-contract.md#recovering-writes-across-the-upgrade)).
+
+Smoke test, with the token of the smoke-test account: a create on its
+personal space, read back, deleted, and the wallets route retired.
+
+```bash
+space=$(curl -sf http://<host>:3000/api/v1/spaces -H "Authorization: Bearer $token" | jq '.[0].id')
+category=$(curl -sf http://<host>:3000/api/v1/spaces/$space/categories -H "Authorization: Bearer $token" | jq '.expenses[0].id')
+id=$(curl -sf -X POST http://<host>:3000/api/v2/spaces/$space/transactions \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d "{\"category_id\":$category,\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"assignment\":{\"kind\":\"space\"}}" \
+  | jq -r .transaction.id)
+curl -sf http://<host>:3000/api/v2/spaces/$space/transactions/$id -H "Authorization: Bearer $token" | jq .assignment.kind
+# "space"
+curl -s -o /dev/null -w '%{http_code}\n' http://<host>:3000/api/v1/spaces/$space/wallets -H "Authorization: Bearer $token"
+# 410
+curl -sf -X DELETE http://<host>:3000/api/v2/spaces/$space/transactions/$id -H "Authorization: Bearer $token" -H 'If-Match: "1"'
+```
+
+**Recovering before the new image starts.** Until step 6 the database is
+unchanged, and an abandoned rollout only starts the previous image again.
+From step 6 until the new image accepts writes, a failure that is not fixed
+forward takes the database back to the Release A schema, with the pause
+still on and the previous image stopped until that is verified:
+
+1. Restore the backup of step 4 into a new, empty database
+   (`<database>_rollback` serves if nothing has connected to it since; a
+   new one needs the app account's access). Leave the migrated database as
+   it is, for the investigation.
+2. Verify it: the previous image's schema check passes with no warning
+   about migrations it does not know, and its history equals the ledger:
+
+   ```bash
+   docker run --rm --env-file .env.production -e DB_DATABASE=<restored> \
+     success-budget-backend:<previous-tag> node dist/database/check-schema.js
+   docker run --rm --env-file .env.production -e DB_DATABASE=<restored> \
+     success-budget-backend:<tag> \
+     node dist/database/transaction-ownership-check.js snapshot - > ledger-restored.json
+   diff <(jq 'del(.taken_at)' ledger-before.json) <(jq 'del(.taken_at)' ledger-restored.json)
+   ```
+
+3. Point the previous image's `DB_DATABASE` at the restored database, start
+   it, and run the health check and the smoke tests. This ends the pause.
+   The restored database is now the live one: keep its grants, and point
+   the backups at it.
+
+The backup is the only way back to the wallets as they were: the
+migration's `revert` (below) rebuilds a schema Release A runs on, but not
+the wallets.
+
+**Rollback limits** once the new image accepted writes (step 9):
+
+- This release is the earliest image that may run on the migrated database.
+  An older image starts (its schema check only warns) but can neither write
+  nor read transactions there. The generic "Roll back" under
+  [If a deploy fails](#if-a-deploy-fails) therefore applies only to another
+  image of this release or later; otherwise fix forward.
+- If Release A has to come back after all, `migration:revert` (once, with
+  this image) gives every space with records one wallet,
+  "Shared transactions", holding all of them, with the Release A schema; the
+  Release A image then runs, and every record and write since step 9 is
+  kept, but the old builds see one wallet per space instead of theirs.
+  Measured locally: about 21 s on 500,000 transactions. Run it in a write
+  pause and reconcile with a ledger taken right before it. Restoring the
+  backup of step 4 instead brings the wallets back and discards every write
+  since step 9. Treat both as a last resort, decided separately.
+- Keep the backup of step 4, and `<database>_rollback` with its grant,
+  until that decision is no longer needed; then remove them as in
+  [A database to restore into](#a-database-to-restore-into).
 
 ### Schema check
 
@@ -793,6 +988,9 @@ previous build has to say so in its PR, and then a rollback needs the schema
 reverted as well. `AddTransactionSpaceOwnership1791200000000` is one: images
 before it cannot write on the migrated schema (see
 [Rolling out space-owned transactions](#rolling-out-space-owned-transactions)).
+`DropWallets1791400000000` is another: it drops a column and a table that
+images before it read and write (see
+[Rolling out the removal of wallets](#rolling-out-the-removal-of-wallets)).
 
 `REQUIRED_MIGRATION` is kept equal to the newest file in `src/migrations`
 by a unit test, so adding a migration without updating it fails CI. CI's
@@ -818,9 +1016,11 @@ source tree, that the image refuses to start on an empty database, and that
   `src/modules/confirmation-codes/confirmation-codes.service.ts`).
 - **Roll back**: redeploy the previous image tag. This rolls back
   *application code only* - it does **not** revert the database schema.
-  Never across `AddTransactionSpaceOwnership1791200000000`: an image older
-  than it cannot write on a database that ran it - see the rollback limits
-  in [Rolling out space-owned transactions](#rolling-out-space-owned-transactions).
+  Never across `AddTransactionSpaceOwnership1791200000000` or
+  `DropWallets1791400000000`: an image older than either cannot work on a
+  database that ran it - see the rollback limits in
+  [Rolling out space-owned transactions](#rolling-out-space-owned-transactions)
+  and [Rolling out the removal of wallets](#rolling-out-the-removal-of-wallets).
   A migration that already ran stays applied even if the app version that
   shipped it gets rolled back, because a later migration may already
   depend on it, and MySQL DDL isn't generally safely reversible mid-deploy.
@@ -880,6 +1080,45 @@ backup. Once a hosting provider is chosen, add here:
 - where they're stored (a different region/provider than the database
   itself, ideally)
 
+### A database to restore into
+
+The app's account usually has privileges on its own database only: the
+Compose files give `MYSQL_USER` all privileges on `MYSQL_DATABASE` and
+nothing else. Such an account cannot see a new database, so
+`db-restore.sh` run with it stops at `Database ... does not exist`, and a
+restore made by an administrator leaves a database that the ledger
+commands of a rollout (run with `.env.production` and another
+`DB_DATABASE`) and an image started on it after a rollback cannot open.
+Before restoring, create the database and give the app's account the
+privileges it holds on the live one, as an account that may (`root` on
+the Compose setups; on a managed MySQL, the provider's admin user or
+console):
+
+```sql
+CREATE DATABASE `success_budget_rollback`;
+SHOW GRANTS FOR 'success_budget'@'%';
+-- repeat each privilege listed for `success\_budget`.* on the new database:
+GRANT ALL PRIVILEGES ON `success\_budget\_rollback`.* TO 'success_budget'@'%';
+```
+
+In a `GRANT`, `_` and `%` in a database name are wildcards; escape them as
+above. Then check, logged in as the app's account, that it sees the new
+database:
+
+```sql
+SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'success_budget_rollback';
+```
+
+When the database is no longer needed (the new release serves and its
+rollback window has passed), remove it with its access:
+
+```sql
+REVOKE ALL PRIVILEGES ON `success\_budget\_rollback`.* FROM 'success_budget'@'%';
+DROP DATABASE `success_budget_rollback`;
+```
+
+If it became the live database after a rollback, keep the grants instead.
+
 ### Verifying a restore works
 
 Backup/restore is **not** part of automated CI - unlike the migrate →
@@ -897,7 +1136,7 @@ against entirely disposable, isolated containers (never your dev
 ```
 
 It builds the production image, registers a real user and creates a real
-wallet/transaction against it, `db-backup.sh`'s that database, creates a
+transaction against it, `db-backup.sh`'s that database, creates a
 second empty database, `db-restore.sh`'s the dump into it, boots a second
 app instance against the restored database and confirms login and the
 created data are both present **through the API**, then repeats the

@@ -12,10 +12,7 @@ import { nullableObject } from '@shared/swagger';
 import type {
   CategoryBreakdown as CategoryBreakdownShape,
   CategoryItem as CategoryItemShape,
-  DeletedWalletsItem as DeletedWalletsItemShape,
   OtherItem as OtherItemShape,
-  WalletBreakdown as WalletBreakdownShape,
-  WalletItem as WalletItemShape,
 } from '../statistics-breakdown';
 import type {
   PreviousPeriod as PreviousPeriodShape,
@@ -29,7 +26,6 @@ import type {
 import type {
   Change as ChangeShape,
   MoneyCount as MoneyCountShape,
-  StatisticsBreakdown as StatisticsBreakdownShape,
   StatisticsBreakdownV2 as StatisticsBreakdownV2Shape,
   StatisticsSummary as StatisticsSummaryShape,
   StatisticsTrend as StatisticsTrendShape,
@@ -260,33 +256,7 @@ export class CategoryItem extends BreakdownItemFields implements CategoryItemSha
   opens_history!: boolean;
 }
 
-export class WalletItem extends BreakdownItemFields implements WalletItemShape {
-  @ApiProperty({ enum: ['wallet'] })
-  kind!: 'wallet';
-
-  @ApiProperty({ example: 'wallet:3' })
-  key!: string;
-
-  @ApiProperty({ type: 'integer' })
-  id!: number;
-
-  @ApiProperty()
-  name!: string;
-
-  @ApiProperty(ALWAYS_NULL)
-  icon!: null;
-
-  @ApiProperty({ enum: AppColor, enumName: 'AppColor', description: 'Wallet.design.' })
-  color!: AppColor;
-
-  @ApiProperty({ enum: [false] })
-  is_archived!: boolean;
-
-  @ApiProperty({ enum: [true], description: 'Always true: opens the transactions feed filtered by wallet_id.' })
-  opens_history!: boolean;
-}
-
-// deleted_wallets and other: named and colored by the client, open nothing
+// other: named and colored by the client, opens nothing
 class ServiceItemFields extends BreakdownItemFields {
   @ApiProperty(ALWAYS_NULL)
   id!: null;
@@ -307,17 +277,6 @@ class ServiceItemFields extends BreakdownItemFields {
   opens_history!: boolean;
 }
 
-export class DeletedWalletsItem extends ServiceItemFields implements DeletedWalletsItemShape {
-  @ApiProperty({ enum: ['deleted_wallets'] })
-  kind!: 'deleted_wallets';
-
-  @ApiProperty({ enum: ['deleted_wallets'] })
-  key!: string;
-
-  @ApiProperty({ type: 'integer', description: 'Deleted wallets with a positive sum.' })
-  wallets_count!: number;
-}
-
 export class CategoryOtherItem extends ServiceItemFields implements OtherItemShape<CategoryItem> {
   @ApiProperty({ enum: ['other'] })
   kind!: 'other';
@@ -327,17 +286,6 @@ export class CategoryOtherItem extends ServiceItemFields implements OtherItemSha
 
   @ApiProperty({ type: () => CategoryItem, isArray: true, description: 'The folded categories, sorted.' })
   children!: CategoryItem[];
-}
-
-export class WalletOtherItem extends ServiceItemFields implements OtherItemShape<WalletItem> {
-  @ApiProperty({ enum: ['other'] })
-  kind!: 'other';
-
-  @ApiProperty({ enum: ['other'] })
-  key!: string;
-
-  @ApiProperty({ type: () => WalletItem, isArray: true, description: 'The folded wallets, sorted.' })
-  children!: WalletItem[];
 }
 
 @ApiExtraModels(CategoryOtherItem)
@@ -353,41 +301,6 @@ export class CategoryBreakdown implements CategoryBreakdownShape {
 
   @ApiProperty(nullableObject(CategoryOtherItem))
   other!: CategoryOtherItem | null;
-}
-
-@ApiExtraModels(DeletedWalletsItem, WalletOtherItem)
-export class WalletBreakdown implements WalletBreakdownShape {
-  @ApiProperty(MONEY)
-  total_amount!: string;
-
-  @ApiProperty({ type: 'integer', description: 'Wallets with a positive sum, deleted ones included.' })
-  source_count!: number;
-
-  @ApiProperty({ type: () => WalletItem, isArray: true, description: 'Active wallets only.' })
-  primary_items!: WalletItem[];
-
-  @ApiProperty(nullableObject(DeletedWalletsItem))
-  deleted_wallets!: DeletedWalletsItem | null;
-
-  @ApiProperty(nullableObject(WalletOtherItem))
-  other!: WalletOtherItem | null;
-}
-
-export class StatisticsBreakdown extends StatisticsBlock implements StatisticsBreakdownShape {
-  @ApiProperty({ enum: TransactionType, enumName: 'TransactionType', description: 'The applied transaction_type.' })
-  transaction_type!: TransactionType;
-
-  @ApiProperty({
-    type: () => MoneyCount,
-    description: 'Control sum, equal to the summary income or expense (by transaction_type) of the same cycle.',
-  })
-  total!: MoneyCount;
-
-  @ApiProperty({ type: () => CategoryBreakdown })
-  by_category!: CategoryBreakdown;
-
-  @ApiProperty({ type: () => WalletBreakdown })
-  by_wallet!: WalletBreakdown;
 }
 
 const ASSIGNMENT_ITEM_KINDS = [...Object.values(AssignmentKind), 'deleted_member'];

@@ -13,6 +13,7 @@ import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { Category } from '@entities/category.entity';
+import { Transaction } from '@entities/transaction.entity';
 import { SpaceInviteEmailStatus, SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
@@ -29,6 +30,7 @@ describe('SpacesService', () => {
   let idempotencyService: { run: jest.Mock };
   let delivery: { assertCanSchedule: jest.Mock; recordScheduled: jest.Mock; deliverSoon: jest.Mock };
   let categoryRepositoryInTx: { save: jest.Mock };
+  let transactionRepositoryInTx: { delete: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let manager: EntityManager;
   let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembers'>>;
@@ -62,12 +64,14 @@ describe('SpacesService', () => {
     delivery = { assertCanSchedule: jest.fn(), recordScheduled: jest.fn(), deliverSoon: jest.fn() };
     idempotencyService = { run: jest.fn((_manager, _request, work: () => unknown) => work()) };
     categoryRepositoryInTx = { save: jest.fn() };
+    transactionRepositoryInTx = { delete: jest.fn() };
     manager = {
       getRepository: jest.fn((entity) => {
         if (entity === Space) return spaceRepositoryInTx;
         if (entity === SpaceMember) return spaceMemberRepositoryInTx;
         if (entity === SpaceInvite) return spaceInviteRepositoryInTx;
         if (entity === Category) return categoryRepositoryInTx;
+        if (entity === Transaction) return transactionRepositoryInTx;
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     } as unknown as EntityManager;
@@ -388,17 +392,22 @@ describe('SpacesService', () => {
 
   describe('removeOwned', () => {
     const owner = buildSpaceMember({ id: 1, space_id: 10, user_id: 1, role: SpaceRole.OWNER });
-    it('deletes the members, then the space, in the caller’s transaction', async () => {
+    it('deletes the members, then the transactions, then the space, in the caller’s transaction', async () => {
       await service.removeOwned(manager, { actor: owner, members: [owner], actorSpaces: 2 });
 
       expect(dataSource.transaction).not.toHaveBeenCalled();
       expect(spaceAccessService.assertMembership).not.toHaveBeenCalled();
       expect(spaceMemberRepositoryInTx.delete).toHaveBeenCalledWith({ space_id: 10 });
+      expect(transactionRepositoryInTx.delete).toHaveBeenCalledWith({ space_id: 10 });
       expect(spaceRepositoryInTx.delete).toHaveBeenCalledWith(10);
 
-      const memberCallOrder = spaceMemberRepositoryInTx.delete.mock.invocationCallOrder[0];
-      const spaceCallOrder = spaceRepositoryInTx.delete.mock.invocationCallOrder[0];
-      expect(memberCallOrder).toBeLessThan(spaceCallOrder);
+      const [members, transactions, space] = [
+        spaceMemberRepositoryInTx,
+        transactionRepositoryInTx,
+        spaceRepositoryInTx,
+      ].map((repository) => repository.delete.mock.invocationCallOrder[0]);
+      expect(members).toBeLessThan(transactions);
+      expect(transactions).toBeLessThan(space);
     });
 
     it('propagates a failure from the deletion', async () => {

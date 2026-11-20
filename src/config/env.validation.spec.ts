@@ -117,11 +117,7 @@ describe('envValidationSchema', () => {
     });
   });
 
-  it('enables v1 writes by default and takes only enabled or retired', () => {
-    expect(envValidationSchema.validate(validEnv).value.LEGACY_WRITES).toBe('enabled');
+  it('ignores LEGACY_WRITES, which only Release A read, so an environment that still sets it boots', () => {
     expect(envValidationSchema.validate({ ...validEnv, LEGACY_WRITES: 'retired' }).error).toBeUndefined();
-    expect(envValidationSchema.validate({ ...validEnv, LEGACY_WRITES: 'off' }).error?.message).toContain(
-      'LEGACY_WRITES',
-    );
   });
 });

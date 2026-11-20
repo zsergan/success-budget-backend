@@ -25,7 +25,9 @@ async function bootstrap() {
   if (isSwaggerEnabled(configService)) {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('Success Budget API')
-      .setDescription('Personal budget tracking API - wallets, transactions, categories, and spending limits.')
+      .setDescription(
+        'Budget tracking API for personal and shared spaces - transactions, categories, statistics and spending limits.',
+      )
       .setVersion('1.0')
       .addBearerAuth()
       .build();

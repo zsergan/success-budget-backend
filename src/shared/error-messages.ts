@@ -2,12 +2,10 @@ export const ErrorMessages = {
   INVALID_CREDENTIALS: 'Invalid credentials',
   EMAIL_NOT_VERIFIED: 'Email is not verified',
   EMAIL_ALREADY_VERIFIED: 'Email is already verified',
-  FORBIDDEN_WALLET: 'Wallet does not exist or you do not have access to this wallet',
   FORBIDDEN_CATEGORY: 'Category does not exist or you do not have access to this category',
   CATEGORY_IS_SYSTEM: 'This category is managed by the system and cannot be modified',
   CATEGORY_ARCHIVED: 'The category is archived',
   CATEGORY_TYPE_MISMATCH: 'The category type does not match the transaction type',
-  WALLET_DELETED: 'The wallet is deleted',
   FORBIDDEN_LIMIT: 'Limit does not exist or you do not have access to this limit',
   LIMIT_EXISTS: 'Limit already exists',
   LIMIT_NAME_REQUIRED: 'A group limit needs a name',
@@ -39,7 +37,7 @@ export const ErrorMessages = {
   IDEMPOTENCY_KEY_REUSED: 'This Idempotency-Key was already used for a different request',
   ASSIGNEE_NOT_MEMBER: 'The chosen member is not a member of this space',
   FORBIDDEN_MEMBER: 'This user is not and has not been assigned in this space',
-  LEGACY_API_RETIRED: 'This version of the app can no longer save changes; update the app',
+  LEGACY_API_RETIRED: 'This version of the app is no longer supported; update the app',
 } as const;
 
 export type ErrorCode = keyof typeof ErrorMessages;

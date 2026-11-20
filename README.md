@@ -1,7 +1,8 @@
 # success-budget-backend
 
-A NestJS + TypeORM + MySQL backend for tracking wallets, transactions,
-budget limits and categories, with JWT-based authentication.
+A NestJS + TypeORM + MySQL backend for tracking the transactions, budget
+limits and categories of personal and shared spaces, with JWT-based
+authentication.
 
 ## Stack
 
@@ -23,10 +24,10 @@ password reset, currencies, health check, the invitation page).
 | ---------------------- | --------------------------------------------------------------------- |
 | `users`                | Registration, email verification, login, profile                    |
 | `spaces`               | Shared/personal budget spaces - membership, emailed invitations, single space-level currency |
-| `wallets`              | Space-owned wallets, derived balance, soft-delete (v1 only, kept for older app builds) |
-| `transactions`         | Income/expense entries of a space, with an author and an assignment (v1 by wallet, v2 by assignment) |
-| `transaction-queries`  | The reads behind history, statistics, limits and balances (internal) |
-| `statistics`           | Summary, trend and breakdown of a period (v1 by wallet, v2 by assignment) |
+| `transactions`         | Income/expense entries of a space, with an author and an assignment (`/api/v2`) |
+| `transaction-queries`  | The reads behind history, statistics and limits (internal)          |
+| `statistics`           | Summary, trend and breakdown by category and assignment of a period (`/api/v2`) |
+| `retired-routes`       | `410 LEGACY_API_RETIRED` for the removed v1 transaction, statistics and wallet routes |
 | `categories`           | Income/expense categories - user-defined plus defaults on signup    |
 | `limits`               | Monthly spending limits, per category or overall                    |
 | `currencies`           | Read-only list of supported currencies (public)                     |
@@ -37,20 +38,25 @@ password reset, currencies, health check, the invitation page).
 
 All API routes are prefixed with `/api` and URI-versioned (only the
 invitation page and the association file are served outside it), e.g.
-`/api/v1/users/register`. Wallets, transactions, categories, and limits are
-all scoped under the space they belong to, e.g.
-`/api/v1/spaces/:spaceId/wallets` - every user gets a personal space
+`/api/v1/users/register`. Transactions, statistics, categories, and limits
+are all scoped under the space they belong to, e.g.
+`/api/v2/spaces/:spaceId/transactions` - every user gets a personal space
 automatically at registration, and can create or be invited into additional
 shared ones. See "Breaking changes" below if you're integrating against an
 older version of this API.
 
-Transactions and statistics also have `/api/v2` routes: records belong to
+Transactions and statistics are served under `/api/v2`: records belong to
 their space directly, with the user who created them and an assignment to a
-member, the whole space or nobody, and no wallets. v1 keeps serving the
-installed app builds until wallets are removed; see
+member, the whole space or nobody. Wallets and the `/api/v1` transaction and
+statistics routes were removed (Release B; they answer `410`); see
 [`docs/transactions-v2-contract.md`](docs/transactions-v2-contract.md).
 
 ## Breaking changes
+
+- **Release B:** wallets are gone. Every `/api/v1/spaces/:spaceId/transactions...`,
+  `/statistics/...` and `/wallets...` request is `410 LEGACY_API_RETIRED`;
+  app builds older than mobile v2 must update. Use the `/api/v2`
+  transaction and statistics routes.
 
 The Spaces initiative (personal/shared budget spaces) landed in three
 rounds, each changing the API surface for existing clients:
@@ -194,8 +200,8 @@ instead of surfacing later as every signup silently breaking.
 ## Dev seed data
 
 `npm run seed` (`src/database/seed.ts`) creates a small set of local-only
-test accounts via the same `UsersService`/`WalletsService`/`CategoriesService`
-calls the app itself uses during registration - so seeded users end up in
+test accounts via the same `UsersService` calls the app itself uses during
+registration - so seeded users end up in
 the exact same state as if they had registered and verified through the API.
 The script is idempotent: re-running it skips any email that already exists.
 
@@ -207,9 +213,9 @@ permissions - it behaves exactly like the regular user account.
 
 | Email                  | Password (see below) | State                                                              |
 | ----------------------- | --------------------- | -------------------------------------------------------------------------------------------------- |
-| `user@dev.local`        | `DevTest#2026`        | Verified, has a "Cash" wallet and the default category set                                          |
+| `user@dev.local`        | `DevTest#2026`        | Verified, has the default category set                                                              |
 | `admin@dev.local`       | `DevTest#2026`        | Verified, same as above - "admin" is a naming label only, not a real permission tier                |
-| `unverified@dev.local`  | `DevTest#2026`        | **Not verified** - edge case for testing the unverified/incomplete-signup state (no wallet/categories yet, since those are only created on email verification) |
+| `unverified@dev.local`  | `DevTest#2026`        | **Not verified** - edge case for testing the unverified/incomplete-signup state (no categories yet, since those are only created on email verification) |
 
 The password `DevTest#2026` is a **local-dev-only placeholder**, not a
 real/production-style credential - it exists only in this README and in
@@ -285,7 +291,7 @@ out of an actually-delivered message via MailDev's REST API
 `MAILDEV_API_URL`) rather than the database - proving delivery, not just
 code generation. Every spec cleans up the test users/spaces it creates
 afterward (which, thanks to `onDelete: CASCADE` on the relevant foreign
-keys, also removes their wallets/categories/confirmation codes). CI runs
+keys, also removes their categories/confirmation codes). CI runs
 them against MySQL and MailDev service containers on every push/PR, and the
 migration e2e tests in a job of their own.
 
@@ -314,11 +320,14 @@ sequence, what to do when a deploy fails, and the backup/restore procedure
 (`scripts/db-backup.sh` / `scripts/db-restore.sh`) - lives in
 [`docs/deployment.md`](docs/deployment.md).
 
-The release that moves transactions to their spaces (v2) needs a short write
-pause and a reconciliation: deploy it with
+The release that moves transactions to their spaces (Release A) and the one
+that removes the wallets (Release B) each need a short write pause and a
+reconciliation: deploy them with
 [Rolling out space-owned transactions](docs/deployment.md#rolling-out-space-owned-transactions)
+and [Rolling out the removal of wallets](docs/deployment.md#rolling-out-the-removal-of-wallets)
 (`npm run ownership:check -- preflight | snapshot <file> | verify <file>`,
-`:prod` variant in the image).
+`:prod` variant in the image). Release B also makes app builds older than
+mobile v2 incompatible: ship it only once its readiness checks pass.
 
 The release that replaces the starter categories rewrites existing tester
 data and cannot be reverted, only restored from a backup. Deploy it with

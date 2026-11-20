@@ -1,18 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 
-import { StatisticsController } from './statistics.controller';
+import { StatisticsV2Controller } from './statistics-v2.controller';
 import { StatisticsService } from './statistics.service';
 import type { StatisticsQueryDto } from './dto/statistics-query.dto';
 import { StatisticsPeriodType } from '@shared/enums';
 import type { AuthedRequest } from '@shared/types';
 
-describe('StatisticsController', () => {
-  let controller: StatisticsController;
+describe('StatisticsV2Controller', () => {
+  let controller: StatisticsV2Controller;
   let statisticsService: jest.Mocked<StatisticsService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      controllers: [StatisticsController],
+      controllers: [StatisticsV2Controller],
       providers: [
         {
           provide: StatisticsService,
@@ -21,7 +21,7 @@ describe('StatisticsController', () => {
       ],
     }).compile();
 
-    controller = module.get(StatisticsController);
+    controller = module.get(StatisticsV2Controller);
     statisticsService = module.get(StatisticsService);
   });
 
