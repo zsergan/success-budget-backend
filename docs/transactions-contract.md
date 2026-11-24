@@ -29,6 +29,7 @@ another space, and scheduled or recurring transactions.
 | `GET /transactions/feed`: cursor pages, search, `around_id`, `summary`, `day_totals`    | implemented |
 | `GET /transactions/count`, stable history order                                         | implemented |
 | Limits month in the client's `time_zone`                                                | implemented |
+| Calendar `date` instead of `timestamp`, date-bounded history (Release C)                | implemented |
 | Wallets, the v1 transaction routes and their balances (Release B: `410`, table dropped) | removed     |
 
 Code: `src/modules/transactions` (`space-transactions.service.ts`, the write
@@ -64,8 +65,9 @@ feed, latest and details responses against their OpenAPI schemas.
 5. **Description.** Optional, at most 140 characters. A missing description
    is always `null`: the server trims the input, and an empty result is
    stored and returned as `null`, never `""`.
-6. **Timestamp.** A new or changed timestamp is not in the future (see
-   [Timestamp](#timestamp)).
+6. **Date.** A transaction happens on a calendar day (`date`), with no
+   time of day and no zone. A new or changed date is not after today in
+   the writer's zone (see [Date](#date)).
 7. **Choosing a category.** A new transaction takes an active (not
    archived), non-system category whose type equals `transaction_type`.
 8. **Keeping the original category on edit.** An edit may keep the
@@ -150,34 +152,42 @@ with zero excluded for transactions. Limit amounts keep accepting zero.
 - Responses always carry `description: string | null`; a legacy `""` stored
   before this contract is returned as `null`.
 
-### Timestamp
+### Date
 
-- An exact instant: an ISO 8601 date-time **with `Z` or a UTC offset**
-  (`2026-09-15T10:00:00.000Z`, `2026-09-15T13:00:00+03:00`). A date-only
-  or offset-less value is `400 VALIDATION_FAILED`. The same rule applies to
-  a `PATCH`; reads always return `Z` values, so echoing one back is fine.
-- Within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to
-  2038-01-19T03:14:07Z; see [`type-contract.md`](type-contract.md#dates)).
-- Not in the future: an instant more than **60 seconds** after the server
-  clock is `400 VALIDATION_FAILED`, field `timestamp`. The margin absorbs
-  device clock drift, as `as_of` does in the statistics API.
+- A calendar date, exactly `YYYY-MM-DD` (`2026-09-15`), a real day
+  (`2028-02-29` is one, `2026-02-29` is not), from `1000-01-01` to
+  `9999-12-31`. A date-time, an offset, `Z` or another layout is
+  `400 VALIDATION_FAILED`, field `date`. Reads return the stored value,
+  so echoing one back is fine.
+- Sent together with `time_zone`, the device's IANA zone
+  (`Europe/Moscow`): required on create, and on a `PATCH` whenever `date`
+  is sent (`400 VALIDATION_FAILED`, field `time_zone`, otherwise). It only
+  tells which day is today for the writer; it is not stored and never
+  changes the date. A fixed offset (`+03:00`) or an unknown zone is
+  refused.
+- Not after today: today is the date in `time_zone` of the server clock
+  plus **60 seconds**, a margin for device clock drift. A later date is
+  `400 VALIDATION_FAILED`, field `date`.
+- `timestamp` is not a field: a body with it is `400 VALIDATION_FAILED`,
+  field `timestamp`, and nothing is written (see the
+  [v2 contract](transactions-v2-contract.md#calendar-dates-release-c)).
 
 ## Compatibility with existing records
 
 Records written under older rules are never corrected or deleted
-automatically. They may hold a zero amount, a future timestamp, a `""`
+automatically. They may hold a zero amount, a date after today, a `""`
 description, or a category whose type differs from the transaction type.
 
 - **Unchanged values are not re-validated.** An edit that leaves a legacy
   value as it is succeeds; only new and changed values must follow the
-  rules. So a zero amount or a future timestamp survives an edit of the
+  rules. So a zero amount or a date after today survives an edit of the
   description, and a legacy type/category mismatch survives as long as
   neither `transaction_type` nor `category_id` changes.
 - **Sending the current value is not a change.** A client that sends the
   whole form is treated like one that sends only the edited fields: a field
   equal to the stored value counts as unchanged. Equality is by value:
-  `amount` in cents (`"0"` equals `"0.00"`), `timestamp` to the millisecond
-  instant, ids by number, `description` after trimming and `""`→`null`, the
+  `amount` in cents (`"0"` equals `"0.00"`), `date` as the calendar day
+  (whatever `time_zone` comes with it), ids by number, `description` after trimming and `""`→`null`, the
   assignment as a whole. The same applies to the `category_id` of an
   archived category: sending the transaction's own value keeps the link.
 - Changing such a value means meeting the rules: setting a zero amount to
@@ -229,12 +239,16 @@ since. The id is compared case-insensitively.
 ### History selection
 
 `/feed` and `/count` read the same **selection**: every transaction of the
-space with `from <= timestamp <= to` that matches the filters (and `q`, see
+space with `from_date <= date <= to_date` that matches the filters (and `q`, see
 [Search](#search)), in active and archived categories, whoever it is
 assigned to unless the `assignment` filter says otherwise.
 
-- **Order:** newest `timestamp` first; records with the same timestamp by
-  `id`, descending. The order is stable between requests.
+- **Order:** newest `date` first; records of the same date by the
+  server's ordering key, descending: assigned on create in the order of
+  the creates, never changed by an edit and never shown to the client. So
+  within a day the record created last comes first, and a record moved to
+  another date takes its place there by creation. The order is stable
+  between requests and has no time of day in it.
 - **Starting balance** records are part of the selection, marked
   `kind: 'initial_balance'`. A space with only a starting balance therefore
   has a non-empty history even though its Income is zero; the client
@@ -269,9 +283,9 @@ history.
 the feed's `summary.count` for the same period, `q` and filters, and reads
 no rows, so the period picker counter loads nothing.
 
-- **`from` and `to`** are required inclusive instants with `Z` or an
-  offset, as the device's day and month bounds. `from` after `to` is
-  `400 VALIDATION_FAILED`, field `from`.
+- **`from_date` and `to_date`** are required inclusive calendar dates
+  (`YYYY-MM-DD`, see [Date](#date)). `from_date` after `to_date` is
+  `400 VALIDATION_FAILED`, field `from_date`.
 - **`q`** counts the matches of the feed's [Search](#search): trimmed, blank
   means no search, at most 255 characters (longer is
   `400 VALIDATION_FAILED`, field `q`, as is a repeated `q`).
@@ -291,8 +305,7 @@ by the server.
 
 | Parameter          | Required | Rule                                                                                                                                          |
 | ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`, `to`       | yes      | Inclusive instants with `Z` or a UTC offset, no default; may be outside the stored range (below); `from` after `to` is an error               |
-| `time_zone`        | yes      | IANA zone of the device (`Europe/Moscow`); groups the records into days. A fixed offset (`+03:00`) or an unknown zone is an error             |
+| `from_date`, `to_date` | yes  | Inclusive calendar dates `YYYY-MM-DD`, `1000-01-01` to `9999-12-31`, no default; `from_date` after `to_date` is an error                     |
 | `q`                | no       | Search text, see [Search](#search). Trimmed at both ends, inner whitespace kept; empty after trimming means no search. At most 255 characters |
 | `limit`            | no       | Page size, an integer `1`–`100`; default `50`                                                                                                 |
 | `cursor`           | no       | `next_cursor` or `previous_cursor` of an earlier response to the same query                                                                   |
@@ -305,18 +318,14 @@ by the server.
 The filters, the selection and its order are those of
 [History selection](#history-selection).
 
-`from` and `to` bound a search, not a stored value, so they may lie outside
-the range that transaction timestamps are kept in, a MySQL `TIMESTAMP(3)`
-(1970-01-01T00:00:01.000Z to 2038-01-19T03:14:07.999Z): a month that starts
-on 1970-01-01T00:00:00Z, or in a zone east of UTC on the evening of
-1969-12-31, opens like any other. Only the part of the period inside that
-range can hold records. Reads take the last stored second in full: a record
-stamped after 2038-01-19T03:14:07.000Z, the limit of a write, is still
-listed, searched, counted, summed and paged. A period wholly outside the
-range is `200` with no `items`, a zero `summary` and no `day_totals`.
-`GET /transactions/count` selects the same records for the same bounds, so
-`summary.count` equals the count. Cursors keep the stored range: a cursor
-position is always a stored record's timestamp.
+`from_date` and `to_date` are compared with the stored `date` directly:
+no zone, no instant and no day bounds are involved, so a period means the
+same days for every member, wherever they are. The feed takes no
+`time_zone`; `time_zone`, `from` and `to` are unknown parameters
+(`400 VALIDATION_FAILED`). A period without records is `200` with no
+`items`, a zero `summary` and no `day_totals`. `GET /transactions/count`
+selects the same records for the same dates, so `summary.count` equals the
+count.
 
 Every malformed parameter is `400 VALIDATION_FAILED` with the parameter as
 `field`, never corrected: a `q` of 256 characters is refused, not cut; a
@@ -340,13 +349,13 @@ interface TransactionFeed {
     expense: string; // "0.00": regular expense of the selection
   };
   day_totals: Array<{
-    date: string; // YYYY-MM-DD in time_zone, a day of at least one record of items
-    net: string; // "-12.30": income minus expense of that whole day of the selection
+    date: string; // YYYY-MM-DD, the date of at least one record of items
+    net: string; // "-12.30": income minus expense of that whole date in the selection
   }>;
 }
 ```
 
-- **Order.** `timestamp` descending, then `id` descending: the
+- **Order.** `date` descending, then the ordering key descending: the
   [history order](#history-selection). Every page, also one read with
   `previous_cursor` or `around_id`, lists its items in this order.
 - **One snapshot per response.** `items`, `summary` and `day_totals` of a
@@ -357,9 +366,7 @@ interface TransactionFeed {
 - **Computed in the database.** The count and the sums are aggregated by
   MySQL over the whole selection, never by loading its rows, and in exact
   decimal arithmetic: a sum may exceed the maximum of one amount
-  (`"299999999.97"`). Day bounds are computed by the server in
-  `time_zone`, with its daylight-saving changes (a local day can last 23 or
-  25 hours), and do not depend on MySQL time zone tables.
+  (`"299999999.97"`). Days are the stored dates, grouped as they are.
 - **Money** is a string with exactly two decimals; `net` carries a `-`
   when expense exceeds income and is `"0.00"`, never `"-0.00"`, when they
   are equal.
@@ -367,15 +374,13 @@ interface TransactionFeed {
   on every page of one query, unless the data changed between the
   requests. `count` counts starting balances; `income` and `expense` leave
   them out, like the statistics.
-- **`day_totals`** has one entry per local day (in `time_zone`) that has
-  at least one record in `items`, in the order of `items`, newest day
-  first, no day twice. `net` is income minus expense of **all** the
-  records of that day in the selection, also those on other pages, so a
-  day split between two pages has the same total on both and it does not
-  change when the next page loads. A day is cut by `from` and `to`: the
-  part of a day outside the period is not counted. Starting balances are
-  left out of `net`; a day that only has a starting balance on the page is
-  listed with `"0.00"`.
+- **`day_totals`** has one entry per `date` that has at least one record
+  in `items`, in the order of `items`, newest date first, no date twice.
+  `net` is income minus expense of **all** the records of that date in the
+  selection, also those on other pages, so a date split between two pages
+  has the same total on both and it does not change when the next page
+  loads. Starting balances are left out of `net`; a date that only has a
+  starting balance on the page is listed with `"0.00"`.
 - **No records.** An empty selection, or a page past the end, is
   `items: []`, both cursors `null`, `day_totals: []`. `summary` still
   describes the selection (all zeros when it is empty).
@@ -416,11 +421,12 @@ was taken from is edited or deleted, and it does not expire.
   records immediately newer in the order, listed newest first. `null` when
   the page starts with the newest record of the selection (so it is always
   `null` on the first page).
-- A cursor is at most 256 characters and carries its format version; a
-  cursor of a format the server no longer reads is refused like any
-  malformed one, and the client reloads the first page.
-- A cursor belongs to its query: it is accepted only with the same `from`,
-  `to`, `time_zone`, `q` (after trimming) and filters, `assignment`
+- A cursor is at most 256 characters and carries its format version
+  (`2` since Release C); a cursor of a format the server no longer reads,
+  such as one issued before Release C, is refused like any malformed one,
+  and the client reloads the first page.
+- A cursor belongs to its query: it is accepted only with the same
+  `from_date`, `to_date`, `q` (after trimming) and filters, `assignment`
   included, it was returned for. `limit` may change between pages. A cursor
   of another query, of the retired v1 feed, or one that is not a cursor at
   all, is `400 VALIDATION_FAILED`, field `cursor`: the client then reloads
@@ -431,7 +437,7 @@ then; the feed keeps no history session between requests. Records written
 between two requests are not shifted into or out of the loaded pages. A
 record created or moved above the first loaded page is reached by
 reloading the first page (pull to refresh). A record edited between two
-requests can be listed on both pages, or on neither if its timestamp moved
+requests can be listed on both pages, or on neither if its date moved
 across the loaded part. The client therefore keys records by `id` and keeps
 the copy of the latest response, and takes `summary` and the `day_totals`
 of a date from the latest response that carries them. After a pull to
@@ -455,15 +461,14 @@ directions as usual, and `summary` and `day_totals` follow the usual rules.
 
 On `TRANSACTION_NOT_IN_FEED` the client opens the first page of the same
 query; to open a record found elsewhere (home, statistics), it sends a
-period that contains the record's timestamp, normally the month of it in
-the device's zone.
+period that contains the record's `date`, normally its month.
 
 #### Screens
 
 The screens and their requests are in the
 [v2 contract](transactions-v2-contract.md#screens). The home screen's latest
-records are `limit=5`, `from=1970-01-01T00:00:01Z`,
-`to=2038-01-19T03:14:07.999Z`; only `items` are used.
+records are `limit=5`, `from_date=1000-01-01`, `to_date=9999-12-31`; only
+`items` are used.
 
 **Errors**, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
 `FORBIDDEN_CATEGORY`, `FORBIDDEN_MEMBER`, then `TRANSACTION_NOT_FOUND` and
@@ -530,7 +535,7 @@ result:
 | The transaction is not a starting balance                   | always                                      | `400 TRANSACTION_IS_SYSTEM`        |
 | `If-Match` equals the stored version                        | always                                      | `409 TRANSACTION_VERSION_CONFLICT` |
 | Amount `0.01`–`99999999.99`, two decimals                   | `amount` changes                            | `400 VALIDATION_FAILED`            |
-| Timestamp in range, not in the future                       | `timestamp` changes                         | `400 VALIDATION_FAILED`            |
+| Date not after today in `time_zone`                         | `date` changes                              | `400 VALIDATION_FAILED`            |
 | Category exists in the space and is not the system one      | `category_id` changes                       | `403 FORBIDDEN_CATEGORY`           |
 | Category is not archived                                    | `category_id` changes                       | `400 CATEGORY_ARCHIVED`            |
 | Resulting category type equals resulting `transaction_type` | `transaction_type` or `category_id` changes | `400 CATEGORY_TYPE_MISMATCH`       |
@@ -541,7 +546,7 @@ fields, a malformed `If-Match` or `Idempotency-Key`) come before the record
 is loaded, so a malformed request to a missing transaction is a `400`. Then
 `TRANSACTION_VERSION_REQUIRED`, `FORBIDDEN_SPACE`, `IDEMPOTENCY_KEY_REUSED`,
 `TRANSACTION_NOT_FOUND`, and the checks above in table order. Amount and
-timestamp rules depend on the stored value, so they run after the record is
+date rules depend on the stored value, so they run after the record is
 loaded. A failed edit changes nothing.
 
 `200 { transaction }`: the stored state after the edit. A no-op edit does
@@ -855,14 +860,14 @@ category combined with the link removals of the archived state.
 
 | Figure                                    | Starting balance | Regular transactions                               |
 | ----------------------------------------- | ---------------- | -------------------------------------------------- |
-| Feed `items`, `summary.count`, `/count`   | included         | in `from`..`to`, by `q` and the filters            |
-| Feed `summary.income` / `summary.expense` | excluded         | in `from`..`to`, by `q` and the filters            |
-| Feed `day_totals` `net`                   | excluded         | the local day within `from`..`to`, by `q`, filters |
-| Statistics Income / Expense / Net         | excluded         | up to `as_of`, by `transaction_type`               |
-| Limits `spent`                            | excluded         | expenses of the month in `time_zone`, by category  |
-| Category `transaction_count`              | not shown        | all, whatever their timestamp                      |
+| Feed `items`, `summary.count`, `/count`   | included         | dated `from_date`..`to_date`, by `q` and filters   |
+| Feed `summary.income` / `summary.expense` | excluded         | dated `from_date`..`to_date`, by `q` and filters   |
+| Feed `day_totals` `net`                   | excluded         | of that date, by `q` and the filters               |
+| Statistics Income / Expense / Net         | excluded         | dated up to `actual_end_date`, by type             |
+| Limits `spent`                            | excluded         | expenses dated in the month, by category           |
+| Category `transaction_count`              | not shown        | all, whatever their date                           |
 
-Changing a record's type, category, amount, timestamp or assignment moves it
+Changing a record's type, category, amount, date or assignment moves it
 between Income and Expense, categories, limits, periods and assignment
 groups accordingly. A day's financial total in the history is the feed's
 `day_totals`, computed by the server; the client does not add up loaded
@@ -877,10 +882,8 @@ month in that zone and returns the month it counted:
 interface LimitsSummary {
   period: {
     time_zone: string; // canonical IANA name
-    start_date: string; // first local day, YYYY-MM-DD
-    end_date: string; // last local day
-    from: string; // first instant, ISO UTC
-    to: string; // last instant, inclusive, to the millisecond
+    start_date: string; // first day of the month, YYYY-MM-DD
+    end_date: string; // last day of the month
   };
   // LimitView: id, name, amount, spent, in_percent, categories
   total: LimitView | null;
@@ -889,10 +892,11 @@ interface LimitsSummary {
 }
 ```
 
-The mobile client sends the device's zone, as for statistics, and every
-screen showing limit spending takes the month from `period`; a history or
-statistics request for "this month's" figures uses `period.from` and
-`period.to`. A fixed offset (`+03:00`) or an unknown zone is
+`spent` counts the expenses dated `start_date` to `end_date`; the zone
+only decides which month is current. The mobile client sends the device's
+zone, as for statistics, and every screen showing limit spending takes the
+month from `period`; a history request for "this month's" figures uses
+`from_date=period.start_date&to_date=period.end_date`. A fixed offset (`+03:00`) or an unknown zone is
 `400 VALIDATION_FAILED`, field `time_zone`. Without `time_zone` the month is
 the server's.
 
@@ -905,11 +909,11 @@ categories.
 ### Comparing figures
 
 Figures agree when they are asked for the same thing: the same filters and
-the same instants. Compare a statistics block with the history using its
-`period.from` and `actual_to` (not `to`: a current period stops at
-`as_of`), and the limits with the history using the limits `period`. A
-history day or month is bounded by the device's zone, sent as instants with
-an offset.
+the same dates. Compare a statistics block with the history using its
+`period.start_date` and `actual_end_date` (not `end_date`: a current
+period stops at the date of `as_of`), and the limits with the history
+using the limits `period`. A date means the same day for every reader, so
+the zone of the reader never moves a record between days.
 
 ## Errors
 
@@ -975,7 +979,7 @@ POST /api/v2/spaces/1/transactions
 Idempotency-Key: 0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70
 
 { "category_id": 12, "transaction_type": "expense", "amount": "12.3",
-  "timestamp": "2026-09-15T13:00:00+03:00", "description": "  Lunch ",
+  "date": "2026-09-15", "time_zone": "Europe/Moscow", "description": "  Lunch ",
   "assignment": { "kind": "space" },
   "client_operation_id": "0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70" }
 ```
@@ -983,7 +987,7 @@ Idempotency-Key: 0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70
 ```http
 201
 { "transaction": { "id": "9b1d…", "kind": "regular", "transaction_type": "expense",
-                   "amount": "12.30", "timestamp": "2026-09-15T10:00:00.000Z",
+                   "amount": "12.30", "date": "2026-09-15",
                    "description": "Lunch", "version": 1,
                    "category": { "id": 12, "name": "Groceries", "is_archived": false, … },
                    "author": { … }, "assignment": { "kind": "space", … } } }
@@ -1083,30 +1087,29 @@ and nothing is deleted. Deleting a starting balance:
 GET /api/v1/spaces/1/limits?time_zone=Europe/Moscow
 
 200 { "period": { "time_zone": "Europe/Moscow", "start_date": "2026-10-01",
-                  "end_date": "2026-10-31", "from": "2026-09-30T21:00:00.000Z",
-                  "to": "2026-10-31T20:59:59.999Z" },
+                  "end_date": "2026-10-31" },
       "total": { "id": 3, "amount": "1000.00", "spent": 20, "in_percent": 2, … }, … }
 
-GET /api/v2/spaces/1/transactions/count?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z
+GET /api/v2/spaces/1/transactions/count?from_date=2026-10-01&to_date=2026-10-31
 
 200 { "count": 5 }
 ```
 
 ### Feed: first page, next page, search, opening at a record
 
-The October history in Moscow time, 50 per page:
+The October history, 50 per page:
 
 ```http
-GET /api/v2/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow
+GET /api/v2/spaces/1/transactions/feed?from_date=2026-10-01&to_date=2026-10-31
 
 200
 { "items": [
     { "id": "f3a0…", "kind": "regular", "transaction_type": "expense", "amount": "12.30",
-      "timestamp": "2026-10-12T09:15:00.000Z", "version": 1, … },
+      "date": "2026-10-12", "version": 1, … },
     …,
     { "id": "07c4…", "kind": "regular", "transaction_type": "expense", "amount": "4.00",
-      "timestamp": "2026-10-03T08:00:00.000Z", "version": 1, … } ],
-  "page_info": { "next_cursor": "eyJ2IjoxLC…", "previous_cursor": null },
+      "date": "2026-10-03", "version": 1, … } ],
+  "page_info": { "next_cursor": "eyJ2IjoyLC…", "previous_cursor": null },
   "summary": { "count": 73, "income": "2500.00", "expense": "1184.45" },
   "day_totals": [ { "date": "2026-10-12", "net": "-12.30" },
                   …,
@@ -1117,13 +1120,13 @@ The page ends inside October 3: `-31.50` is the whole day, also the records
 of October 3 that are not loaded yet. Scrolling on:
 
 ```http
-GET /api/v2/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&cursor=eyJ2IjoxLC…
+GET /api/v2/spaces/1/transactions/feed?from_date=2026-10-01&to_date=2026-10-31&cursor=eyJ2IjoyLC…
 
 200
-{ "items": [ { "id": "05d1…", "timestamp": "2026-10-03T07:40:00.000Z", … }, …,
+{ "items": [ { "id": "05d1…", "date": "2026-10-03", … }, …,
              { "id": "c9e2…", "kind": "initial_balance", "transaction_type": "income",
-               "amount": "100.00", "timestamp": "2026-10-01T06:00:00.000Z", … } ],
-  "page_info": { "next_cursor": null, "previous_cursor": "eyJ2IjoxLC…" },
+               "amount": "100.00", "date": "2026-10-01", … } ],
+  "page_info": { "next_cursor": null, "previous_cursor": "eyJ2IjoyLC…" },
   "summary": { "count": 73, "income": "2500.00", "expense": "1184.45" },
   "day_totals": [ { "date": "2026-10-03", "net": "-31.50" }, …,
                   { "date": "2026-10-01", "net": "0.00" } ] }
@@ -1136,7 +1139,7 @@ in `count` but not in `income`. `next_cursor: null`: the history ends here.
 A search with no match, `q` sent as `" coffee  "` (trimmed to `"coffee"`):
 
 ```http
-GET /api/v2/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&q=%20coffee%20%20
+GET /api/v2/spaces/1/transactions/feed?from_date=2026-10-01&to_date=2026-10-31&q=%20coffee%20%20
 
 200
 { "items": [],
@@ -1149,15 +1152,15 @@ Opening the history at a record from the home screen, 5 records per page
 to keep the example short:
 
 ```http
-GET /api/v2/spaces/1/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&limit=5&around_id=8a61…
+GET /api/v2/spaces/1/transactions/feed?from_date=2026-10-01&to_date=2026-10-31&limit=5&around_id=8a61…
 
 200
-{ "items": [ { "id": "b2f7…", "timestamp": "2026-10-09T18:00:00.000Z", … },
-             { "id": "41aa…", "timestamp": "2026-10-09T12:30:00.000Z", … },
-             { "id": "8a61…", "timestamp": "2026-10-09T10:00:00.000Z", … },
-             { "id": "e05c…", "timestamp": "2026-10-08T19:20:00.000Z", … },
-             { "id": "6d13…", "timestamp": "2026-10-08T07:05:00.000Z", … } ],
-  "page_info": { "next_cursor": "eyJ2IjoxLC…", "previous_cursor": "eyJ2IjoxLC…" },
+{ "items": [ { "id": "b2f7…", "date": "2026-10-09", … },
+             { "id": "41aa…", "date": "2026-10-09", … },
+             { "id": "8a61…", "date": "2026-10-09", … },
+             { "id": "e05c…", "date": "2026-10-08", … },
+             { "id": "6d13…", "date": "2026-10-08", … } ],
+  "page_info": { "next_cursor": "eyJ2IjoyLC…", "previous_cursor": "eyJ2IjoyLC…" },
   "summary": { "count": 73, "income": "2500.00", "expense": "1184.45" },
   "day_totals": [ { "date": "2026-10-09", "net": "-56.00" },
                   { "date": "2026-10-08", "net": "1450.00" } ] }
@@ -1199,9 +1202,11 @@ A cursor sent with another `q` or period:
   Never decide a create by matching amount, date and category.
 - Generate one `Idempotency-Key` per edit or delete and reuse it for its
   retries, for at most 24 hours.
-- Send timestamps with an offset, and history bounds as instants of the
-  device's day or month; pass the device's IANA zone to statistics and
-  limits; take "this month" from the limits `period`.
+- Send the picked calendar `date` with the device's IANA `time_zone` on
+  every create and every edit of the date; send history bounds as
+  `from_date`/`to_date`; pass the device's zone to statistics and limits;
+  take "this month" from the limits `period`. Never convert a stored
+  `date` with a zone.
 - Edit with `PATCH`, sending only what changed or the whole form; leave
   `category_id` out (or send the current id) to keep an archived category.
 - Use `GET /transactions/count` for the calendar counter, with the open

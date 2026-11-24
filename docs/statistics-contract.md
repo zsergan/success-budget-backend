@@ -46,6 +46,13 @@ touch are the source of truth.
   the type from the response and adds `kind=regular` (see Opening a
   breakdown item). Clients that hard-coded `transaction_type=expense` keep
   working for expenses.
+- **Calendar dates (Release C).** Transactions carry a `date`, not an
+  instant. Periods select by date (`start_date` to `actual_end_date`);
+  `period.from`, `to`, `actual_to`, the same fields of `previous` and the
+  `from`/`to` of trend buckets are gone; `actual_end_date` replaces them.
+  The history template sends `from_date`/`to_date`. Periods may lie
+  anywhere from `1000-01-01` to `9999-12-31`. See the
+  [v2 contract](transactions-v2-contract.md#calendar-dates-release-c).
 
 ## Endpoints
 
@@ -86,9 +93,10 @@ sends a request.
    assigned to former members or to deleted accounts, are counted
    everywhere. An archived category keeps its own row in the breakdown
    (`is_archived: true`).
-7. **No future transactions.** A transaction with `timestamp` after `as_of`
-   is not part of any sum or count, even inside the selected period. The
-   period's actual range ends at `min(period end, as_of)`.
+7. **No future transactions.** A transaction dated after the date of
+   `as_of` in `time_zone` is not part of any sum or count, even inside the
+   selected period. The period's actual range ends at
+   `min(end_date, date of as_of)`, that day included in full.
 8. **Zero is not empty.** `"0.00"` does not mean there were no
    transactions: legacy zero-amount transactions still count, and income
    may equal expense. Summary and Trend totals pair every sum with a
@@ -98,8 +106,9 @@ sends a request.
 9. **Exact money.** Sums are computed in integer cents (`SUM` strings parsed
    with `parseMoney`, arithmetic on `bigint`, `formatMoney` for output), as
    in `src/shared/utils/money.ts`. No amount is ever a JS `number` on the way.
-10. **One time boundary.** `as_of` bounds the transactions of every block
-    in a load cycle (see Consistency model).
+10. **One time boundary.** `as_of` gives the effective end date of every
+    block in a load cycle (see Consistency model). It is a reference clock,
+    not a database snapshot.
 
 ## Query parameters
 
@@ -108,11 +117,11 @@ Shared by all three blocks.
 | Param         | Type                                    | Required                  | Meaning                                                                 |
 | ------------- | --------------------------------------- | ------------------------- | ----------------------------------------------------------------------- |
 | `period`      | `week` \| `month` \| `year` \| `custom` | yes                       | Period kind                                                             |
-| `time_zone`   | IANA name (`Europe/Moscow`, `UTC`)      | yes                       | The device's zone; defines days, weeks, months and years                |
+| `time_zone`   | IANA name (`Europe/Moscow`, `UTC`)      | yes                       | The device's zone; tells which day `as_of` falls on                     |
 | `anchor_date` | `YYYY-MM-DD`                            | no; not with `custom`     | Any day inside the wanted week/month/year; default: `as_of`'s local day |
 | `from_date`   | `YYYY-MM-DD`                            | with `custom`, only there | First local day, inclusive                                              |
 | `to_date`     | `YYYY-MM-DD`                            | with `custom`, only there | Last local day, inclusive                                               |
-| `as_of`       | ISO 8601 date-time with `Z` or offset   | no; default: server time  | Time boundary of the load cycle; echoed as `period.as_of`               |
+| `as_of`       | ISO 8601 date-time with `Z` or offset   | no; default: server time  | Reference clock of the load cycle; echoed as `period.as_of`             |
 
 Breakdown only:
 
@@ -133,8 +142,8 @@ shape:
 | a date that is not a real `YYYY-MM-DD` calendar date, empty or repeated                     | that date               |
 | `anchor_date` with `custom`; `from_date`/`to_date` with another period or missing on custom | that date               |
 | `from_date` after `to_date`; a custom period over **366** days (_open_: cap)                | `to_date`               |
-| `as_of` without `Z`/offset, outside the `TIMESTAMP` range, or in the future (below)         | `as_of`                 |
-| a period reaching outside the MySQL `TIMESTAMP` range (1970–2038)                           | `anchor_date`/`to_date` |
+| `as_of` without `Z`/offset, or in the future (below)                                        | `as_of`                 |
+| a period reaching outside `1000-01-01`–`9999-12-31` (the `DATE` range)                      | `anchor_date`/`to_date` |
 | Breakdown `transaction_type` unknown, empty or repeated                                     | `transaction_type`      |
 | any other parameter                                                                         | its name                |
 
@@ -145,44 +154,40 @@ simply makes the period `past`.
 
 ## Periods
 
-Boundaries are computed as local dates in `time_zone`, then converted to
-instants. Calendar arithmetic (weeks, month lengths, leap years, year
-boundaries) is done on dates without a zone; only the final day bounds meet
-the zone, so DST never shifts a period or a bucket by an hour.
+Periods are calendar dates, computed without a zone: weeks, month lengths,
+leap years and year boundaries are date arithmetic, and DST never shifts a
+period, a bucket or a comparison. `time_zone` does one thing: it turns
+`as_of` into **today**, the date of `as_of` in that zone.
 
-| `period` | Local range                                                    |
+| `period` | Range                                                          |
 | -------- | -------------------------------------------------------------- |
 | `week`   | Monday through Sunday containing the anchor day                |
 | `month`  | First through last day of the calendar month of the anchor day |
 | `year`   | January 1 through December 31 of the anchor day's year         |
 | `custom` | `from_date` through `to_date`                                  |
 
-A local day starts at its first existing instant (midnight, or the end of a
-DST gap that skips midnight) and ends right before the next day starts, so
-days are 23, 24 or 25 hours long.
-
 ```ts
 interface StatisticsPeriod {
   type: 'week' | 'month' | 'year' | 'custom';
   time_zone: string; // canonical IANA name
-  start_date: string; // local YYYY-MM-DD, inclusive
-  end_date: string; // local YYYY-MM-DD, inclusive
-  from: string; // ISO instant (UTC, ms) of start_date's first moment
-  to: string; // ISO instant of end_date's last millisecond
-  as_of: string; // the applied time boundary
-  actual_to: string | null; // min(to, as_of); null when state = 'future'
+  start_date: string; // YYYY-MM-DD, inclusive
+  end_date: string; // YYYY-MM-DD, inclusive
+  as_of: string; // the applied reference clock, an ISO instant
+  actual_end_date: string | null; // min(end_date, today); null when state = 'future'
   state: 'past' | 'current' | 'future';
 }
 ```
 
-- `past`: `as_of > to`; `actual_to = to`.
-- `current`: `from <= as_of <= to`; `actual_to = as_of`.
-- `future`: `as_of < from`; `actual_to = null`, every sum is `"0.00"` and
-  every count `0`.
+- `past`: `end_date` is before today; `actual_end_date = end_date`.
+- `current`: `start_date <= today <= end_date`; `actual_end_date` is
+  today.
+- `future`: today is before `start_date`; `actual_end_date = null`, every
+  sum is `"0.00"` and every count `0`.
 
-Transactions are selected with `from <= timestamp <= actual_to`, inclusive
-on both ends like the history filter, so `from` and `actual_to` can be
-passed to `GET /transactions/feed` unchanged.
+Transactions are selected with `start_date <= date <= actual_end_date`,
+both days included in full, like the history filter, so `start_date` and
+`actual_end_date` can be passed to `GET /transactions/feed` unchanged.
+Summary, Trend and Breakdown share this one cutoff.
 
 ### Previous period
 
@@ -190,11 +195,11 @@ Summary compares a standard period with the previous one of the same kind:
 the preceding week, month or year. **Custom and `future` periods have no
 comparison** (`previous` and `change` are `null`).
 
-A `current` period is compared like-for-like: the previous period is cut at
-the same position, at the same local wall-clock time as `as_of` (September 1
-to 28 at 15:00 against August 1 to 28 at 15:00, not all of August).
+A `current` period is compared like-for-like, by days: the previous period
+is cut at the equivalent day of today, that day included in full
+(September 1 to 28 against August 1 to 28, not all of August).
 
-| `period` | Same position                                                         |
+| `period` | Equivalent day                                                        |
 | -------- | --------------------------------------------------------------------- |
 | `week`   | Same weekday                                                          |
 | `month`  | Same day of month, clamped to the previous month's last day (31 → 30) |
@@ -202,9 +207,9 @@ to 28 at 15:00 against August 1 to 28 at 15:00, not all of August).
 
 A `past` period is compared with the whole previous period.
 
-The response carries the comparison bounds (`previous.start_date`,
-`end_date`, `from`, `to`, `actual_to`), not a caption: texts such as "vs Aug
-1–28" are composed and localized by the client.
+The response carries the comparison dates (`previous.start_date`,
+`end_date`, `actual_end_date`), not a caption: texts such as "vs Aug 1–28"
+are composed and localized by the client.
 
 ## Money and percentages
 
@@ -249,20 +254,18 @@ interface StatisticsSummary {
   net: string;
   transactions_count: number; // income.count + expense.count
   previous: {
-    start_date: string; // the whole previous period, local dates
+    start_date: string; // the whole previous period
     end_date: string;
-    from: string;
-    to: string;
-    actual_to: string; // the like-for-like cut of a current period, otherwise to
-    income: MoneyCount; // over from..actual_to
+    actual_end_date: string; // the like-for-like cut of a current period, otherwise end_date
+    income: MoneyCount; // over start_date..actual_end_date
     expense: MoneyCount;
     net: string;
     transactions_count: number;
   } | null; // null for custom and future periods
   change: { income: Change; expense: Change; net: Change } | null; // null with previous
-  // any statistics transaction up to as_of, in any period
+  // any statistics transaction dated up to today, in any period
   has_any_transactions: boolean;
-  // local date (in time_zone) of the latest one; null exactly when has_any_transactions is false
+  // the latest date of one, as stored; null exactly when has_any_transactions is false
   last_transaction_date: string | null;
 }
 ```
@@ -297,11 +300,9 @@ Surplus / Deficit / Balanced is the sign of `net`, decided by the client.
 ```ts
 interface TrendBucket {
   key: string; // stable id of the bucket, see below
-  start_date: string; // local dates, inclusive, clipped to the period
+  start_date: string; // dates, inclusive, clipped to the period
   end_date: string;
-  from: string; // exact instants of start_date's first and end_date's last moment
-  to: string;
-  state: 'past' | 'current' | 'future';
+  state: 'past' | 'current' | 'future'; // by today, as for the period
   income: string | null; // null only when state = 'future'
   expense: string | null;
 }
@@ -319,7 +320,7 @@ interface StatisticsTrend {
 Buckets always cover the whole period, so the axis is stable. A `future`
 bucket has `null` values (no bars); a past bucket with no transactions has
 `"0.00"` values (a baseline mark). A `current` bucket keeps its full
-`from`/`to` but sums only up to `as_of`. The buckets add up exactly to
+`start_date`/`end_date` but sums only up to today, today included. The buckets add up exactly to
 `totals`; `totals` also carry the counts the buckets do not.
 
 `key` is the ISO notation of the calendar unit the bucket starts in: `day`
@@ -449,10 +450,11 @@ refreshes.
 2. Retrying a failed block reuses the cycle's parameters and `as_of`.
 3. Each response echoes the applied `period`; within a cycle all three must
    be equal.
-4. `as_of` bounds transaction timestamps, not database state. The requests
-   are separate reads with **no shared snapshot**: a transaction created,
-   edited or deleted by any member between them (for example one backdated
-   to the selected period) can show up in only some of the responses. The
+4. `as_of` gives the effective end date, not a database state. The
+   requests are separate reads with **no shared snapshot**: a transaction
+   created, edited or deleted by any member between them (for example one
+   dated today, or backdated to the selected period) can show up in only
+   some of the responses. The
    API does not promise an atomic view across blocks under concurrent
    editing.
    Within **one** response it does: the reads of Summary and of Breakdown
@@ -496,7 +498,7 @@ number; the History screen itself is not redesigned here.
 | `assignment`       | `member:<user_id>`, `space`, `unassigned` or `deleted_member`            |
 | `kind`             | `regular` (no starting balances) or `initial_balance`                    |
 
-- Filters combine with AND, together, with `from`/`to` and with the feed's
+- Filters combine with AND, together, with `from_date`/`to_date` and with the feed's
   `q`.
 - A foreign or missing category, or the system category, is
   `403 FORBIDDEN_CATEGORY`; a member filter of a user the space never knew
@@ -512,21 +514,18 @@ number; the History screen itself is not redesigned here.
 
 ### Bounds
 
-`from` and `to` are both **inclusive**, compared with millisecond
-precision. The feed requires them, with `Z` or an offset, and has no
-default. The statistics bounds are therefore passed **verbatim**, as the ISO
-instants with `Z` the statistics endpoints return:
+`from_date` and `to_date` of the history are both **inclusive** calendar
+dates, compared with the stored `date`. The statistics dates are passed
+**verbatim**:
 
 ```
-from = period.from          (first millisecond of the first local day)
-to   = period.actual_to     (as_of for a current period, otherwise period.to)
+from_date = period.start_date
+to_date   = period.actual_end_date   (today for a current period, otherwise end_date)
 ```
 
-`period.to` is the last millisecond of the last local day (`…:59.999Z`),
-and `actual_to` is `as_of` itself, so nothing is shifted: a transaction
-stamped exactly at `to` is in both the statistics and the history, one a
-millisecond later is in neither. The client must not reformat, round or
-drop the milliseconds, and must not replace the instants with local dates.
+No zone is involved on either side: a transaction dated `actual_end_date`
+is in both the statistics and the history, one dated the day after is in
+neither, whatever zone the reader is in.
 
 ### Opening a breakdown item
 
@@ -535,9 +534,8 @@ template, the same for both groupings:
 
 ```
 GET /spaces/:spaceId/transactions/feed
-    ?from={period.from}
-    &to={period.actual_to}
-    &time_zone={period.time_zone}
+    ?from_date={period.start_date}
+    &to_date={period.actual_end_date}
     &transaction_type={transaction_type}
     &kind=regular
     &{category_id={item.id} | assignment={item.key}}
@@ -545,9 +543,8 @@ GET /spaces/:spaceId/transactions/feed
 
 - `category_id` for `kind: "category"`, `assignment` for an assignment item;
   `period` and `transaction_type` are the ones of the same Breakdown
-  response, not the current selection of the screen. `time_zone` only
-  groups the feed's `day_totals`; then `cursor=next_cursor` while
-  scrolling.
+  response, not the current selection of the screen; then
+  `cursor=next_cursor` while scrolling.
 - It applies alike to `primary_items` and to the `children` of `other`.
   `other` itself has `opens_history: false` and opens nothing.
 - `transaction_type` is **always** sent, for categories too. The breakdown
@@ -573,7 +570,7 @@ whole breakdown: the template minus `category_id`/`assignment` adds up to
 ## Worked examples
 
 Fixed test clock: **`as_of = 2026-09-28T12:00:00.000Z`** (Monday, 15:00 in
-`Europe/Moscow`, UTC+3 without DST). The data set, amounts and names are
+`Europe/Moscow`): today is September 28. The data set, amounts and names are
 test fixtures only; nothing here (and nothing in the design mock-ups) is an
 application constant.
 
@@ -582,24 +579,27 @@ Groceries, `11` Restaurants, `12` Transport, `13` Health, `14` Gifts
 (archived), `15` Pets, `16` Fees, `20` Salary (income), `99` Initial
 balance (system).
 
-| Id  | Local time (MSK) | Type    | Category        | Assigned to | Amount  | Note                               |
-| --- | ---------------- | ------- | --------------- | ----------- | ------- | ---------------------------------- |
-| A1  | 2026-08-03 10:00 | income  | Salary          | space       | 3000.00 |                                    |
-| A2  | 2026-08-10 12:00 | expense | Groceries       | space       | 200.00  |                                    |
-| A3  | 2026-08-20 18:00 | expense | Restaurants     | Lena        | 100.00  |                                    |
-| A4  | 2026-08-29 10:00 | expense | Groceries       | space       | 300.00  | after the like-for-like cut        |
-| S0  | 2026-09-01 09:00 | income  | Initial balance | space       | 1000.00 | excluded: system category          |
-| S1  | 2026-09-01 10:00 | income  | Salary          | space       | 3000.00 |                                    |
-| S2  | 2026-09-02 19:30 | expense | Groceries       | space       | 450.25  |                                    |
-| S3  | 2026-09-05 13:00 | expense | Restaurants     | Lena        | 120.00  |                                    |
-| S4  | 2026-09-09 08:00 | expense | Transport       | space       | 60.00   |                                    |
-| S5  | 2026-09-12 20:00 | expense | Gifts           | unassigned  | 80.00   | archived category                  |
-| S6  | 2026-09-15 11:00 | expense | Health          | unassigned  | 25.50   |                                    |
-| S7  | 2026-09-18 16:00 | expense | Pets            | Lena        | 15.00   |                                    |
-| S8  | 2026-09-21 09:00 | expense | Fees            | space       | 0.00    | zero amount                        |
-| S9  | 2026-09-27 23:30 | expense | Groceries       | space       | 49.75   | `2026-09-27T20:30Z`                |
-| S10 | 2026-09-28 00:30 | expense | Transport       | Lena        | 10.00   | `2026-09-27T21:30Z`: Sep 27 in UTC |
-| F1  | 2026-09-29 10:00 | expense | Groceries       | space       | 500.00  | after `as_of`: excluded            |
+| Id  | `date`     | Type    | Category        | Assigned to | Amount  | Note                        |
+| --- | ---------- | ------- | --------------- | ----------- | ------- | --------------------------- |
+| A1  | 2026-08-03 | income  | Salary          | space       | 3000.00 |                             |
+| A2  | 2026-08-10 | expense | Groceries       | space       | 200.00  |                             |
+| A3  | 2026-08-20 | expense | Restaurants     | Lena        | 100.00  |                             |
+| A4  | 2026-08-29 | expense | Groceries       | space       | 300.00  | after the like-for-like cut |
+| S0  | 2026-09-01 | income  | Initial balance | space       | 1000.00 | excluded: system category   |
+| S1  | 2026-09-01 | income  | Salary          | space       | 3000.00 |                             |
+| S2  | 2026-09-02 | expense | Groceries       | space       | 450.25  |                             |
+| S3  | 2026-09-05 | expense | Restaurants     | Lena        | 120.00  |                             |
+| S4  | 2026-09-09 | expense | Transport       | space       | 60.00   |                             |
+| S5  | 2026-09-12 | expense | Gifts           | unassigned  | 80.00   | archived category           |
+| S6  | 2026-09-15 | expense | Health          | unassigned  | 25.50   |                             |
+| S7  | 2026-09-18 | expense | Pets            | Lena        | 15.00   |                             |
+| S8  | 2026-09-21 | expense | Fees            | space       | 0.00    | zero amount                 |
+| S9  | 2026-09-27 | expense | Groceries       | space       | 49.75   |                             |
+| S10 | 2026-09-28 | expense | Transport       | Lena        | 10.00   | today, counted in full      |
+| F1  | 2026-09-29 | expense | Groceries       | space       | 500.00  | after today: excluded       |
+
+F1 can exist although it is after today in Moscow: a member east of the
+date line wrote it on their own September 29.
 
 ### Example 1 — current month
 
@@ -612,10 +612,8 @@ balance (system).
     "time_zone": "Europe/Moscow",
     "start_date": "2026-09-01",
     "end_date": "2026-09-30",
-    "from": "2026-08-31T21:00:00.000Z",
-    "to": "2026-09-30T20:59:59.999Z",
     "as_of": "2026-09-28T12:00:00.000Z",
-    "actual_to": "2026-09-28T12:00:00.000Z",
+    "actual_end_date": "2026-09-28",
     "state": "current"
   },
   "currency": "EUR",
@@ -626,9 +624,7 @@ balance (system).
   "previous": {
     "start_date": "2026-08-01",
     "end_date": "2026-08-31",
-    "from": "2026-07-31T21:00:00.000Z",
-    "to": "2026-08-31T20:59:59.999Z",
-    "actual_to": "2026-08-28T12:00:00.000Z",
+    "actual_end_date": "2026-08-28",
     "income": { "amount": "3000.00", "count": 1 },
     "expense": { "amount": "300.00", "count": 2 },
     "net": "2700.00",
@@ -643,10 +639,10 @@ balance (system).
 }
 ```
 
-S0 (starting balance) and F1 (after `as_of`) are excluded; S5 (archived
-category), S5/S6 (assigned to nobody) and S8 (zero amount) are included. A4 is after
-the cut at August 28, 15:00 MSK. The latest transaction, S10, is on
-September 28 in Moscow.
+S0 (starting balance) and F1 (after today) are excluded; S5 (archived
+category), S5/S6 (assigned to nobody), S8 (zero amount) and S10 (today,
+whatever time it was entered) are included. A4 is after the cut at August
+28. The latest counted transaction, S10, is dated September 28.
 
 Trend: `granularity: "week"`, `totals` equal to the Summary figures.
 
@@ -665,8 +661,6 @@ The first bucket:
   "key": "2026-W36",
   "start_date": "2026-09-01",
   "end_date": "2026-09-06",
-  "from": "2026-08-31T21:00:00.000Z",
-  "to": "2026-09-06T20:59:59.999Z",
   "state": "past",
   "income": "3000.00",
   "expense": "570.25"
@@ -781,23 +775,29 @@ groupings have one item of 100%: category `20` Salary and `space`; `other`
 is `null`. S0 (the starting balance) is not there, and the history of
 `space` opened with `kind=regular` lists only S1.
 
-### Example 2 — current week, zone boundary, zero comparison
+### Example 2 — current week, the day of `as_of`, zero comparison
 
 `period=week&time_zone=Europe/Moscow`: week 2026-09-28 … 2026-10-04,
-`from: "2026-09-27T21:00:00.000Z"`. S10 (`2026-09-27T21:30Z`) belongs to
-this week in Moscow; with `time_zone=UTC` it belongs to the previous week.
+`actual_end_date: "2026-09-28"`.
 
-- `income: { "amount": "0.00", "count": 0 }`, `expense: { "amount": "10.00", "count": 1 }`, `net: "-10.00"`.
-- Previous: week 2026-09-21 … 2026-09-27, cut at `2026-09-21T12:00:00.000Z`
-  (Monday 15:00 MSK): only S8, `expense: { "amount": "0.00", "count": 1 }`.
+- `income: { "amount": "0.00", "count": 0 }`, `expense: { "amount": "10.00", "count": 1 }` (S10), `net: "-10.00"`.
+- Previous: week 2026-09-21 … 2026-09-27, cut at Monday 2026-09-21 in
+  full: only S8, `expense: { "amount": "0.00", "count": 1 }`.
 - `change.expense: { "delta": "10.00", "percent": null }`: the base is zero
   though the previous period is not empty.
 - Trend: 7 `day` buckets; Tuesday to Sunday are `future` with `null` values.
 
+The zone only decides today. With `as_of=2026-09-27T22:00:00.000Z` it is
+already Monday, September 28 (01:00) in Moscow, so the current week is the
+one above and S10 counts. In `UTC` it is still Sunday, September 27: the
+current week is 2026-09-21 … 2026-09-27 with S8 and S9, and S10 (dated
+after today there) is not counted yet. S10's date is September 28 in both
+answers.
+
 ### Example 3 — past custom range
 
 `period=custom&from_date=2026-09-10&to_date=2026-09-20&time_zone=Europe/Moscow`:
-11 days, `state: "past"`, `actual_to = to = "2026-09-20T20:59:59.999Z"`.
+11 days, `state: "past"`, `actual_end_date = end_date = "2026-09-20"`.
 
 - `income: { "amount": "0.00", "count": 0 }`, `expense: { "amount": "120.50", "count": 3 }` (S5, S6, S7), `net: "-120.50"`.
 - `previous: null`, `change: null`.
@@ -810,7 +810,7 @@ A custom 2026-07-01 … 2026-09-28 (90 days) is `current` and trends by
 ### Example 4 — year and a future month
 
 - `period=year`: 2026-01-01 … 2026-12-31, `current`; previous 2025 cut at
-  `2025-09-28T12:00:00.000Z`. Trend: 12 `month` buckets, October to
+  2025-09-28, that day included. Trend: 12 `month` buckets, October to
   December `future`.
 - `period=month&anchor_date=2027-02-10`: `future`, all zeros, `previous`
   and `change` `null`; trend `week`, 4 buckets (February 2027 starts on a
@@ -820,44 +820,41 @@ A custom 2026-07-01 … 2026-09-28 (90 days) is `current` and trends by
   3), …, `2027-W03` to January 20. A year 2028 trends by 12 `month` buckets,
   `2028-02` being 29 days long.
 
-### Example 5 — DST
+### Example 5 — DST, leap days and month ends
 
-`time_zone=Europe/Berlin&period=week&anchor_date=2026-10-25`: week
-2026-10-19 … 2026-10-25, `from: "2026-10-18T22:00:00.000Z"` (CEST, UTC+2),
-`to: "2026-10-25T22:59:59.999Z"` (CET, UTC+1). The October 25 bucket is 25
-hours long: `from: "2026-10-24T22:00:00.000Z"`,
-`to: "2026-10-25T22:59:59.999Z"`.
+A date has no length: DST changes nothing. `time_zone=Europe/Berlin&period=week&anchor_date=2026-10-25`
+is 2026-10-19 … 2026-10-25, and the October 25 bucket holds the records
+dated October 25, although that day had 25 hours in Berlin.
 
-Comparing across a DST change keeps the local wall-clock time: `as_of =
-2026-10-26T11:00:00.000Z` (Monday 12:00 CET) cuts the previous week at
-`2026-10-19T10:00:00.000Z` (Monday 12:00 CEST), not at the same UTC instant.
-
-In `America/Santiago` midnight of 2026-09-06 does not exist (clocks jump to
-01:00): that day starts at `2026-09-06T04:00:00.000Z` and is 23 hours long.
+Comparisons clamp a missing day: on 2026-03-31 the current month is
+compared with 2026-02-01 … 2026-02-28; on 2028-02-29 the current year is
+compared with 2027-01-01 … 2027-02-28; on 2026-10-31 the current month is
+compared with 2026-09-01 … 2026-09-30.
 
 ## Performance
 
 Every block is one or two SQL queries that aggregate in MySQL
 (`SUM`/`COUNT` with `GROUP BY` per category, per assignment or per trend
 bucket); only aggregated rows reach Node.js. Summary: current and previous
-totals plus the latest timestamp (3 queries). Trend: 1 query for all
+totals plus the latest date (3 queries). Trend: 1 query for all
 buckets. Breakdown: 2 queries (categories, assignments). The queries of one
 block run one after another in its snapshot transaction (see Consistency
 model). A `future` period sends none for its own range.
 
 Every period read selects the space's records by their own `space_id` and
-a time range, over `IDX_transactions_space_timestamp_id` or, with an
-assignment, `IDX_transactions_space_assignment`; both cover the columns
-the sums read (see
+a range of `date`, compared directly with no function on the column, over
+`IDX_transactions_space_date` or, with an assignment,
+`IDX_transactions_space_assignment_date`; both cover the columns the sums
+read (see
 [`feed-performance.md`](feed-performance.md#space-owned-transactions)).
-`last_transaction_date` has only an upper bound (`as_of`), so it reads the
-space's history up to `as_of` through the same index. This is linear in the
+`last_transaction_date` has only an upper bound (today), so it reads the
+space's history up to today through the same index. This is linear in the
 size of one space's history and runs once per Summary.
 
 ## Out of scope
 
 - Cross-space or multi-currency statistics.
 - Planned or recurring transactions: the model has none; a transaction
-  dated after `as_of` is simply not counted yet.
+  dated after today is simply not counted yet.
 - A database snapshot shared by the three blocks (each response is
   consistent on its own), and caching.
