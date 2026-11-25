@@ -11,7 +11,7 @@ export const IsCategoryColor = () =>
     ValidateBy({
       name: 'isCategoryColor',
       validator: {
-        validate: (value: unknown) => normalizeCategoryColor(value) === value,
+        validate: (value: unknown) => typeof value === 'string' && normalizeCategoryColor(value) === value,
         defaultMessage: (args) => `${args?.property} must be one of ${CATEGORY_COLOR_RULE}`,
       },
     }),

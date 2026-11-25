@@ -38,9 +38,12 @@ describe('category color', () => {
     expect((await check(UpdateCategoryDto, { color })).errors).toEqual({ color: [COLOR_ERROR] });
   });
 
-  it('requires it on create, and refuses null on update', async () => {
+  it('requires it on create, and refuses null on create and update', async () => {
     expect((await check(CreateCategoryDto, create)).errors).toEqual({ color: [COLOR_ERROR] });
-    expect((await check(UpdateCategoryDto, { color: null })).errors.color).toContain('color must not be null');
+    expect((await check(CreateCategoryDto, { ...create, color: null })).errors).toEqual({ color: [COLOR_ERROR] });
+    expect((await check(UpdateCategoryDto, { color: null })).errors.color).toEqual(
+      expect.arrayContaining(['color must not be null', COLOR_ERROR]),
+    );
     expect((await check(UpdateCategoryDto, {})).errors).toEqual({});
   });
 });

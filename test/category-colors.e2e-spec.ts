@@ -141,4 +141,20 @@ describe('Category colors (e2e)', () => {
       expect(Number(after[0].count)).toBe(Number(before[0].count));
     },
   );
+
+  it('refuses a null color on create, writing nothing', async () => {
+    const before = await testApp.dataSource.query('SELECT COUNT(*) AS count FROM categories WHERE space_id = ?', [
+      member.spaceId,
+    ]);
+    const created = await createCategory('Null color', null).expect(400);
+    const after = await testApp.dataSource.query('SELECT COUNT(*) AS count FROM categories WHERE space_id = ?', [
+      member.spaceId,
+    ]);
+
+    expect(created.body).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: [{ field: 'color', error: COLOR_ERROR }],
+    });
+    expect(Number(after[0].count)).toBe(Number(before[0].count));
+  });
 });
