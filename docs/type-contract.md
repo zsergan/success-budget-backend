@@ -112,6 +112,10 @@ preset in another case (`Slate`), whitespace. The type is `CategoryColor`
 preset or adjusts it: the client adapts contrast for its theme. Every
 category-bearing response (categories, transaction `category`, statistics
 `CategoryItem`, limit `categories`) returns the stored value.
+`AllowCustomCategoryColors1791600000000` turned the closed enum into this
+string, keeping every stored preset; reverting it refuses while a category
+has a custom color. Tests: `src/shared/category-color.spec.ts`,
+`test/category-colors.e2e-spec.ts`, `test/category-color-migration.e2e-spec.ts`.
 
 ## Nullable columns and relations
 

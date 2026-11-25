@@ -3,7 +3,7 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
-  "testPathIgnorePatterns": ["/node_modules/", "(transaction-ownership|wallet-removal|transaction-dates)-migration\\.e2e-spec\\.ts$"],
+  "testPathIgnorePatterns": ["/node_modules/", "(transaction-ownership|wallet-removal|transaction-dates|category-color)-migration\\.e2e-spec\\.ts$"],
   "testTimeout": 30000,
   "moduleNameMapper": {
     "^@entities/(.*)$": "<rootDir>/../src/entities/$1",

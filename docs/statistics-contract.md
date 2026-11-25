@@ -350,7 +350,7 @@ interface BreakdownItem {
   id: number | null; // the category id; null for Other
   name: string | null; // null for Other: the client names it
   icon: CategoryIcon | null; // categories only
-  color: AppColor | null; // Category.color; null for Other
+  color: CategoryColor | null; // Category.color, a preset or '#RRGGBB' as stored; null for Other
   amount: string;
   percent: number; // of total_amount, one decimal
   is_archived: boolean; // archived category
@@ -392,8 +392,9 @@ interface StatisticsBreakdown {
 - The center of the donut shows `source_count` ("10 categories"), not the
   number of segments. Expanding Other changes neither the donut, the total
   nor the count: its `children` are already in the response.
-- Category name, icon and color are the current values. Other has no color
-  token; the client uses its own, distinguishable neutral shade.
+- Category name, icon and color are the current values; a custom color is
+  returned as stored (`#3A7BD5`), never mapped to a preset. Other has no
+  color token; the client uses its own, distinguishable neutral shade.
 - Other is not a category: it has no id and opens no history. A real
   category named "Other" is `kind: 'category'` with an id; the two are
   told apart by `kind`, never by name.

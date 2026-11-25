@@ -205,7 +205,10 @@ describe('Statistics OpenAPI', () => {
     expect(schemas.StatisticsTimeState.enum).toEqual(['past', 'current', 'future']);
     expect(schemas.StatisticsTrendGranularity.enum).toEqual(['day', 'week', 'month']);
     expect(refName(schemas.CategoryItem.properties!.icon)).toBe('CategoryIcon');
-    expect(refName(schemas.CategoryItem.properties!.color)).toBe('AppColor');
+    expect(schemas.CategoryItem.properties!.color).toMatchObject({
+      type: 'string',
+      pattern: '^(slate|amber|evergreen|indigo|clay|plum|#[0-9A-F]{6})$',
+    });
 
     expect(
       ['CategoryItem', 'CategoryOtherItem', 'AssignmentOtherItem'].map((name) => schemas[name].properties!.kind.enum),

@@ -1,4 +1,4 @@
-import { AppColor } from '@shared/enums';
+import type { CategoryColor } from '@shared/category-color';
 import { formatMoney, roundPercentToTenth } from '@shared/utils';
 import type { StatisticsCategoryGroup } from '@modules/transaction-queries/transaction-queries.service';
 
@@ -15,7 +15,7 @@ interface BreakdownItemBase<K extends BreakdownItemKind> {
   // null for the service groups: the client names them
   name: string | null;
   icon: string | null;
-  color: AppColor | null;
+  color: CategoryColor | null;
   amount: string;
   percent: number;
   is_archived: boolean;

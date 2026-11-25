@@ -9,7 +9,8 @@ import {
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
-import { AppColor, TransactionType } from '@shared/enums';
+import { TransactionType } from '@shared/enums';
+import type { CategoryColor } from '@shared/category-color';
 import { Space } from './space.entity';
 
 @Entity('categories')
@@ -33,8 +34,8 @@ export class Category {
   @Column({ type: 'varchar', length: 255 })
   icon!: string;
 
-  @Column({ type: 'enum', enum: AppColor })
-  color!: AppColor;
+  @Column({ type: 'varchar', length: 16 })
+  color!: CategoryColor;
 
   @Column({ type: 'tinyint' })
   is_active!: number;

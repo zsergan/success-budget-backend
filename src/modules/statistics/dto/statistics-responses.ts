@@ -1,14 +1,8 @@
 import { ApiExtraModels, ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
-import {
-  AppColor,
-  AssignmentKind,
-  CategoryIcon,
-  PersonStatus,
-  StatisticsPeriodType,
-  TransactionType,
-} from '@shared/enums';
+import { AssignmentKind, CategoryIcon, PersonStatus, StatisticsPeriodType, TransactionType } from '@shared/enums';
 import { nullableObject } from '@shared/swagger';
+import { CATEGORY_COLOR_PATTERN, type CategoryColor } from '@shared/category-color';
 import type {
   CategoryBreakdown as CategoryBreakdownShape,
   CategoryItem as CategoryItemShape,
@@ -233,8 +227,13 @@ export class CategoryItem extends BreakdownItemFields implements CategoryItemSha
   @ApiProperty({ enum: CategoryIcon, enumName: 'CategoryIcon' })
   icon!: string;
 
-  @ApiProperty({ enum: AppColor, enumName: 'AppColor' })
-  color!: AppColor;
+  @ApiProperty({
+    type: String,
+    pattern: CATEGORY_COLOR_PATTERN,
+    example: 'clay',
+    description: 'Category.color: a preset token or a custom #RRGGBB, as stored.',
+  })
+  color!: CategoryColor;
 
   @ApiProperty()
   is_archived!: boolean;

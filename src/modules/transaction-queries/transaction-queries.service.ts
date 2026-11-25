@@ -4,7 +4,8 @@ import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { SpaceMember } from '@entities/space-member.entity';
-import { AppColor, AssignmentKind, TransactionKind, TransactionType } from '@shared/enums';
+import { AssignmentKind, TransactionKind, TransactionType } from '@shared/enums';
+import type { CategoryColor } from '@shared/category-color';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
 import { type AssignmentFilter, DELETED_MEMBER_KEY } from './assignment-filter';
@@ -84,7 +85,7 @@ export interface StatisticsCategoryGroup {
   id: number;
   name: string;
   icon: string;
-  color: AppColor;
+  color: CategoryColor;
   isArchived: boolean;
   // in cents
   amount: bigint;
@@ -357,7 +358,7 @@ export class TransactionQueriesService {
         id: number | string;
         name: string;
         icon: string;
-        color: AppColor;
+        color: CategoryColor;
         is_active: number | string;
         amount: string;
         count: number | string;

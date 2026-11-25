@@ -1,6 +1,7 @@
 import { ApiProperty, type ApiPropertyOptions } from '@nestjs/swagger';
 
-import { AppColor, CategoryIcon, TransactionType } from '@shared/enums';
+import { CategoryIcon, TransactionType } from '@shared/enums';
+import { CATEGORY_COLOR_PATTERN, type CategoryColor } from '@shared/category-color';
 
 // Every property is decorated explicitly and the file has no .dto.ts suffix,
 // so the CLI plugin adds nothing and the schema is the same in tests.
@@ -21,8 +22,13 @@ export class TransactionCategory {
   @ApiProperty({ enum: CategoryIcon, enumName: 'CategoryIcon' })
   icon!: string;
 
-  @ApiProperty({ enum: AppColor, enumName: 'AppColor' })
-  color!: AppColor;
+  @ApiProperty({
+    type: String,
+    pattern: CATEGORY_COLOR_PATTERN,
+    example: 'clay',
+    description: 'A preset token or a custom #RRGGBB, upper-case, as stored.',
+  })
+  color!: CategoryColor;
 
   @ApiProperty({ type: 'integer', enum: [0, 1], description: 'Kept for compatibility; prefer is_archived.' })
   is_active!: number;

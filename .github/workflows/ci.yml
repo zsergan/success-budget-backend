@@ -295,7 +295,7 @@ jobs:
           category=$(curl -sf "http://127.0.0.1:${PORT}/api/v1/spaces/${space}/categories" -H "$auth" | jq '.expenses[0].id')
           id=$(curl -sf -X POST "http://127.0.0.1:${PORT}/api/v2/spaces/${space}/transactions" \
             -H "$auth" -H 'Content-Type: application/json' \
-            -d "{\"category_id\":${category},\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"assignment\":{\"kind\":\"space\"}}" \
+            -d "{\"category_id\":${category},\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"date\":\"2026-01-01\",\"time_zone\":\"UTC\",\"assignment\":{\"kind\":\"space\"}}" \
             | jq -r '.transaction.id')
           curl -sf "http://127.0.0.1:${PORT}/api/v2/spaces/${space}/transactions/${id}" -H "$auth" \
             | jq -e '.amount == "1.00" and .assignment.kind == "space" and (has("wallet") | not)' > /dev/null
