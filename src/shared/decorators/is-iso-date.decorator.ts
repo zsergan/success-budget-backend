@@ -2,15 +2,6 @@ import { ValidateBy, buildMessage } from 'class-validator';
 
 import { parseIsoDate } from '@shared/utils';
 
-export const IsIsoDate = () =>
-  ValidateBy({
-    name: 'isIsoDate',
-    validator: {
-      validate: (value: unknown) => typeof value === 'string' && parseIsoDate(value) !== null,
-      defaultMessage: buildMessage((eachPrefix) => `${eachPrefix}$property must be a valid ISO 8601 date`),
-    },
-  });
-
 const EXPLICIT_OFFSET = /[T ].*(Z|[+-]\d{2}:?\d{2})$/;
 
 // An exact instant: the zone must be explicit, since a local value would be
