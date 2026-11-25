@@ -1,7 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
-
-import { encodeFeedCursor } from '@modules/transactions/feed-cursor';
 
 import {
   type Member,
@@ -10,6 +8,7 @@ import {
   createVerifiedMember,
   deleteUsers,
   insertLegacyTransaction,
+  today,
 } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
@@ -31,8 +30,9 @@ interface BreakdownItem {
   children?: BreakdownItem[];
 }
 
-// October 2026 in Berlin: DST ends on the 25th, so that day lasts 25 hours.
-const OCTOBER = { from: '2026-09-30T22:00:00.000Z', to: '2026-10-31T22:59:59.999Z', time_zone: 'Europe/Berlin' };
+// October 2026: DST ends in Berlin on the 25th, a day of 25 hours there,
+// which changes nothing about the records dated that day.
+const OCTOBER = { from_date: '2026-10-01', to_date: '2026-10-31' };
 const MONTH = { period: 'month', anchor_date: '2026-10-15', time_zone: 'Europe/Berlin', as_of: '2026-11-10T00:00:00Z' };
 
 // Reads of the v2 API over space-owned records (docs/transactions-v2-contract.md).
@@ -70,14 +70,22 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
     by: Member,
     assignment: object,
     amount: string,
-    timestamp: string,
+    date: string,
     category = groceries,
     type = 'expense',
     description: string | null = null,
   ) {
     const created = await api(by)
       .post(v2('/transactions'))
-      .send({ category_id: category, transaction_type: type, amount, timestamp, assignment, description })
+      .send({
+        category_id: category,
+        transaction_type: type,
+        amount,
+        date,
+        time_zone: 'Europe/Berlin',
+        assignment,
+        description,
+      })
       .expect(201);
     ids[key] = created.body.transaction.id;
   }
@@ -140,7 +148,7 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
     archived = named(categories.body.expenses, 'Travel');
     salary = named(categories.body.incomes, 'Salary');
 
-    // a starting balance a wallet left, at the very start of October in Berlin
+    // a starting balance a wallet left, on the first of October
     const [system] = await testApp.dataSource.query('SELECT id FROM categories WHERE space_id = ? AND is_system = 1', [
       spaceId,
     ]);
@@ -151,24 +159,24 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
       categoryId: system.id,
       type: 'income',
       amount: '500.00',
-      timestamp: new Date('2026-09-30T22:00:00.000Z'),
+      date: '2026-10-01',
     });
 
-    await add('ownerGroceries', owner, forUser(owner), '1450.00', '2026-10-03T10:00:00.000Z');
-    await add('rent', lena, { kind: 'space' }, '1100.00', '2026-10-01T08:00:00.000Z', eatingOut);
-    await add('lenaLunch', owner, forUser(lena), '450.00', '2026-10-25T00:30:00.000Z', eatingOut, 'expense', 'Lunch');
-    await add('cafe', mark, { kind: 'unassigned' }, '150.00', '2026-10-25T23:30:00.000Z', groceries, 'expense', 'Café');
-    await add('markTrip', mark, forUser(mark), '40.00', '2026-10-31T22:59:59.999Z', archived);
-    await add('goneGift', owner, forUser(gone), '20.00', '2026-10-10T12:00:00.000Z');
-    await add('salary', lena, { kind: 'space' }, '3000.00', '2026-10-02T07:00:00.000Z', salary, 'income');
-    await add('november', owner, forUser(owner), '9.00', '2026-10-31T23:00:00.000Z');
+    await add('ownerGroceries', owner, forUser(owner), '1450.00', '2026-10-03');
+    await add('rent', lena, { kind: 'space' }, '1100.00', '2026-10-01', eatingOut);
+    await add('lenaLunch', owner, forUser(lena), '450.00', '2026-10-25', eatingOut, 'expense', 'Lunch');
+    await add('cafe', mark, { kind: 'unassigned' }, '150.00', '2026-10-26', groceries, 'expense', 'Café');
+    await add('markTrip', mark, forUser(mark), '40.00', '2026-10-31', archived);
+    await add('goneGift', owner, forUser(gone), '20.00', '2026-10-10');
+    await add('salary', lena, { kind: 'space' }, '3000.00', '2026-10-02', salary, 'income');
+    await add('november', owner, forUser(owner), '9.00', '2026-11-01');
     // imported from wallets: the whole space, the earliest member as the author
     await insertLegacyTransaction(testApp.dataSource, {
       spaceId,
       categoryId: groceries,
       type: 'expense',
       amount: '30.00',
-      timestamp: new Date('2026-10-15T12:00:00.000Z'),
+      date: '2026-10-15',
       description: 'Imported',
     });
     await testApp.dataSource.query(`UPDATE categories SET is_active = 0, archived_at = NOW() WHERE id = ?`, [archived]);
@@ -253,20 +261,19 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
       expect(summary).toEqual({ count: 4, income: '3000.00', expense: '1130.00' });
     });
 
-    it('counts like the feed and nets each local day over the filtered records only', async () => {
+    it('counts like the feed and nets each date over the filtered records only', async () => {
       const { items, summary, days } = await feedAll({ assignment: 'unassigned', transaction_type: 'expense' }, 1);
       const count = await api(owner)
         .get(v2('/transactions/count'))
-        .query({ from: OCTOBER.from, to: OCTOBER.to, assignment: 'unassigned', transaction_type: 'expense' })
+        .query({ ...OCTOBER, assignment: 'unassigned', transaction_type: 'expense' })
         .expect(200);
 
       expect(count.body.count).toBe((summary as { count: number }).count);
       expect(items).toHaveLength(1);
-      // 23:30 UTC on the 25th is the 26th in Berlin after the DST change
       expect([...days.entries()]).toEqual([['2026-10-26', '-150.00']]);
     });
 
-    it('keeps the day of a 25-hour DST day whole', async () => {
+    it('lists a record dated on a DST day on that date', async () => {
       const { days } = await feedAll({ assignment: `member:${lena.userId}` });
 
       expect([...days.entries()]).toEqual([['2026-10-25', '-450.00']]);
@@ -283,36 +290,17 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
         .get(v2('/transactions/feed'))
         .query({ ...OCTOBER, assignment: 'unassigned', limit: 1, cursor })
         .expect(400);
-      // a cursor of the retired v1 feed for the same query: its digest had the wallet filter last
-      const v1Digest = createHash('sha256')
-        .update(
-          JSON.stringify([
-            spaceId,
-            Date.parse(OCTOBER.from),
-            Date.parse(OCTOBER.to),
-            OCTOBER.time_zone,
-            null,
-            null,
-            null,
-            null,
-            null,
-          ]),
-        )
-        .digest('base64url');
-      const v1Cursor = await api(owner)
+      // a cursor of a build before calendar dates: an instant and an id, format 1
+      const instantCursor = Buffer.from(
+        JSON.stringify({ v: 1, d: 'older', t: Date.parse('2026-10-25T00:30:00.000Z'), i: ids.lenaLunch, s: 'x' }),
+      ).toString('base64url');
+      const before = await api(owner)
         .get(v2('/transactions/feed'))
-        .query({
-          ...OCTOBER,
-          limit: 1,
-          cursor: encodeFeedCursor(
-            { direction: 'older', position: { timestamp: new Date('2026-10-25T00:30:00.000Z'), id: ids.lenaLunch } },
-            v1Digest,
-          ),
-        })
+        .query({ ...OCTOBER, limit: 1, cursor: instantCursor })
         .expect(400);
 
       expect(other.body.message).toEqual([{ field: 'cursor', error: 'cursor does not belong to this query' }]);
-      expect(v1Cursor.body.message).toEqual([{ field: 'cursor', error: 'cursor does not belong to this query' }]);
+      expect(before.body.message).toEqual([{ field: 'cursor', error: 'cursor is malformed' }]);
     });
 
     it('refuses a user never assigned in the space, and a malformed value', async () => {
@@ -322,7 +310,7 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
         .expect(403);
       const malformed = await api(owner)
         .get(v2('/transactions/count'))
-        .query({ from: OCTOBER.from, to: OCTOBER.to, assignment: 'wallet:3' })
+        .query({ ...OCTOBER, assignment: 'wallet:3' })
         .expect(400);
 
       expect(outsider.body.code).toBe('FORBIDDEN_MEMBER');
@@ -357,14 +345,14 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
   });
 
   describe('periods', () => {
-    it('reads an empty month and a month with only a starting balance', async () => {
+    it('reads an empty month and the first day of a month in full', async () => {
       const empty = await api(owner)
         .get(v2('/transactions/feed'))
-        .query({ from: '2026-07-31T22:00:00.000Z', to: '2026-08-31T21:59:59.999Z', time_zone: 'Europe/Berlin' })
+        .query({ from_date: '2026-08-01', to_date: '2026-08-31' })
         .expect(200);
-      const firstMillisecond = await api(owner)
+      const firstDay = await api(owner)
         .get(v2('/transactions/feed'))
-        .query({ from: '2026-09-30T22:00:00.000Z', to: '2026-09-30T22:00:00.000Z', time_zone: 'Europe/Berlin' })
+        .query({ from_date: '2026-10-01', to_date: '2026-10-01' })
         .expect(200);
 
       expect(empty.body).toEqual({
@@ -373,11 +361,11 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
         summary: { count: 0, income: '0.00', expense: '0.00' },
         day_totals: [],
       });
-      expect(firstMillisecond.body.summary).toEqual({ count: 1, income: '0.00', expense: '0.00' });
-      expect(firstMillisecond.body.day_totals).toEqual([{ date: '2026-10-01', net: '0.00' }]);
+      expect(firstDay.body.summary).toEqual({ count: 2, income: '0.00', expense: '1100.00' });
+      expect(firstDay.body.day_totals).toEqual([{ date: '2026-10-01', net: '-1100.00' }]);
     });
 
-    it('keeps the last millisecond of the month in and the next one out', async () => {
+    it('keeps the last day of the month in and the next one out', async () => {
       const { items } = await feedAll({}, 100);
 
       expect(items.map((item) => item.id)).toContain(ids.markTrip);
@@ -450,9 +438,8 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
         const feed = await api(owner)
           .get(v2('/transactions/feed'))
           .query({
-            from: body.period.from,
-            to: body.period.actual_to,
-            time_zone: body.period.time_zone,
+            from_date: body.period.start_date,
+            to_date: body.period.actual_end_date,
             transaction_type: body.transaction_type,
             kind: 'regular',
             assignment: item.key,
@@ -491,7 +478,7 @@ describe('Transactions v2 reads and statistics (e2e)', () => {
   describe('limits', () => {
     it('count every expense of the space, whoever it is assigned to', async () => {
       await api(owner).post(`/api/v1/spaces/${spaceId}/limits`).send({ category_ids: [], amount: '5000' }).expect(201);
-      const now = new Date().toISOString();
+      const now = today();
       const { body: before } = await api(owner)
         .get(`/api/v1/spaces/${spaceId}/limits`)
         .query({ time_zone: 'UTC' })

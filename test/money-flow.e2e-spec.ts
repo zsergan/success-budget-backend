@@ -1,6 +1,6 @@
 import request from 'supertest';
 
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers, today } from './support/app';
 
 // Request -> MySQL -> read back -> summaries, with exact money values
 // (docs/type-contract.md, "Money").
@@ -9,9 +9,9 @@ describe('Money flow (e2e)', () => {
   let member: Member;
   const userIds: number[] = [];
 
-  const now = () => new Date().toISOString();
-  const LONG_AGO = '2020-01-10T12:00:00.000Z';
-  const ALL = { from: '2000-01-01T00:00:00.000Z', to: '2037-12-31T23:59:59.999Z', time_zone: 'UTC' };
+  const now = () => today();
+  const LONG_AGO = '2020-01-10';
+  const ALL = { from_date: '2000-01-01', to_date: '2099-12-31' };
 
   beforeAll(async () => {
     testApp = await createTestApp();
@@ -48,14 +48,15 @@ describe('Money flow (e2e)', () => {
     const categories = await api().get(`${base}/categories`).expect(200);
     const [firstExpense, secondExpense] = categories.body.expenses.map((category: { id: number }) => category.id);
 
-    const create = (transaction_type: 'income' | 'expense', amount: string, timestamp = now(), category_id?: number) =>
+    const create = (transaction_type: 'income' | 'expense', amount: string, date = now(), category_id?: number) =>
       api()
         .post(transactions)
         .send({
           category_id: category_id ?? (transaction_type === 'income' ? categories.body.incomes[0].id : firstExpense),
           transaction_type,
           amount,
-          timestamp,
+          date,
+          time_zone: 'UTC',
           assignment: { kind: 'space' },
         })
         .expect(201);
@@ -78,7 +79,7 @@ describe('Money flow (e2e)', () => {
       api().post(`${base}/limits`).send({ amount, category_ids }).expect(201);
     const storedAmounts = async (): Promise<string[]> =>
       (
-        await testApp.dataSource.query('SELECT amount FROM transactions WHERE space_id = ? ORDER BY timestamp, id', [
+        await testApp.dataSource.query('SELECT amount FROM transactions WHERE space_id = ? ORDER BY date, order_key', [
           id,
         ])
       ).map((row: { amount: string }) => row.amount);
@@ -97,8 +98,8 @@ describe('Money flow (e2e)', () => {
       [null, 'expense', '33.33'],
       [null, 'income', '0.01'],
     ];
-    for (const [timestamp, type, amount] of steps) {
-      const created = await space.create(type, amount, timestamp ?? now());
+    for (const [date, type, amount] of steps) {
+      const created = await space.create(type, amount, date ?? now());
 
       expect(created.body.transaction.amount).toBe(amount);
     }

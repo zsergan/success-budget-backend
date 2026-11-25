@@ -106,7 +106,7 @@ describe('Statistics OpenAPI', () => {
   });
 
   it('marks exactly the nullable fields', () => {
-    expect(nullableFields('StatisticsPeriod')).toEqual(['actual_to']);
+    expect(nullableFields('StatisticsPeriod')).toEqual(['actual_end_date']);
     expect(nullableFields('Change')).toEqual(['percent']);
     expect(nullableFields('StatisticsSummary')).toEqual(['previous', 'change', 'last_transaction_date']);
     expect(nullableFields('PreviousPeriod')).toEqual([]);

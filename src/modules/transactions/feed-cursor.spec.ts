@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 
 import { FEED_CURSOR_MAX_LENGTH, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
@@ -8,15 +7,12 @@ import { TransactionKind, TransactionType } from '@shared/enums';
 
 const selection: TransactionSelection = {
   spaceId: 3,
-  from: new Date('2026-10-01T00:00:00.000Z'),
-  to: new Date('2026-10-31T23:59:59.999Z'),
+  fromDate: '2026-10-01',
+  toDate: '2026-10-31',
   filters: { search: 'coffee', kind: TransactionKind.REGULAR },
 };
-const digest = selectionDigest(selection, 'Europe/Moscow');
-const cursor = {
-  direction: 'older' as const,
-  position: { timestamp: new Date('2026-10-03T08:00:00.123Z'), id: '9b1d6c2e-1f0a-4c3b-8d2e-5a6b7c8d9e0f' },
-};
+const digest = selectionDigest(selection);
+const cursor = { direction: 'older' as const, position: { date: '2026-10-03', orderKey: '4210' } };
 
 const SPACE = { kind: AssignmentKind.SPACE } as const;
 
@@ -32,7 +28,7 @@ const errorOf = (run: () => unknown) => {
 };
 
 describe('feed cursor', () => {
-  it('round-trips the direction and the position to the millisecond', () => {
+  it('round-trips the direction and the position', () => {
     const encoded = encodeFeedCursor(cursor, digest);
 
     expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/);
@@ -40,26 +36,28 @@ describe('feed cursor', () => {
     expect(decodeFeedCursor(encoded, digest)).toEqual(cursor);
   });
 
-  it.each<[string, Partial<TransactionSelection>, string]>([
-    ['space', { spaceId: 4 }, 'Europe/Moscow'],
-    ['from', { from: new Date('2026-10-01T00:00:00.001Z') }, 'Europe/Moscow'],
-    ['to', { to: new Date('2026-10-31T23:59:59.998Z') }, 'Europe/Moscow'],
-    ['search', { filters: { search: 'tea', kind: TransactionKind.REGULAR } }, 'Europe/Moscow'],
-    ['kind', { filters: { search: 'coffee' } }, 'Europe/Moscow'],
+  it('keeps every digit of an ordering key beyond the safe integers', () => {
+    const position = { date: '9999-12-31', orderKey: '18446744073709551615' };
+    const encoded = encodeFeedCursor({ ...cursor, position }, digest);
+
+    expect(encoded.length).toBeLessThanOrEqual(FEED_CURSOR_MAX_LENGTH);
+    expect(decodeFeedCursor(encoded, digest).position).toEqual(position);
+  });
+
+  it.each<[string, Partial<TransactionSelection>]>([
+    ['space', { spaceId: 4 }],
+    ['from date', { fromDate: '2026-10-02' }],
+    ['to date', { toDate: '2026-10-30' }],
+    ['search', { filters: { search: 'tea', kind: TransactionKind.REGULAR } }],
+    ['kind', { filters: { search: 'coffee' } }],
     [
       'type',
       { filters: { search: 'coffee', kind: TransactionKind.REGULAR, transactionType: TransactionType.EXPENSE } },
-      'Europe/Moscow',
     ],
-    ['category', { filters: { search: 'coffee', kind: TransactionKind.REGULAR, categoryId: 5 } }, 'Europe/Moscow'],
-    [
-      'assignment',
-      { filters: { search: 'coffee', kind: TransactionKind.REGULAR, assignment: SPACE } },
-      'Europe/Moscow',
-    ],
-    ['time zone', {}, 'Europe/Berlin'],
-  ])('refuses a cursor of another %s', (_, change, timeZone) => {
-    const other = selectionDigest({ ...selection, ...change }, timeZone);
+    ['category', { filters: { search: 'coffee', kind: TransactionKind.REGULAR, categoryId: 5 } }],
+    ['assignment', { filters: { search: 'coffee', kind: TransactionKind.REGULAR, assignment: SPACE } }],
+  ])('refuses a cursor of another %s', (_, change) => {
+    const other = selectionDigest({ ...selection, ...change });
 
     expect(errorOf(() => decodeFeedCursor(encodeFeedCursor(cursor, digest), other))).toEqual([
       { field: 'cursor', error: 'cursor does not belong to this query' },
@@ -67,67 +65,58 @@ describe('feed cursor', () => {
   });
 
   it('binds the search as it is matched, trimmed', () => {
-    expect(
-      selectionDigest(
-        { ...selection, filters: { search: '  coffee ', kind: TransactionKind.REGULAR } },
-        'Europe/Moscow',
-      ),
-    ).toBe(digest);
-    expect(selectionDigest({ ...selection, filters: { search: '   ' } }, 'Europe/Moscow')).toBe(
-      selectionDigest({ ...selection, filters: {} }, 'Europe/Moscow'),
+    expect(selectionDigest({ ...selection, filters: { search: '  coffee ', kind: TransactionKind.REGULAR } })).toBe(
+      digest,
+    );
+    expect(selectionDigest({ ...selection, filters: { search: '   ' } })).toBe(
+      selectionDigest({ ...selection, filters: {} }),
     );
   });
 
-  const valid = { v: 1, d: 'older', t: cursor.position.timestamp.getTime(), i: cursor.position.id, s: digest };
+  it('binds a cursor to its assignment filter', () => {
+    const lena = { ...selection, filters: { assignment: { kind: AssignmentKind.MEMBER, userId: 31 } as const } };
+    const other = { ...selection, filters: { assignment: { kind: AssignmentKind.MEMBER, userId: 32 } as const } };
 
-  it.each(['1970-01-01T00:00:01.000Z', '2038-01-19T03:14:07.001Z', '2038-01-19T03:14:07.999Z'])(
-    'accepts a position at %s, a record a TIMESTAMP(3) column can hold',
-    (timestamp) => {
-      const position = { timestamp: new Date(timestamp), id: cursor.position.id };
+    expect(selectionDigest(lena)).not.toBe(selectionDigest(other));
+    expect(selectionDigest(lena)).not.toBe(selectionDigest({ ...selection, filters: { assignment: SPACE } }));
+    expect(selectionDigest(lena)).not.toBe(selectionDigest({ ...selection, filters: {} }));
+  });
 
-      expect(decodeFeedCursor(encodeFeedCursor({ ...cursor, position }, digest), digest).position).toEqual(position);
-    },
-  );
+  const valid = { v: 2, d: 'older', t: cursor.position.date, k: cursor.position.orderKey, s: digest };
+
+  it('refuses a cursor issued before the calendar-date release, whatever it holds', () => {
+    const before = rawCursor({
+      v: 1,
+      d: 'older',
+      t: Date.parse('2026-10-03T08:00:00Z'),
+      i: '9b1d6c2e-1f0a-4c3b-8d2e-5a6b7c8d9e0f',
+      s: digest,
+    });
+
+    expect(errorOf(() => decodeFeedCursor(before, digest))).toEqual([
+      { field: 'cursor', error: 'cursor is malformed' },
+    ]);
+  });
 
   it.each<[string, string]>([
     ['empty', ''],
     ['not base64url', 'abc+/='],
     ['not JSON', Buffer.from('nope').toString('base64url')],
-    ['an array', rawCursor([1, 'older'])],
-    ['another version', rawCursor({ ...valid, v: 2 })],
+    ['an array', rawCursor([2, 'older'])],
+    ['another version', rawCursor({ ...valid, v: 3 })],
     ['an unknown direction', rawCursor({ ...valid, d: 'sideways' })],
-    ['a fractional time', rawCursor({ ...valid, t: 1.5 })],
-    ['a time before the stored range', rawCursor({ ...valid, t: Date.parse('1970-01-01T00:00:00.999Z') })],
-    ['a time after the stored range', rawCursor({ ...valid, t: Date.parse('2038-01-19T03:14:08.000Z') })],
-    ['a time as text', rawCursor({ ...valid, t: String(valid.t) })],
-    ['an id that is not a UUID', rawCursor({ ...valid, i: '1 OR 1=1' })],
-    ['a missing digest', rawCursor({ v: 1, d: 'older', t: valid.t, i: valid.i })],
+    ['a date with a time', rawCursor({ ...valid, t: '2026-10-03T00:00:00Z' })],
+    ['an invalid day', rawCursor({ ...valid, t: '2026-02-29' })],
+    ['a date as a number', rawCursor({ ...valid, t: Date.parse('2026-10-03') })],
+    ['an ordering key of zero', rawCursor({ ...valid, k: '0' })],
+    ['an ordering key with a sign', rawCursor({ ...valid, k: '-5' })],
+    ['an ordering key as a number', rawCursor({ ...valid, k: 4210 })],
+    ['an ordering key beyond BIGINT UNSIGNED', rawCursor({ ...valid, k: '18446744073709551616' })],
+    ['an ordering key that is SQL', rawCursor({ ...valid, k: '1 OR 1=1' })],
+    ['a missing digest', rawCursor({ v: 2, d: 'older', t: valid.t, k: valid.k })],
     ['an extra key', rawCursor({ ...valid, x: 1 })],
     ['too long', 'A'.repeat(FEED_CURSOR_MAX_LENGTH + 1)],
   ])('refuses a cursor that is %s', (_, value) => {
     expect(errorOf(() => decodeFeedCursor(value, digest))).toEqual([{ field: 'cursor', error: 'cursor is malformed' }]);
-  });
-});
-
-describe('selectionDigest of earlier releases', () => {
-  const selection = { spaceId: 1, from: new Date('2026-10-01'), to: new Date('2026-10-31') };
-  const hash = (parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts)).digest('base64url');
-  const common = [1, selection.from.getTime(), selection.to.getTime(), 'UTC', null, null, null, null, null];
-
-  it('keeps the digest of a cursor issued by the v2 feed before v1 was removed', () => {
-    expect(selectionDigest(selection, 'UTC')).toBe(hash([...common, 'v2', null]));
-  });
-
-  it('refuses a cursor of the retired v1 feed', () => {
-    expect(selectionDigest(selection, 'UTC')).not.toBe(hash(common));
-  });
-
-  it('binds a cursor to its assignment filter', () => {
-    const lena = { ...selection, filters: { assignment: { kind: AssignmentKind.MEMBER, userId: 31 } as const } };
-    const space = { ...selection, filters: { assignment: SPACE } };
-
-    expect(selectionDigest(lena, 'UTC')).toBe(hash([...common, 'v2', 'member:31']));
-    expect(selectionDigest(lena, 'UTC')).not.toBe(selectionDigest(space, 'UTC'));
-    expect(selectionDigest(lena, 'UTC')).not.toBe(selectionDigest(selection, 'UTC'));
   });
 });

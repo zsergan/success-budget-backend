@@ -46,7 +46,7 @@ interface TransactionRow {
   category_id: number;
   transaction_type: Type;
   amount: string;
-  timestamp: Date;
+  date: string;
   description: string | null;
   version: number;
 }
@@ -149,7 +149,7 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
       categoryId,
       type,
       amount,
-      timestamp: new Date(Date.UTC(2026, 8, day, 9, 30, 0, 123)),
+      date: `2026-09-${String(day).padStart(2, '0')}`,
       description: `note ${day}`,
       version: 3,
     });
@@ -262,7 +262,7 @@ describe('ReplaceCategoryCatalog migration (e2e)', () => {
 
   const transactionsOf = (spaceId: number) =>
     query<TransactionRow>(
-      `SELECT t.id, t.space_id, t.category_id, t.transaction_type, t.amount, t.timestamp, t.description, t.version
+      `SELECT t.id, t.space_id, t.category_id, t.transaction_type, t.amount, t.date, t.description, t.version
        FROM transactions t WHERE t.space_id = ? ORDER BY t.id`,
       [spaceId],
     );

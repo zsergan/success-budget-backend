@@ -28,11 +28,12 @@ const NOISE = option('noise', 120_000);
 const RUNS = option('runs', 7);
 const KEEP = args.includes('--keep');
 
+const DAY_MS = 86_400_000;
 const HISTORY_FROM = Date.UTC(2023, 0, 1);
-const HISTORY_TO = Date.UTC(2026, 8, 30, 23, 59, 59);
-const BUSY_DAY = Date.UTC(2026, 5, 15, 9);
+const HISTORY_DAYS = (Date.UTC(2026, 8, 30) - HISTORY_FROM) / DAY_MS + 1;
+const BUSY_DAY = '2026-06-15';
 const BUSY_DAY_ROWS = 5_000;
-const TIE_INSTANT = new Date(Date.UTC(2026, 4, 1, 12));
+const TIE_DAY = '2026-05-01';
 const TIE_ROWS = 2_000;
 const WORDS = [
   'coffee',
@@ -95,7 +96,7 @@ async function createSpace(app: Awaited<ReturnType<typeof NestFactory.createAppl
 
 async function fill(dataSource: DataSource, fixture: Fixture, count: number, extras: boolean) {
   const rows: unknown[][] = [];
-  const row = (timestamp: Date) => {
+  const row = (date: string) => {
     const income = random() < 0.1;
     const assignment = random();
 
@@ -106,7 +107,7 @@ async function fill(dataSource: DataSource, fixture: Fixture, count: number, ext
       pick(income ? fixture.incomeIds : fixture.expenseIds),
       income ? 'income' : 'expense',
       (random() * (income ? 3000 : 120)).toFixed(2),
-      timestamp,
+      date,
       random() < 0.15 ? null : `${pick(WORDS)} ${pick(WORDS)} #${Math.floor(random() * 1000)}`,
     ]);
   };
@@ -114,16 +115,16 @@ async function fill(dataSource: DataSource, fixture: Fixture, count: number, ext
   const regular = extras ? count - BUSY_DAY_ROWS - TIE_ROWS : count;
 
   for (let i = 0; i < regular; i++) {
-    row(new Date(HISTORY_FROM + Math.floor(random() * (HISTORY_TO - HISTORY_FROM))));
+    row(new Date(HISTORY_FROM + Math.floor(random() * HISTORY_DAYS) * DAY_MS).toISOString().slice(0, 10));
   }
 
   if (extras) {
     for (let i = 0; i < BUSY_DAY_ROWS; i++) {
-      row(new Date(BUSY_DAY + Math.floor(random() * 10 * 3_600_000)));
+      row(BUSY_DAY);
     }
 
     for (let i = 0; i < TIE_ROWS; i++) {
-      row(TIE_INSTANT);
+      row(TIE_DAY);
     }
   }
 
@@ -131,7 +132,7 @@ async function fill(dataSource: DataSource, fixture: Fixture, count: number, ext
     const batch = rows.slice(start, start + 2_000);
     await dataSource.query(
       'INSERT INTO transactions (id, space_id, author_user_id, author_source, assignment_kind, assigned_user_id, ' +
-        'category_id, transaction_type, amount, timestamp, description) VALUES ' +
+        'category_id, transaction_type, amount, date, description) VALUES ' +
         batch.map(() => "(UUID(), ?, ?, 'recorded', ?, ?, ?, ?, ?, ?, ?)").join(', '),
       batch.flatMap((values) => [fixture.spaceId, fixture.userId, ...values]),
     );
@@ -169,44 +170,36 @@ async function bootstrap() {
     logQuery(sql, parameters, runner);
   };
 
-  const base: TransactionFeedQueryV2Dto = {
-    from: '2026-09-01T00:00:00.000Z',
-    to: '2026-09-30T23:59:59.999Z',
-    time_zone: 'UTC',
-    limit: 50,
-  };
-  const all = { from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.999Z' };
-  const year = { from: '2025-01-01T00:00:00.000Z', to: '2025-12-31T23:59:59.999Z' };
-  const busyDay = { from: '2026-06-15T00:00:00.000Z', to: '2026-06-15T23:59:59.999Z' };
+  const base: TransactionFeedQueryV2Dto = { from_date: '2026-09-01', to_date: '2026-09-30', limit: 50 };
+  const all = { from_date: '1000-01-01', to_date: '9999-12-31' };
+  const year = { from_date: '2025-01-01', to_date: '2025-12-31' };
+  const busyDay = { from_date: BUSY_DAY, to_date: BUSY_DAY };
+  const inHistoryOrder =
+    'FROM transactions t WHERE t.space_id = ? AND t.date BETWEEN ? AND ? ' +
+    'ORDER BY t.date DESC, t.order_key DESC LIMIT 1 OFFSET ?';
 
   const cursorAt = async (query: TransactionFeedQueryV2Dto, offset: number) => {
-    const [row] = await dataSource.query(
-      'SELECT t.id, t.timestamp FROM transactions t ' +
-        'WHERE t.space_id = ? AND t.timestamp BETWEEN ? AND ? ORDER BY t.timestamp DESC, t.id DESC LIMIT 1 OFFSET ?',
-      [fixture.spaceId, new Date(query.from), new Date(query.to), offset],
+    const [row]: { date: string; order_key: string }[] = await dataSource.query(
+      `SELECT DATE_FORMAT(t.date, '%Y-%m-%d') AS date, t.order_key ${inHistoryOrder}`,
+      [fixture.spaceId, query.from_date, query.to_date, offset],
     );
     const selection = {
       spaceId: fixture.spaceId,
-      from: new Date(query.from),
-      to: new Date(query.to),
+      fromDate: query.from_date,
+      toDate: query.to_date,
       filters: { search: query.q },
     };
 
     return encodeFeedCursor(
-      { direction: 'older', position: { timestamp: row.timestamp, id: row.id } },
-      selectionDigest(selection, query.time_zone),
+      { direction: 'older', position: { date: row.date, orderKey: String(row.order_key) } },
+      selectionDigest(selection),
     );
   };
-  const idAt = async (from: string, to: string, offset: number) =>
-    (
-      await dataSource.query(
-        'SELECT t.id FROM transactions t ' +
-          'WHERE t.space_id = ? AND t.timestamp BETWEEN ? AND ? ORDER BY t.timestamp DESC, t.id DESC LIMIT 1 OFFSET ?',
-        [fixture.spaceId, new Date(from), new Date(to), offset],
-      )
-    )[0].id as string;
+  const idAt = async (fromDate: string, toDate: string, offset: number) =>
+    (await dataSource.query(`SELECT t.id ${inHistoryOrder}`, [fixture.spaceId, fromDate, toDate, offset]))[0]
+      .id as string;
 
-  const tieQuery = { ...base, from: '2026-05-01T00:00:00.000Z', to: '2026-05-31T23:59:59.999Z' };
+  const tieQuery = { ...base, from_date: '2026-05-01', to_date: '2026-05-31' };
   const feed = (query: TransactionFeedQueryV2Dto) => () => feedService.getFeed(fixture.userId, fixture.spaceId, query);
   const queryScenarios: [string, TransactionFeedQueryV2Dto][] = [
     ['month, first page', base],
@@ -221,18 +214,18 @@ async function bootstrap() {
     ['all history, search "coffee" (frequent)', { ...base, ...all, q: 'coffee' }],
     ['year, search with no match', { ...base, ...year, q: 'zzqx' }],
     ['all history, search with no match', { ...base, ...all, q: 'zzqx' }],
-    ['inside 2000 records of one instant', { ...tieQuery, cursor: await cursorAt(tieQuery, 1_000) }],
+    ['inside 2000 records of one date', { ...tieQuery, cursor: await cursorAt(tieQuery, 1_000) }],
     [
       'all history, around a 2023 record',
-      { ...base, ...all, around_id: await idAt(all.from, all.to, TRANSACTIONS - 500) },
+      { ...base, ...all, around_id: await idAt(all.from_date, all.to_date, TRANSACTIONS - 500) },
     ],
     [
       'month of a 2023 record, around it',
       {
         ...base,
-        from: '2023-02-01T00:00:00.000Z',
-        to: '2023-02-28T23:59:59.999Z',
-        around_id: await idAt('2023-02-01T00:00:00.000Z', '2023-02-28T23:59:59.999Z', 1_000),
+        from_date: '2023-02-01',
+        to_date: '2023-02-28',
+        around_id: await idAt('2023-02-01', '2023-02-28', 1_000),
       },
     ],
     ['one day with 5000 records, first page', { ...base, ...busyDay }],
@@ -241,7 +234,7 @@ async function bootstrap() {
       {
         ...base,
         ...busyDay,
-        around_id: await idAt(busyDay.from, busyDay.to, 2_500),
+        around_id: await idAt(busyDay.from_date, busyDay.to_date, 2_500),
       },
     ],
   ];
@@ -290,8 +283,8 @@ async function bootstrap() {
     await queries.getStatisticsByAssignment(
       fixture.spaceId,
       TransactionType.EXPENSE,
-      new Date(period.from),
-      new Date(period.to),
+      period.from_date,
+      period.to_date,
       dataSource.manager,
     );
     timings.push(`${name}|-|-|${(Number(process.hrtime.bigint() - started) / 1e6).toFixed(1)}`);
@@ -314,8 +307,8 @@ async function bootstrap() {
   ] as const) {
     const selection = {
       spaceId: fixture.spaceId,
-      from: new Date(query.from),
-      to: new Date(query.to),
+      fromDate: query.from_date,
+      toDate: query.to_date,
       filters: { search: 'q' in query ? query.q : undefined },
     };
     const summary: number[] = [];

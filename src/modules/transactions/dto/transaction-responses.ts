@@ -74,14 +74,14 @@ export class TransactionFeedSummary {
 }
 
 export class TransactionFeedDayTotal {
-  @ApiProperty({ format: 'date', example: '2026-10-03', description: 'Local day in time_zone.' })
+  @ApiProperty({ format: 'date', example: '2026-10-03', description: 'The stored date of records in items.' })
   date!: string;
 
   @ApiProperty({
     pattern: '^-?\\d+\\.\\d{2}$',
     example: '-31.50',
     description:
-      'Income minus expense of the whole day in the selection, other pages included; initial balances excluded.',
+      'Income minus expense of the whole date in the selection, other pages included; initial balances excluded.',
   })
   net!: string;
 }

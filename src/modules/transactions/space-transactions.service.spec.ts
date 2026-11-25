@@ -35,7 +35,7 @@ describe('SpaceTransactionsService', () => {
     | 'countSelection'
     | 'getFeedPage'
     | 'getFeedSummary'
-    | 'getFeedIntervalNets'
+    | 'getFeedDateNets'
     | 'getMembers'
     | 'getAssignedUsers'
     | 'hasDeletedAssignees'
@@ -80,7 +80,7 @@ describe('SpaceTransactionsService', () => {
       countSelection: jest.fn().mockResolvedValue(3),
       getFeedPage: jest.fn().mockResolvedValue({ items: [stored()], hasMore: false }),
       getFeedSummary: jest.fn().mockResolvedValue({ count: 1, income: 0n, expense: 1230n }),
-      getFeedIntervalNets: jest.fn(async (_selection, intervals: unknown[]) => intervals.map(() => -1230n)),
+      getFeedDateNets: jest.fn(async (_selection, dates: unknown[]) => dates.map(() => -1230n)),
       getMembers: jest.fn().mockResolvedValue([
         { userId: userId, name: 'Zakhar' },
         { userId: lena, name: 'Lena' },
@@ -169,11 +169,15 @@ describe('SpaceTransactionsService', () => {
       category_id: 3,
       transaction_type: TransactionType.EXPENSE,
       amount: '12.3',
-      timestamp: '2026-09-15T10:00:00.000Z',
+      date: '2026-09-15',
+      time_zone: 'Europe/Moscow',
       description: ' Dinner ',
       assignment: { kind: AssignmentKind.MEMBER, user_id: lena },
       ...overrides,
     });
+    // time_zone only tells today: a key does not compare it
+    const fingerprint: Partial<CreateTransactionV2Dto> = dto();
+    delete fingerprint.time_zone;
 
     it('records the space, the caller as the author and the assignment', async () => {
       await service.create(userId, spaceId, dto());
@@ -187,7 +191,7 @@ describe('SpaceTransactionsService', () => {
         category_id: 3,
         transaction_type: TransactionType.EXPENSE,
         amount: '12.3',
-        timestamp: new Date('2026-09-15T10:00:00.000Z'),
+        date: '2026-09-15',
         description: 'Dinner',
       });
     });
@@ -234,7 +238,7 @@ describe('SpaceTransactionsService', () => {
 
       expect(idempotency.run).toHaveBeenCalledWith(
         manager,
-        expect.objectContaining({ operation: 'transactions.v2.create', key: 'k', userId, spaceId }),
+        expect.objectContaining({ operation: 'transactions.v2.date.create', key: 'k', userId, spaceId }),
         expect.any(Function),
       );
       expect(repositories.get(TransactionOperation)!.insert).toHaveBeenCalledWith(
@@ -278,7 +282,7 @@ describe('SpaceTransactionsService', () => {
 
       expect(idempotency.run).toHaveBeenCalledWith(
         manager,
-        { operation: 'transactions.v2.create', key: 'key-1', payload: dto(), userId, spaceId },
+        { operation: 'transactions.v2.date.create', key: 'key-1', payload: fingerprint, userId, spaceId },
         expect.any(Function),
       );
     });
@@ -354,15 +358,14 @@ describe('SpaceTransactionsService', () => {
           category_id: 3,
           transaction_type: TransactionType.EXPENSE,
           amount: '12.3',
-          timestamp: '2026-09-15T12:00:00.000+02:00',
+          date: '2026-09-15',
+          time_zone: 'Pacific/Kiritimati',
           description: ' Lunch ',
           assignment: { kind: AssignmentKind.MEMBER, user_id: former },
         },
       ],
     ])('writes nothing and keeps the version for %s', async (_, body) => {
-      queries.getOneInSpace.mockResolvedValue(
-        stored({ amount: '12.30', timestamp: new Date('2026-09-15T10:00:00.000Z'), description: 'Lunch' }),
-      );
+      queries.getOneInSpace.mockResolvedValue(stored({ amount: '12.30', date: '2026-09-15', description: 'Lunch' }));
 
       const result = await update(body);
 
@@ -388,7 +391,7 @@ describe('SpaceTransactionsService', () => {
 
     it.each<[string, UpdateTransactionV2Dto, string]>([
       ['a zero amount', { amount: '0.00' }, 'amount must be greater than 0'],
-      ['a future timestamp', { timestamp: '2999-01-01T00:00:00.000Z' }, 'timestamp must not be in the future'],
+      ['a date after today', { date: '2999-01-01', time_zone: 'UTC' }, 'date must not be after today in time_zone'],
     ])('refuses %s as a new value', async (_, body, error) => {
       await expect(update(body)).rejects.toMatchObject({
         response: { message: [{ field: Object.keys(body)[0], error }] },
@@ -396,14 +399,35 @@ describe('SpaceTransactionsService', () => {
       });
     });
 
-    it('keeps a legacy zero amount and future timestamp when other fields change', async () => {
-      queries.getOneInSpace.mockResolvedValue(
-        stored({ amount: '0.00', timestamp: new Date('2999-01-01T00:00:00.000Z') }),
-      );
+    it('keeps a legacy zero amount and a date after today when other fields change', async () => {
+      queries.getOneInSpace.mockResolvedValue(stored({ amount: '0.00', date: '2999-01-01' }));
 
-      await update({ amount: '0', timestamp: '2999-01-01T00:00:00.000Z', description: 'x' });
+      await update({ amount: '0', date: '2999-01-01', time_zone: 'UTC', description: 'x' });
 
       expect(updateQuery.set).toHaveBeenCalledWith({ description: 'x' });
+    });
+
+    it('takes today from the time_zone of the request', async () => {
+      jest.useFakeTimers({ now: new Date('2026-10-08T21:30:00.000Z'), doNotFake: ['nextTick', 'setImmediate'] });
+
+      try {
+        await update({ date: '2026-10-09', time_zone: 'Europe/Moscow' });
+        expect(updateQuery.set).toHaveBeenLastCalledWith({ date: '2026-10-09' });
+
+        await expect(update({ date: '2026-10-09', time_zone: 'America/Chicago' })).rejects.toMatchObject({
+          response: { message: [{ field: 'date', error: 'date must not be after today in time_zone' }] },
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('moves a record to another date as a change of the date only', async () => {
+      queries.getOneInSpace.mockResolvedValue(stored({ date: '2026-09-30' }));
+
+      await update({ date: '2026-08-31', time_zone: 'UTC' });
+
+      expect(updateQuery.set).toHaveBeenCalledWith({ date: '2026-08-31' });
     });
 
     it('keeps its own archived category', async () => {
@@ -533,7 +557,7 @@ describe('SpaceTransactionsService', () => {
       expect(idempotency.run).toHaveBeenCalledWith(
         manager,
         expect.objectContaining({
-          operation: 'transactions.v2.update',
+          operation: 'transactions.v2.date.update',
           key: 'k',
           payload: { transactionId, expectedVersion: 1, body: { amount: '20' } },
         }),
@@ -694,9 +718,8 @@ describe('SpaceTransactionsService', () => {
 
   describe('history', () => {
     const query = (overrides: Partial<TransactionFeedQueryV2Dto> = {}): TransactionFeedQueryV2Dto => ({
-      from: '2026-09-30T21:00:00.000Z',
-      to: '2026-10-31T20:59:59.999Z',
-      time_zone: 'Europe/Moscow',
+      from_date: '2026-10-01',
+      to_date: '2026-10-31',
       limit: 50,
       ...overrides,
     });
@@ -707,8 +730,8 @@ describe('SpaceTransactionsService', () => {
       expect(queries.getFeedPage).toHaveBeenCalledWith(
         {
           spaceId,
-          from: new Date('2026-09-30T21:00:00.000Z'),
-          to: new Date('2026-10-31T20:59:59.999Z'),
+          fromDate: '2026-10-01',
+          toDate: '2026-10-31',
           filters: expect.objectContaining({
             assignment: { kind: AssignmentKind.MEMBER, userId: former },
             search: ' tea ',
@@ -737,7 +760,7 @@ describe('SpaceTransactionsService', () => {
 
     it('reads a window around a record outward from its position, not from the period start', async () => {
       const target = stored({ id: 'target' });
-      const position = { timestamp: target.timestamp, id: target.id };
+      const position = { date: target.date, orderKey: target.order_key };
       queries.getOneInSpace.mockResolvedValue(target);
       queries.findFeedPosition.mockResolvedValue(position);
       queries.getFeedPage
@@ -758,30 +781,19 @@ describe('SpaceTransactionsService', () => {
       expect(page.page_info.next_cursor).toBeNull();
     });
 
-    it('reads the totals in the snapshot of the rows, one interval per local day of the page', async () => {
-      const at = (id: string, timestamp: string) => stored({ id, timestamp: new Date(timestamp) });
+    it('reads the totals in the snapshot of the rows, one per stored date of the page', async () => {
+      const at = (id: string, date: string) => stored({ id, date });
       queries.getFeedPage.mockResolvedValue({
-        items: [
-          at('a', '2026-10-03T20:59:59.999Z'),
-          at('b', '2026-10-02T21:00:00.000Z'),
-          at('c', '2026-10-02T20:00:00.000Z'),
-        ],
+        items: [at('a', '2026-10-03'), at('b', '2026-10-02'), at('c', '2026-10-02')],
         hasMore: false,
       });
       queries.getFeedSummary.mockResolvedValue({ count: 40, income: 1_000_000_000_00n, expense: 5n });
-      queries.getFeedIntervalNets.mockResolvedValue([-1230n, 0n]);
+      queries.getFeedDateNets.mockResolvedValue([-1230n, 0n]);
 
       const feed = await service.getFeed(userId, spaceId, query());
 
       expect(queries.getFeedSummary).toHaveBeenCalledWith(expect.anything(), manager);
-      expect(queries.getFeedIntervalNets).toHaveBeenCalledWith(
-        expect.anything(),
-        [
-          { from: new Date('2026-10-02T21:00:00.000Z'), to: new Date('2026-10-03T20:59:59.999Z') },
-          { from: new Date('2026-10-01T21:00:00.000Z'), to: new Date('2026-10-02T20:59:59.999Z') },
-        ],
-        manager,
-      );
+      expect(queries.getFeedDateNets).toHaveBeenCalledWith(expect.anything(), ['2026-10-03', '2026-10-02'], manager);
       expect(feed.summary).toEqual({ count: 40, income: '1000000000.00', expense: '0.05' });
       expect(feed.day_totals).toEqual([
         { date: '2026-10-03', net: '-12.30' },
@@ -795,7 +807,7 @@ describe('SpaceTransactionsService', () => {
       const feed = await service.getFeed(userId, spaceId, query({ q: 'nothing' }));
 
       expect(queries.getFeedSummary).not.toHaveBeenCalled();
-      expect(queries.getFeedIntervalNets).not.toHaveBeenCalled();
+      expect(queries.getFeedDateNets).not.toHaveBeenCalled();
       expect(feed).toMatchObject({
         items: [],
         page_info: { next_cursor: null, previous_cursor: null },
@@ -808,9 +820,9 @@ describe('SpaceTransactionsService', () => {
       access.assertMembership.mockRejectedValue(forbidden);
 
       await expect(service.getFeed(userId, spaceId, query({ cursor: 'bogus' }))).rejects.toThrow(BadRequestException);
-      await expect(service.getFeed(userId, spaceId, query({ from: query().to, to: query().from }))).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.getFeed(userId, spaceId, query({ from_date: query().to_date, to_date: query().from_date })),
+      ).rejects.toThrow(BadRequestException);
       expect(access.assertMembership).not.toHaveBeenCalled();
     });
 
@@ -852,15 +864,15 @@ describe('SpaceTransactionsService', () => {
       );
     });
 
-    it('refuses a foreign category filter and from after to', async () => {
+    it('refuses a foreign category filter and from_date after to_date', async () => {
       categories.getOne.mockResolvedValue(buildCategory({ id: 3, space_id: 99 }));
       await expect(service.count(userId, spaceId, { ...query(), category_id: 3 })).rejects.toMatchObject(
         new HttpException(ErrorMessages.FORBIDDEN_CATEGORY, 403),
       );
 
-      await expect(
-        service.count(userId, spaceId, { ...query(), from: '2026-11-01T00:00:00.000Z' }),
-      ).rejects.toMatchObject({ response: { message: [{ field: 'from', error: 'from must not be after to' }] } });
+      await expect(service.count(userId, spaceId, { ...query(), from_date: '2026-11-01' })).rejects.toMatchObject({
+        response: { message: [{ field: 'from_date', error: 'from_date must not be after to_date' }] },
+      });
     });
 
     it('counts the same selection', async () => {

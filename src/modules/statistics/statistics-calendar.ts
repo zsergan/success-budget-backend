@@ -1,8 +1,9 @@
 import { DateTime } from 'luxon';
 
-// A calendar date without a zone, held as midnight UTC. It turns into
-// instants only through startOfDay/endOfDay in the requested zone, so the
-// calendar arithmetic never meets DST.
+import { MAX_CALENDAR_DATE, MIN_CALENDAR_DATE } from '@shared/utils';
+
+// A calendar date without a zone, held as midnight UTC, so the calendar
+// arithmetic never meets DST. Only `today` meets a zone.
 export type CalendarDate = DateTime<true>;
 
 export interface DateRange {
@@ -35,20 +36,15 @@ export const parseCalendarDate = (value: string): CalendarDate => {
 
 export const formatCalendarDate = (date: CalendarDate): string => date.toISODate();
 
+export const FIRST_DATE = parseCalendarDate(MIN_CALENDAR_DATE);
+export const LAST_DATE = parseCalendarDate(MAX_CALENDAR_DATE);
+
+// The calendar date of the instant in the zone.
 export const calendarDateAt = (instant: Date, timeZone: string): CalendarDate => {
   const local = DateTime.fromJSDate(instant, { zone: timeZone });
 
   return DateTime.utc(local.year, local.month, local.day) as CalendarDate;
 };
-
-// First existing instant of the local day: luxon moves a midnight that falls
-// into a DST gap to the end of the gap. A day skipped entirely by the zone
-// starts together with the next one and has no length.
-export const startOfDay = (date: CalendarDate, timeZone: string): Date =>
-  DateTime.fromObject({ year: date.year, month: date.month, day: date.day }, { zone: timeZone }).toJSDate();
-
-export const endOfDay = (date: CalendarDate, timeZone: string): Date =>
-  new Date(startOfDay(date.plus({ days: 1 }), timeZone).getTime() - 1);
 
 // Weeks run Monday to Sunday.
 export const rangeOf = (unit: CalendarUnit, date: CalendarDate): DateRange => ({
@@ -56,6 +52,8 @@ export const rangeOf = (unit: CalendarUnit, date: CalendarDate): DateRange => ({
   end: date.endOf(unit).startOf('day'),
 });
 
+// A day of month missing in the target month is clamped to its last day
+// (Mar 31 → Feb 28, Feb 29 → Feb 28).
 export const shift = (date: CalendarDate, unit: CalendarUnit, amount: number): CalendarDate =>
   date.plus({ [PLURAL[unit]]: amount });
 
@@ -76,12 +74,7 @@ export const splitRange = (range: DateRange, unit: CalendarUnit): DateRange[] =>
 // Stable across requests: 2026-09-28, 2026-W40 (ISO week), 2026-09, 2026.
 export const unitKey = (date: CalendarDate, unit: CalendarUnit): string => date.toFormat(KEY_FORMAT[unit]);
 
-// The same local wall-clock moment one unit earlier; a day of month missing
-// there is clamped to the last one (Mar 31 → Feb 28, Feb 29 → Feb 28).
-export const shiftInstant = (instant: Date, timeZone: string, unit: CalendarUnit, amount: number): Date =>
-  DateTime.fromJSDate(instant, { zone: timeZone })
-    .plus({ [PLURAL[unit]]: amount })
-    .toJSDate();
+export const timeState = ({ start, end }: DateRange, today: CalendarDate): TimeState =>
+  today < start ? 'future' : today > end ? 'past' : 'current';
 
-export const timeState = (from: Date, to: Date, asOf: Date): TimeState =>
-  asOf < from ? 'future' : asOf > to ? 'past' : 'current';
+export const earlier = (a: CalendarDate, b: CalendarDate): CalendarDate => (a < b ? a : b);

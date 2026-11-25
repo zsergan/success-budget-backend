@@ -21,10 +21,10 @@ describe('toTransactionViewV2', () => {
       'assignment',
       'author',
       'category',
+      'date',
       'description',
       'id',
       'kind',
-      'timestamp',
       'transaction_type',
       'version',
     ]);

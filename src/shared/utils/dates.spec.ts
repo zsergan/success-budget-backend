@@ -1,4 +1,4 @@
-import { parseIsoDate, toDate } from './dates';
+import { parseIsoDate } from './dates';
 
 describe('parseIsoDate', () => {
   it('reads a date-only value as local midnight', () => {
@@ -22,10 +22,4 @@ describe('parseIsoDate', () => {
       expect(parseIsoDate(value)).toBeNull();
     },
   );
-});
-
-describe('toDate', () => {
-  it('throws on a value that was not validated as an ISO date', () => {
-    expect(() => toDate('garbage')).toThrow(TypeError);
-  });
 });

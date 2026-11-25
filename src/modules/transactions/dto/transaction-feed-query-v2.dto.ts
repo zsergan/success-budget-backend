@@ -27,10 +27,10 @@ export class TransactionFeedQueryV2Dto extends TransactionFeedQueryDto {
   assignment?: string;
 }
 
-// The selection of the feed without paging: from and to are required instants here too.
+// The selection of the feed without paging: from_date and to_date are required here too.
 export class TransactionCountQueryV2Dto extends PickType(TransactionFeedQueryV2Dto, [
-  'from',
-  'to',
+  'from_date',
+  'to_date',
   'q',
   'transaction_type',
   'kind',

@@ -1,18 +1,16 @@
 import {
   calendarDateAt,
   daysIn,
-  endOfDay,
   formatCalendarDate,
   parseCalendarDate,
   rangeOf,
-  shiftInstant,
+  shift,
   splitRange,
-  startOfDay,
+  timeState,
   unitKey,
 } from './statistics-calendar';
 
 const date = parseCalendarDate;
-const iso = (instant: Date) => instant.toISOString();
 const range = (start: string, end: string) => ({ start: date(start), end: date(end) });
 const dates = (parts: { start: ReturnType<typeof date>; end: ReturnType<typeof date> }[]) =>
   parts.map((part) => `${formatCalendarDate(part.start)}..${formatCalendarDate(part.end)}`);
@@ -27,30 +25,6 @@ describe('statistics calendar', () => {
 
     expect(formatCalendarDate(calendarDateAt(instant, 'Europe/Moscow'))).toBe('2026-09-28');
     expect(formatCalendarDate(calendarDateAt(instant, 'UTC'))).toBe('2026-09-27');
-  });
-
-  describe('startOfDay / endOfDay', () => {
-    it.each([
-      ['Europe/Moscow', '2026-09-28', '2026-09-27T21:00:00.000Z', '2026-09-28T20:59:59.999Z'],
-      ['UTC', '2026-09-28', '2026-09-28T00:00:00.000Z', '2026-09-28T23:59:59.999Z'],
-      ['Asia/Kathmandu', '2026-09-28', '2026-09-27T18:15:00.000Z', '2026-09-28T18:14:59.999Z'],
-      ['Pacific/Kiritimati', '2026-09-28', '2026-09-27T10:00:00.000Z', '2026-09-28T09:59:59.999Z'],
-      ['Etc/GMT+12', '2026-09-28', '2026-09-28T12:00:00.000Z', '2026-09-29T11:59:59.999Z'],
-      // 25-hour day: DST ends
-      ['Europe/Berlin', '2026-10-25', '2026-10-24T22:00:00.000Z', '2026-10-25T22:59:59.999Z'],
-      // 23-hour day: DST starts
-      ['Europe/Berlin', '2026-03-29', '2026-03-28T23:00:00.000Z', '2026-03-29T21:59:59.999Z'],
-      // midnight skipped: the day starts at 01:00 local
-      ['America/Santiago', '2026-09-06', '2026-09-06T04:00:00.000Z', '2026-09-07T02:59:59.999Z'],
-    ])('%s %s', (timeZone, day, start, end) => {
-      expect(iso(startOfDay(date(day), timeZone))).toBe(start);
-      expect(iso(endOfDay(date(day), timeZone))).toBe(end);
-    });
-
-    it('gives a day skipped by the zone no length', () => {
-      expect(startOfDay(date('2011-12-30'), 'Pacific/Apia')).toEqual(startOfDay(date('2011-12-31'), 'Pacific/Apia'));
-      expect(iso(endOfDay(date('2011-12-29'), 'Pacific/Apia'))).toBe('2011-12-30T09:59:59.999Z');
-    });
   });
 
   describe('rangeOf', () => {
@@ -119,17 +93,32 @@ describe('statistics calendar', () => {
     expect(unitKey(date('2026-09-28'), 'month')).toBe('2026-09');
   });
 
-  describe('shiftInstant', () => {
+  describe('shift', () => {
     it.each([
-      ['Europe/Moscow', 'week', '2026-09-28T12:00:00.000Z', '2026-09-21T12:00:00.000Z'],
-      ['Europe/Moscow', 'month', '2026-09-28T12:00:00.000Z', '2026-08-28T12:00:00.000Z'],
-      // clamped to the last day of February
-      ['UTC', 'month', '2026-03-31T10:00:00.000Z', '2026-02-28T10:00:00.000Z'],
-      ['UTC', 'year', '2028-02-29T10:00:00.000Z', '2027-02-28T10:00:00.000Z'],
-      // same wall-clock time across a DST change: 12:00 CET → 12:00 CEST
-      ['Europe/Berlin', 'week', '2026-10-26T11:00:00.000Z', '2026-10-19T10:00:00.000Z'],
-    ] as const)('%s one %s before %s is %s', (timeZone, unit, instant, expected) => {
-      expect(iso(shiftInstant(new Date(instant), timeZone, unit, -1))).toBe(expected);
+      ['2026-09-28', 'week', '2026-09-21'],
+      ['2026-09-28', 'month', '2026-08-28'],
+      // a missing day is clamped to the last day of the shorter month
+      ['2026-03-31', 'month', '2026-02-28'],
+      ['2026-10-31', 'month', '2026-09-30'],
+      ['2028-03-31', 'month', '2028-02-29'],
+      ['2028-02-29', 'year', '2027-02-28'],
+      ['2027-01-03', 'week', '2026-12-27'],
+    ] as const)('%s one %s earlier is %s', (day, unit, expected) => {
+      expect(formatCalendarDate(shift(date(day), unit, -1))).toBe(expected);
     });
+
+    it('never meets DST: a day before the change is a day before', () => {
+      expect(formatCalendarDate(shift(date('2026-10-26'), 'day', -1))).toBe('2026-10-25');
+      expect(formatCalendarDate(shift(date('2026-03-30'), 'week', -1))).toBe('2026-03-23');
+    });
+  });
+
+  it('tells past, current and future by today, its own day included', () => {
+    const week = range('2026-09-28', '2026-10-04');
+
+    expect(timeState(week, date('2026-09-27'))).toBe('future');
+    expect(timeState(week, date('2026-09-28'))).toBe('current');
+    expect(timeState(week, date('2026-10-04'))).toBe('current');
+    expect(timeState(week, date('2026-10-05'))).toBe('past');
   });
 });

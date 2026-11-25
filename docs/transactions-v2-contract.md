@@ -949,7 +949,9 @@ before it ([deployment](deployment.md#rolling-out-calendar-dates)).
   (`transactions.v2.date.create`, `transactions.v2.date.update`), so a key
   used before Release C never answers, nor refuses, a request of the new
   format: no stored `timestamp` result is replayed, and a converted retry
-  is never `IDEMPOTENCY_KEY_REUSED` because of the conversion. Deletes keep
+  is never `IDEMPOTENCY_KEY_REUSED` because of the conversion. A key
+  compares the request without `time_zone`, which writes nothing: a retry
+  sent after the device changed zones gets the stored result. Deletes keep
   `transactions.v2.delete`: their request and result (`true`) did not
   change, so a repeat of a delete sent before the upgrade still answers
   `200 true`.

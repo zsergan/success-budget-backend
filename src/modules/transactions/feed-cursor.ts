@@ -1,12 +1,12 @@
 import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
-import { isUUID } from 'class-validator';
 
 import type { FeedPosition, TransactionSelection } from '@modules/transaction-queries/transaction-queries.service';
 import { assignmentKey } from '@modules/transaction-queries/assignment-filter';
-import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
+import { isCalendarDate } from '@shared/utils';
 
-export const FEED_CURSOR_VERSION = 1;
+// 2: positions by date and ordering key; cursors of format 1 held instants
+export const FEED_CURSOR_VERSION = 2;
 export const FEED_CURSOR_MAX_LENGTH = 256;
 
 // older: records after the position in the history order; newer: before it
@@ -20,28 +20,27 @@ export interface FeedCursor {
 interface CursorPayload {
   v: number;
   d: FeedDirection;
-  t: number;
-  i: string;
+  t: string;
+  k: string;
   s: string;
 }
 
+// an ordering key: a BIGINT UNSIGNED from 1, as a decimal string
+const ORDER_KEY = /^[1-9]\d{0,19}$/;
+const ORDER_KEY_MAX = 18446744073709551615n;
+
 // Not a secret: a cursor only moves within a selection the member may read,
 // so the digest just keeps a cursor from being replayed on another query.
-export const selectionDigest = (selection: TransactionSelection, timeZone: string): string => {
-  const { spaceId, from, to, filters = {} } = selection;
-  // null and 'v2' stand where the retired v1 feed had its wallet filter and
-  // ended, so cursors issued before its removal keep their digest
+export const selectionDigest = (selection: TransactionSelection): string => {
+  const { spaceId, fromDate, toDate, filters = {} } = selection;
   const parts: unknown[] = [
     spaceId,
-    from.getTime(),
-    to.getTime(),
-    timeZone,
+    fromDate,
+    toDate,
     filters.search?.trim() || null,
     filters.transactionType ?? null,
     filters.kind ?? null,
     filters.categoryId ?? null,
-    null,
-    'v2',
     filters.assignment ? assignmentKey(filters.assignment) : null,
   ];
 
@@ -52,8 +51,8 @@ export const encodeFeedCursor = (cursor: FeedCursor, digest: string): string => 
   const payload: CursorPayload = {
     v: FEED_CURSOR_VERSION,
     d: cursor.direction,
-    t: cursor.position.timestamp.getTime(),
-    i: cursor.position.id,
+    t: cursor.position.date,
+    k: cursor.position.orderKey,
     s: digest,
   };
 
@@ -81,11 +80,11 @@ const parsePayload = (cursor: string): CursorPayload | null => {
 const isValidPayload = (payload: CursorPayload): boolean =>
   Object.keys(payload).length === 5 &&
   (payload.d === 'older' || payload.d === 'newer') &&
-  Number.isSafeInteger(payload.t) &&
-  payload.t >= TIMESTAMP_MIN.getTime() &&
-  payload.t <= STORED_TIMESTAMP_MAX.getTime() &&
-  typeof payload.i === 'string' &&
-  isUUID(payload.i) &&
+  typeof payload.t === 'string' &&
+  isCalendarDate(payload.t) &&
+  typeof payload.k === 'string' &&
+  ORDER_KEY.test(payload.k) &&
+  BigInt(payload.k) <= ORDER_KEY_MAX &&
   typeof payload.s === 'string';
 
 export const decodeFeedCursor = (cursor: string, digest: string): FeedCursor => {
@@ -99,5 +98,5 @@ export const decodeFeedCursor = (cursor: string, digest: string): FeedCursor => 
     throw cursorError('cursor does not belong to this query');
   }
 
-  return { direction: payload.d, position: { timestamp: new Date(payload.t), id: payload.i } };
+  return { direction: payload.d, position: { date: payload.t, orderKey: payload.k } };
 };

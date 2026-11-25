@@ -158,7 +158,7 @@ describe('Limit summary queries against a real database (e2e)', () => {
     category_id: number,
     transaction_type: TransactionType,
     amount: string,
-    timestamp: Date,
+    date: string,
     assignment: Pick<Transaction, 'assignment_kind' | 'assigned_user_id'> = SPACE_ASSIGNMENT,
   ): Promise<Transaction> {
     // some spaces here have no member; the author is not what these tests read
@@ -173,7 +173,7 @@ describe('Limit summary queries against a real database (e2e)', () => {
         category_id,
         transaction_type,
         amount,
-        timestamp,
+        date,
       }),
     );
   }
@@ -182,14 +182,14 @@ describe('Limit summary queries against a real database (e2e)', () => {
     it('never mixes one space expense totals into another, even with identically-named categories', async () => {
       const spaceA = await createSpace();
       const spaceB = await createSpace();
-      const from = new Date(2026, 1, 1);
-      const to = new Date(2026, 1, 28, 23, 59, 59, 999);
+      const from = '2026-02-01';
+      const to = '2026-02-28';
 
       const catA = await createCategory(spaceA, TransactionType.EXPENSE, { name: 'Groceries' });
-      await createTransaction(spaceA, catA.id, TransactionType.EXPENSE, '70', new Date(2026, 1, 10));
+      await createTransaction(spaceA, catA.id, TransactionType.EXPENSE, '70', '2026-02-10');
 
       const catB = await createCategory(spaceB, TransactionType.EXPENSE, { name: 'Groceries' });
-      await createTransaction(spaceB, catB.id, TransactionType.EXPENSE, '999', new Date(2026, 1, 10));
+      await createTransaction(spaceB, catB.id, TransactionType.EXPENSE, '999', '2026-02-10');
 
       const totalsA = await transactionQueriesService.getExpensesByCategory(spaceA, from, to);
       const totalsB = await transactionQueriesService.getExpensesByCategory(spaceB, from, to);
@@ -211,16 +211,16 @@ describe('Limit summary queries against a real database (e2e)', () => {
       const member = { assignment_kind: AssignmentKind.MEMBER, assigned_user_id: userId };
       const nobody = { assignment_kind: AssignmentKind.UNASSIGNED, assigned_user_id: null };
 
-      const from = new Date(2026, 2, 1, 0, 0, 0, 0);
-      const to = new Date(2026, 2, 31, 23, 59, 59, 999);
+      const from = '2026-03-01';
+      const to = '2026-03-31';
 
-      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '100.25', new Date(2026, 2, 10), member);
-      await createTransaction(spaceId, catB.id, TransactionType.EXPENSE, '40', from, nobody); // lower boundary
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '100.25', '2026-03-10', member);
+      await createTransaction(spaceId, catB.id, TransactionType.EXPENSE, '40', from, nobody); // the first day
       await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '15', to); // upper boundary
-      await createTransaction(spaceId, catIncome.id, TransactionType.INCOME, '500', new Date(2026, 2, 12));
-      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '5', new Date(from.getTime() - 1)); // outside
-      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '7', new Date(to.getTime() + 1)); // outside
-      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '60', new Date(2026, 2, 11), nobody);
+      await createTransaction(spaceId, catIncome.id, TransactionType.INCOME, '500', '2026-03-12');
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '5', '2026-02-28'); // the day before
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '7', '2026-04-01'); // the day after
+      await createTransaction(spaceId, catA.id, TransactionType.EXPENSE, '60', '2026-03-31', nobody); // the last day
 
       const categoryTotals = await transactionQueriesService.getExpensesByCategory(spaceId, from, to);
       expect(categoryTotals.get(catA.id)).toBe(17525n);
@@ -236,13 +236,13 @@ describe('Limit summary queries against a real database (e2e)', () => {
       const catY = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'Y' });
       const catZ = await createCategory(spaceId, TransactionType.EXPENSE, { name: 'Z (no limit)' });
 
-      const from = new Date(2026, 3, 1, 0, 0, 0, 0);
-      const to = new Date(2026, 3, 30, 23, 59, 59, 999);
+      const from = '2026-04-01';
+      const to = '2026-04-30';
 
-      await createTransaction(spaceId, catX.id, TransactionType.EXPENSE, '12.34', new Date(2026, 3, 5));
-      await createTransaction(spaceId, catX.id, TransactionType.EXPENSE, '0.01', new Date(2026, 3, 6));
-      await createTransaction(spaceId, catY.id, TransactionType.EXPENSE, '45.65', new Date(2026, 3, 7));
-      await createTransaction(spaceId, catZ.id, TransactionType.EXPENSE, '100', new Date(2026, 3, 8));
+      await createTransaction(spaceId, catX.id, TransactionType.EXPENSE, '12.34', '2026-04-05');
+      await createTransaction(spaceId, catX.id, TransactionType.EXPENSE, '0.01', '2026-04-06');
+      await createTransaction(spaceId, catY.id, TransactionType.EXPENSE, '45.65', '2026-04-07');
+      await createTransaction(spaceId, catZ.id, TransactionType.EXPENSE, '100', '2026-04-08');
 
       const userId = await createUserWithMembership(spaceId);
       await limitsService.create(userId, spaceId, { amount: '50' }); // monthly total, less than the group's own amount

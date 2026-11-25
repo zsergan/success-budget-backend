@@ -37,8 +37,8 @@ import type {
 
 const TIME_STATES = ['past', 'current', 'future'];
 
-const LOCAL_DATE: ApiPropertyOptions = { type: String, format: 'date', example: '2026-09-01' };
-const INSTANT: ApiPropertyOptions = { type: String, format: 'date-time', example: '2026-08-31T21:00:00.000Z' };
+const DATE: ApiPropertyOptions = { type: String, format: 'date', example: '2026-09-01' };
+const INSTANT: ApiPropertyOptions = { type: String, format: 'date-time', example: '2026-09-28T12:00:00.000Z' };
 const MONEY: ApiPropertyOptions = {
   type: String,
   pattern: '^-?\\d+\\.\\d{2}$',
@@ -52,31 +52,27 @@ export class StatisticsPeriod implements StatisticsPeriodShape {
   @ApiProperty({ enum: StatisticsPeriodType, enumName: 'StatisticsPeriodType' })
   type!: StatisticsPeriodType;
 
-  @ApiProperty({ example: 'Europe/Moscow', description: 'The applied IANA zone.' })
+  @ApiProperty({ example: 'Europe/Moscow', description: 'The applied IANA zone: it turns as_of into today.' })
   time_zone!: string;
 
-  @ApiProperty({ ...LOCAL_DATE, description: 'First local day, inclusive.' })
+  @ApiProperty({ ...DATE, description: 'First day, inclusive.' })
   start_date!: string;
 
-  @ApiProperty({ ...LOCAL_DATE, example: '2026-09-30', description: 'Last local day, inclusive.' })
+  @ApiProperty({ ...DATE, example: '2026-09-30', description: 'Last day, inclusive.' })
   end_date!: string;
 
-  @ApiProperty({ ...INSTANT, description: 'First millisecond of start_date in time_zone.' })
-  from!: Date;
-
-  @ApiProperty({ ...INSTANT, example: '2026-09-30T20:59:59.999Z', description: 'Last millisecond of end_date.' })
-  to!: Date;
-
-  @ApiProperty({ ...INSTANT, example: '2026-09-28T12:00:00.000Z', description: 'The applied as_of.' })
+  @ApiProperty({ ...INSTANT, description: 'The applied as_of: the reference clock of the load cycle.' })
   as_of!: Date;
 
   @ApiProperty({
-    ...INSTANT,
+    ...DATE,
     nullable: true,
-    example: '2026-09-28T12:00:00.000Z',
-    description: 'min(to, as_of): the end of the counted range; null while the period has not started.',
+    example: '2026-09-28',
+    description:
+      'min(end_date, the date of as_of in time_zone): the last day counted, in full; null while the period has ' +
+      'not started. The history to_date of a drill-down.',
   })
-  actual_to!: Date | null;
+  actual_end_date!: string | null;
 
   @ApiProperty({ enum: TIME_STATES, enumName: 'StatisticsTimeState' })
   state!: 'past' | 'current' | 'future';
@@ -110,22 +106,19 @@ export class Changes {
 }
 
 export class PreviousPeriod implements PreviousPeriodShape {
-  @ApiProperty({ ...LOCAL_DATE, description: 'The whole previous period, local dates.' })
+  @ApiProperty({ ...DATE, description: 'The whole previous period.' })
   start_date!: string;
 
-  @ApiProperty(LOCAL_DATE)
+  @ApiProperty(DATE)
   end_date!: string;
 
-  @ApiProperty(INSTANT)
-  from!: Date;
+  @ApiProperty({
+    ...DATE,
+    description: 'The equivalent day of today for a current period, clamped to the month; otherwise end_date.',
+  })
+  actual_end_date!: string;
 
-  @ApiProperty(INSTANT)
-  to!: Date;
-
-  @ApiProperty({ ...INSTANT, description: 'The like-for-like cut of a current period, otherwise to.' })
-  actual_to!: Date;
-
-  @ApiProperty({ type: () => MoneyCount, description: 'Over from..actual_to.' })
+  @ApiProperty({ type: () => MoneyCount, description: 'Over start_date..actual_end_date.' })
   income!: MoneyCount;
 
   @ApiProperty({ type: () => MoneyCount })
@@ -166,13 +159,13 @@ export class StatisticsSummary extends StatisticsBlock implements StatisticsSumm
   @ApiProperty(nullableObject(Changes, 'null exactly when previous is null.'))
   change!: Changes | null;
 
-  @ApiProperty({ description: 'Any statistics transaction up to as_of, in any period.' })
+  @ApiProperty({ description: 'Any statistics transaction dated up to today, in any period.' })
   has_any_transactions!: boolean;
 
   @ApiProperty({
-    ...LOCAL_DATE,
+    ...DATE,
     nullable: true,
-    description: 'Local date (in time_zone) of the latest one; null exactly when has_any_transactions is false.',
+    description: 'The date of the latest one, as stored; null exactly when has_any_transactions is false.',
   })
   last_transaction_date!: string | null;
 }
@@ -181,17 +174,11 @@ export class TrendBucket implements TrendBucketShape {
   @ApiProperty({ example: '2026-W40', description: 'Stable ISO key: 2026-09-28, 2026-W40 or 2026-09.' })
   key!: string;
 
-  @ApiProperty({ ...LOCAL_DATE, description: 'Clipped to the period.' })
+  @ApiProperty({ ...DATE, description: 'Clipped to the period.' })
   start_date!: string;
 
-  @ApiProperty(LOCAL_DATE)
+  @ApiProperty(DATE)
   end_date!: string;
-
-  @ApiProperty(INSTANT)
-  from!: Date;
-
-  @ApiProperty(INSTANT)
-  to!: Date;
 
   @ApiProperty({ enum: TIME_STATES, enumName: 'StatisticsTimeState' })
   state!: 'past' | 'current' | 'future';

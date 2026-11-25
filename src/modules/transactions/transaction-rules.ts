@@ -1,18 +1,25 @@
 import { CLOCK_SKEW_MS } from '@shared/constants';
-import { parseMoneyInput, toDate } from '@shared/utils';
+import { calendarDateIn, parseMoneyInput } from '@shared/utils';
 
 // Rules for a new or changed value. Values already stored under older rules
-// (a zero amount, a future timestamp) are kept as long as they do not change.
+// (a zero amount, a date after today) are kept as long as they do not change.
 
 export const MAX_DESCRIPTION_LENGTH = 140;
 
 export const AMOUNT_NOT_POSITIVE = 'amount must be greater than 0';
-export const TIMESTAMP_IN_FUTURE = 'timestamp must not be in the future';
+export const DATE_AFTER_TODAY = 'date must not be after today in time_zone';
+export const TIME_ZONE_REQUIRED = 'time_zone is required with date';
 
 export const isPositiveAmount = (amount: string): boolean => (parseMoneyInput(amount) ?? 0n) > 0n;
 
-export const isNotInFuture = (timestamp: string, now = Date.now()): boolean =>
-  toDate(timestamp).getTime() <= now + CLOCK_SKEW_MS;
+// Today in the writer's zone, by a server clock moved ahead by the margin
+// for a device clock that is a little ahead of it.
+export const todayIn = (timeZone: string, now = Date.now()): string =>
+  calendarDateIn(new Date(now + CLOCK_SKEW_MS), timeZone);
+
+// both calendar dates: compared as strings
+export const isNotAfterToday = (date: string, timeZone: string, now = Date.now()): boolean =>
+  date <= todayIn(timeZone, now);
 
 // trimmed; blank means no description
 export const normalizeDescription = (value: string | null | undefined): string | null => value?.trim() || null;

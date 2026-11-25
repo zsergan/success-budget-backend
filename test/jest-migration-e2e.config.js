@@ -5,6 +5,6 @@ const base = require('./jest-e2e.json');
 
 module.exports = {
   ...base,
-  testRegex: '(transaction-ownership|wallet-removal)-migration\\.e2e-spec\\.ts$',
+  testRegex: '(transaction-ownership|wallet-removal|transaction-dates)-migration\\.e2e-spec\\.ts$',
   testPathIgnorePatterns: ['/node_modules/'],
 };

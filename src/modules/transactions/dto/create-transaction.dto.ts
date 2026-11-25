@@ -2,9 +2,9 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsNotEmpty, IsInt, Min, Max, IsEnum, IsOptional, IsUUID } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
-import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
+import { IsCalendarDate, IsTimeZone } from '@shared/decorators/is-calendar-date.decorator';
 import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
-import { IsDescription, IsNotInFuture, IsPositiveAmount } from './transaction-field.decorators';
+import { IsDescription, IsNotAfterToday, IsPositiveAmount } from './transaction-field.decorators';
 
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
 export class CreateTransactionDto {
@@ -31,14 +31,20 @@ export class CreateTransactionDto {
   amount!: string;
 
   @ApiProperty({
-    example: '2026-09-15T10:00:00.000Z',
-    description: 'An instant with Z or a UTC offset, at most 60 s ahead of the server.',
+    format: 'date',
+    example: '2026-09-15',
+    description: 'The calendar day, YYYY-MM-DD, no time or zone; not after today in time_zone.',
   })
-  @IsNotEmpty()
-  @IsIsoInstant()
-  @IsInTimestampRange()
-  @IsNotInFuture()
-  timestamp!: string;
+  @IsCalendarDate()
+  @IsNotAfterToday()
+  date!: string;
+
+  @ApiProperty({
+    example: 'Europe/Moscow',
+    description: "The device's IANA zone: it only tells which day is today. Not stored; fixed offsets are refused.",
+  })
+  @IsTimeZone()
+  time_zone!: string;
 
   @ApiPropertyOptional({
     type: String,

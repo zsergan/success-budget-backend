@@ -24,13 +24,3 @@ export const parseIsoDate = (value: string): Date | null => {
 
   return Number.isNaN(date.getTime()) ? null : date;
 };
-
-export const toDate = (value: string): Date => {
-  const date = parseIsoDate(value);
-
-  if (!date) {
-    throw new TypeError(`Not a valid ISO 8601 date: ${value}`);
-  }
-
-  return date;
-};

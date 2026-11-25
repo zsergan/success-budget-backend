@@ -63,7 +63,8 @@ describe('Transaction operations (e2e)', () => {
     category_id: categoryId,
     transaction_type: 'expense',
     amount,
-    timestamp: '2026-09-15T10:00:00.000Z',
+    date: '2026-09-15',
+    time_zone: 'UTC',
     client_operation_id: operationId,
     assignment: { kind: 'space' },
   });

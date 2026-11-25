@@ -56,22 +56,22 @@ describe('TransactionQueriesService', () => {
     it('keeps a SUM above the single-amount range exact', async () => {
       queryBuilder.getRawMany.mockResolvedValue([{ category_id: 1, spent: '1234567890123.45' }]);
 
-      const result = await service.getExpensesByCategory(9, new Date(), new Date());
+      const result = await service.getExpensesByCategory(9, '2026-01-01', '2026-01-31');
 
       expect(result.get(1)).toBe(123456789012345n);
     });
 
     it('sums expenses per category for a space in one grouped query', async () => {
-      const from = new Date('2026-01-01');
-      const to = new Date('2026-01-31');
       queryBuilder.getRawMany.mockResolvedValue([
         { category_id: 10, spent: '350.29' },
         { category_id: 20, spent: '50.00' },
       ]);
 
-      const result = await service.getExpensesByCategory(9, from, to);
+      const result = await service.getExpensesByCategory(9, '2026-01-01', '2026-01-31');
 
       expect(queryBuilder.innerJoin).not.toHaveBeenCalled();
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date >= :fromDate', { fromDate: '2026-01-01' });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date <= :toDate', { toDate: '2026-01-31' });
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 9 });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.transaction_type = :expense', {
         expense: TransactionType.EXPENSE,
@@ -86,57 +86,23 @@ describe('TransactionQueriesService', () => {
     });
 
     it('returns an empty map when there are no expenses', async () => {
-      const result = await service.getExpensesByCategory(9, new Date(), new Date());
+      const result = await service.getExpensesByCategory(9, '2026-01-01', '2026-01-31');
 
       expect(result).toEqual(new Map());
     });
   });
 
-  const count = (filters: TransactionFilters = {}, from = new Date('2026-01-01'), to = new Date('2026-01-31')) =>
-    service.countSelection({ spaceId: 9, from, to, filters });
+  const count = (filters: TransactionFilters = {}, fromDate = '2026-01-01', toDate = '2026-01-31') =>
+    service.countSelection({ spaceId: 9, fromDate, toDate, filters });
 
   describe('countSelection', () => {
     beforeEach(() => queryBuilder.getCount.mockResolvedValue(0));
 
-    it.each([
-      [
-        'beyond both ends',
-        '1960-01-01T00:00:00.000Z',
-        '2100-01-01T00:00:00.000Z',
-        '1970-01-01T00:00:01.000Z',
-        '2038-01-19T03:14:07.999Z',
-      ],
-      [
-        'ending inside the last stored second',
-        '2038-01-19T03:14:07.000Z',
-        '2038-01-19T03:14:07.500Z',
-        '2038-01-19T03:14:07.000Z',
-        '2038-01-19T03:14:07.500Z',
-      ],
-      [
-        'starting at the last stored millisecond',
-        '2038-01-19T03:14:07.999Z',
-        '2100-01-01T00:00:00.000Z',
-        '2038-01-19T03:14:07.999Z',
-        '2038-01-19T03:14:07.999Z',
-      ],
-    ])('bounds a period %s by what a TIMESTAMP(3) column holds', async (_, from, to, storedFrom, storedTo) => {
-      await count({}, new Date(from), new Date(to));
+    it('compares the dates with the date column itself, any dates of the DATE range', async () => {
+      await count({}, '1000-01-01', '9999-12-31');
 
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp >= :from', {
-        from: new Date(storedFrom),
-      });
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to: new Date(storedTo) });
-      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('FALSE');
-    });
-
-    it.each([
-      ['after the last stored millisecond', '2038-01-19T03:14:08.000Z', '2100-01-01T00:00:00.000Z'],
-      ['before the first stored second', '1960-01-01T00:00:00.000Z', '1970-01-01T00:00:00.999Z'],
-    ])('selects nothing for a period wholly %s', async (_, from, to) => {
-      await count({}, new Date(from), new Date(to));
-
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('FALSE');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date >= :fromDate', { fromDate: '1000-01-01' });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date <= :toDate', { toDate: '9999-12-31' });
     });
 
     it('counts the records of the space by their own space', async () => {
@@ -248,7 +214,7 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getFeedPage', () => {
-    const selection = { spaceId: 9, from: new Date('2026-01-01'), to: new Date('2026-01-31') };
+    const selection = { spaceId: 9, fromDate: '2026-01-01', toDate: '2026-01-31' };
 
     it('reads one more id than the page in the history order, then loads the page', async () => {
       queryBuilder.getRawMany.mockResolvedValueOnce([{ id: 'b' }, { id: 'a' }, { id: 'z' }]);
@@ -259,15 +225,15 @@ describe('TransactionQueriesService', () => {
 
       const page = await service.getFeedPage(selection, { limit: 2 });
 
-      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
-      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.date', 'DESC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.order_key', 'DESC');
       expect(queryBuilder.limit).toHaveBeenCalledWith(3);
       expect(page.items.map((item) => item.id)).toEqual(['b', 'a']);
       expect(page.hasMore).toBe(true);
     });
 
     it('reads newer records upwards from a position and lists them newest first', async () => {
-      const position = { timestamp: new Date('2026-01-10T00:00:00Z'), id: 'm' };
+      const position = { date: '2026-01-10', orderKey: '9007199254740993' };
       queryBuilder.getRawMany.mockResolvedValueOnce([{ id: 'n' }, { id: 'o' }]);
       queryBuilder.getMany.mockResolvedValue([
         { id: 'n', category: {} },
@@ -277,11 +243,12 @@ describe('TransactionQueriesService', () => {
       const page = await service.getFeedPage(selection, { limit: 5, before: position });
 
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-        'transaction.timestamp >= :positionTimestamp AND ' +
-          '(transaction.timestamp > :positionTimestamp OR transaction.id > :positionId)',
-        { positionTimestamp: position.timestamp, positionId: 'm' },
+        'transaction.date >= :positionDate AND ' +
+          '(transaction.date > :positionDate OR transaction.order_key > CAST(:positionKey AS UNSIGNED))',
+        { positionDate: '2026-01-10', positionKey: '9007199254740993' },
       );
-      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'ASC');
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.date', 'ASC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.order_key', 'ASC');
       expect(page.items.map((item) => item.id)).toEqual(['o', 'n']);
       expect(page.hasMore).toBe(false);
     });
@@ -357,21 +324,21 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getLatest', () => {
-    it('orders by timestamp descending and limits to one row', async () => {
+    it('orders by date, then ordering key, descending and limits to one row', async () => {
       queryBuilder.getOne.mockResolvedValue(null);
 
       await service.getLatest(9);
 
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 9 });
-      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
-      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.id', 'DESC');
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.date', 'DESC');
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith('transaction.order_key', 'DESC');
       expect(queryBuilder.limit).toHaveBeenCalledWith(1);
     });
   });
 
   describe('getStatisticsTotals', () => {
-    const from = new Date('2026-08-31T21:00:00.000Z');
-    const to = new Date('2026-09-28T12:00:00.000Z');
+    const from = '2026-09-01';
+    const to = '2026-09-28';
 
     it('scopes to the space without starting balances, both bounds inclusive', async () => {
       queryBuilder.getRawOne.mockResolvedValue({
@@ -390,8 +357,8 @@ describe('TransactionQueriesService', () => {
       expect(queryBuilder.innerJoin).toHaveBeenCalledWith('transaction.category', 'category');
       expect(queryBuilder.where).toHaveBeenCalledWith('transaction.space_id = :spaceId', { spaceId: 7 });
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp >= :from', { from });
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date >= :fromDate', { fromDate: from });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date <= :toDate', { toDate: to });
       expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(expect.stringContaining('is_deleted'));
     });
 
@@ -410,9 +377,9 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getStatisticsIntervalTotals', () => {
-    const from = new Date('2026-08-31T21:00:00.000Z');
-    const to = new Date('2026-09-28T12:00:00.000Z');
-    const ends = [new Date('2026-09-06T20:59:59.999Z'), new Date('2026-09-13T20:59:59.999Z'), to];
+    const from = '2026-09-01';
+    const to = '2026-09-28';
+    const ends = ['2026-09-06', '2026-09-13', to];
 
     it('maps each transaction to its interval in one grouped query and fills the gaps with zeros', async () => {
       queryBuilder.getRawMany.mockResolvedValue([
@@ -428,12 +395,12 @@ describe('TransactionQueriesService', () => {
         { income: 0n, incomeCount: 0, expense: 1000n, expenseCount: 1 },
       ]);
       expect(queryBuilder.addSelect).toHaveBeenCalledWith(
-        'CASE WHEN transaction.timestamp <= :intervalEnd0 THEN 0 WHEN transaction.timestamp <= :intervalEnd1 THEN 1 ELSE 2 END',
+        'CASE WHEN transaction.date <= :intervalEnd0 THEN 0 WHEN transaction.date <= :intervalEnd1 THEN 1 ELSE 2 END',
         'interval_index',
       );
       expect(queryBuilder.setParameters).toHaveBeenCalledWith({ intervalEnd0: ends[0], intervalEnd1: ends[1] });
       expect(queryBuilder.groupBy).toHaveBeenCalledWith('interval_index');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to });
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date <= :toDate', { toDate: to });
     });
 
     it('puts everything into a single interval', async () => {
@@ -449,8 +416,8 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('statistics groups', () => {
-    const from = new Date('2026-08-31T21:00:00.000Z');
-    const to = new Date('2026-09-28T12:00:00.000Z');
+    const from = '2026-09-01';
+    const to = '2026-09-28';
 
     it('sums the transactions of the type per category in SQL', async () => {
       queryBuilder.getRawMany.mockResolvedValue([
@@ -471,8 +438,8 @@ describe('TransactionQueriesService', () => {
   });
 
   describe('getStatisticsByAssignment', () => {
-    const from = new Date('2026-08-31T21:00:00.000Z');
-    const to = new Date('2026-09-28T12:00:00.000Z');
+    const from = '2026-09-01';
+    const to = '2026-09-28';
 
     it('groups by assignment, telling members, former members and deleted accounts apart', async () => {
       queryBuilder.getRawMany.mockResolvedValue([
@@ -499,24 +466,47 @@ describe('TransactionQueriesService', () => {
     });
   });
 
-  describe('getLastStatisticsTimestamp', () => {
-    const to = new Date('2026-09-28T12:00:00.000Z');
+  describe('getLastStatisticsDate', () => {
+    it('looks at the whole history up to the date', async () => {
+      queryBuilder.getRawOne.mockResolvedValue({ date: '2026-09-28' });
 
-    it('looks at the whole history up to the bound', async () => {
-      const timestamp = new Date('2026-09-27T21:30:00.000Z');
-      queryBuilder.getOne.mockResolvedValue({ id: 1, timestamp });
-
-      await expect(service.getLastStatisticsTimestamp(7, to, manager)).resolves.toBe(timestamp);
+      await expect(service.getLastStatisticsDate(7, '2026-09-28', manager)).resolves.toBe('2026-09-28');
       expect(queryBuilder.andWhere).toHaveBeenCalledWith('category.is_system = 0');
-      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.timestamp <= :to', { to });
-      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('transaction.timestamp >= :from', expect.anything());
-      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.timestamp', 'DESC');
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date <= :toDate', { toDate: '2026-09-28' });
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith('transaction.date >= :fromDate', expect.anything());
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('transaction.date', 'DESC');
     });
 
     it('returns null without transactions', async () => {
-      queryBuilder.getOne.mockResolvedValue(null);
+      queryBuilder.getRawOne.mockResolvedValue(undefined);
 
-      await expect(service.getLastStatisticsTimestamp(7, to, manager)).resolves.toBeNull();
+      await expect(service.getLastStatisticsDate(7, '2026-09-28', manager)).resolves.toBeNull();
+    });
+  });
+
+  describe('getFeedDateNets', () => {
+    const selection = { spaceId: 9, fromDate: '2026-10-01', toDate: '2026-10-31' };
+
+    it('nets each date of the selection by the stored date, in the order asked, zero without records', async () => {
+      queryBuilder.getRawMany.mockResolvedValue([
+        { date: '2026-10-03', net: '-31.50' },
+        { date: '2026-10-12', net: '1450.00' },
+      ]);
+
+      await expect(service.getFeedDateNets(selection, ['2026-10-12', '2026-10-05', '2026-10-03'])).resolves.toEqual([
+        145000n,
+        0n,
+        -3150n,
+      ]);
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith('transaction.date IN (:...dates)', {
+        dates: ['2026-10-12', '2026-10-05', '2026-10-03'],
+      });
+      expect(queryBuilder.groupBy).toHaveBeenCalledWith('transaction.date');
+    });
+
+    it('reads nothing for no dates', async () => {
+      await expect(service.getFeedDateNets(selection, [])).resolves.toEqual([]);
+      expect(queryBuilder.getRawMany).not.toHaveBeenCalled();
     });
   });
 });

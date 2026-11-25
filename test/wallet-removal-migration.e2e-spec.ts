@@ -3,6 +3,7 @@ import request from 'supertest';
 import type { QueryRunner } from 'typeorm';
 
 import { DropWallets1791400000000 } from '../src/migrations/1791400000000-DropWallets';
+import { ReplaceTransactionTimestampWithDate1791500000000 } from '../src/migrations/1791500000000-ReplaceTransactionTimestampWithDate';
 import {
   compareLedgers,
   findMisplacedTransactions,
@@ -29,13 +30,15 @@ interface Space {
 // database as Release A left it: wallets active and deleted, the
 // compatibility wallet of v2 records, starting balances, assignments of every
 // kind, operation records and stored v1 results. The schema is taken back
-// before each test and every test leaves it migrated. Only
+// before each test, through the later date migration, and every test leaves
+// it migrated. Only
 // `npm run test:e2e:migrations` runs it, on a disposable database
 // (test/jest-migration-e2e.config.js).
 describe('DropWallets migration (e2e)', () => {
   let testApp: TestApp;
   let disposable = false;
   const migration = new DropWallets1791400000000();
+  const dates = new ReplaceTransactionTimestampWithDate1791500000000();
   let userIds: number[];
   let space: Space;
 
@@ -66,6 +69,24 @@ describe('DropWallets migration (e2e)', () => {
 
   const up = (interruptAt?: RegExp) => withRunner((runner) => migration.up(runner), interruptAt);
   const down = () => withRunner((runner) => migration.down(runner));
+  const hasDates = async () =>
+    (
+      await query(
+        `SELECT 1 FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transactions' AND COLUMN_NAME = 'date'`,
+      )
+    ).length > 0;
+  // the migration that came later: reverted for each test, run again after it
+  const datesUp = async () => {
+    if (!(await hasDates())) {
+      await withRunner((runner) => dates.up(runner));
+    }
+  };
+  const datesDown = async () => {
+    if (await hasDates()) {
+      await withRunner((runner) => dates.down(runner));
+    }
+  };
 
   const schema = async () => {
     const [{ wallets }] = await query<{ wallets: number }>(
@@ -305,6 +326,7 @@ describe('DropWallets migration (e2e)', () => {
 
     userIds = [];
     const users = await seedUsers();
+    await datesDown();
     await down();
     await seedReleaseA(users);
   });
@@ -321,6 +343,7 @@ describe('DropWallets migration (e2e)', () => {
       await up();
     }
 
+    await datesUp();
     await deleteUsers(testApp.dataSource, userIds);
   });
 
@@ -361,8 +384,9 @@ describe('DropWallets migration (e2e)', () => {
 
   it('serves the migrated history through v2, and recovers the pending writes of an old build', async () => {
     await up();
+    await datesUp();
     const { owner, lena } = space;
-    const september = { from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T23:59:59.999Z', time_zone: 'UTC' };
+    const september = { from_date: '2026-09-01', to_date: '2026-09-30' };
 
     const feed = await api(owner)
       .get(`${v2('/transactions/feed')}`)
@@ -380,7 +404,7 @@ describe('DropWallets migration (e2e)', () => {
 
     const starts = await api(owner)
       .get(`${v2('/transactions/count')}`)
-      .query({ from: '2026-08-01T00:00:00.000Z', to: september.to, kind: 'initial_balance' })
+      .query({ from_date: '2026-08-01', to_date: september.to_date, kind: 'initial_balance' })
       .expect(200);
     expect(starts.body).toEqual({ count: 2 });
 
@@ -412,7 +436,8 @@ describe('DropWallets migration (e2e)', () => {
         category_id: space.income,
         transaction_type: 'income',
         amount: '2500.00',
-        timestamp: '2026-09-05T10:00:00.000Z',
+        date: '2026-09-05',
+        time_zone: 'America/Chicago',
         client_operation_id: space.operationId,
         assignment: { kind: 'space' },
       })
@@ -434,7 +459,8 @@ describe('DropWallets migration (e2e)', () => {
         category_id: space.expense,
         transaction_type: 'expense',
         amount: '1.00',
-        timestamp: '2026-09-20T10:00:00.000Z',
+        date: '2026-09-20',
+        time_zone: 'America/Chicago',
         assignment: { kind: 'member', user_id: owner.userId },
       })
       .expect(201);

@@ -3,8 +3,8 @@ import { IsEnum } from 'class-validator';
 
 import { StatisticsPeriodType, TransactionType } from '@shared/enums';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
-import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
-import { IsLocalDate, IsTimeZone } from '@shared/decorators/is-local-date.decorator';
+import { IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
+import { IsCalendarDate, IsTimeZone } from '@shared/decorators/is-calendar-date.decorator';
 
 export class StatisticsQueryDto {
   @ApiProperty({ enum: StatisticsPeriodType })
@@ -12,34 +12,38 @@ export class StatisticsQueryDto {
   period!: StatisticsPeriodType;
 
   @ApiPropertyOptional({
-    description: 'Any local day of the wanted week/month/year; not with custom. Default: the local day of as_of.',
+    description: 'Any day of the wanted week/month/year; not with custom. Default: today, the date of as_of.',
     example: '2026-09-28',
   })
   @IsOptionalNonNull()
-  @IsLocalDate()
+  @IsCalendarDate()
   anchor_date?: string;
 
-  @ApiPropertyOptional({ description: 'First local day, inclusive; custom only.', example: '2026-09-01' })
+  @ApiPropertyOptional({ description: 'First day, inclusive; custom only.', example: '2026-09-01' })
   @IsOptionalNonNull()
-  @IsLocalDate()
+  @IsCalendarDate()
   from_date?: string;
 
-  @ApiPropertyOptional({ description: 'Last local day, inclusive; custom only.', example: '2026-09-30' })
+  @ApiPropertyOptional({ description: 'Last day, inclusive; custom only.', example: '2026-09-30' })
   @IsOptionalNonNull()
-  @IsLocalDate()
+  @IsCalendarDate()
   to_date?: string;
 
-  @ApiProperty({ description: 'IANA zone of the device; fixed offsets are rejected.', example: 'Europe/Moscow' })
+  @ApiProperty({
+    description: 'IANA zone of the device: tells which day as_of falls on. Fixed offsets are rejected.',
+    example: 'Europe/Moscow',
+  })
   @IsTimeZone()
   time_zone!: string;
 
   @ApiPropertyOptional({
-    description: 'Time boundary of the load cycle, with Z or an offset; the same for all three blocks. Default: now.',
+    description:
+      'Reference clock of the load cycle, with Z or an offset; its date in time_zone ends a current period. ' +
+      'The same for all three blocks. Default: now.',
     example: '2026-09-28T12:00:00.000Z',
   })
   @IsOptionalNonNull()
   @IsIsoInstant()
-  @IsInTimestampRange()
   as_of?: string;
 }
 

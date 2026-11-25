@@ -1,4 +1,3 @@
-import { DateTime } from 'luxon';
 import request from 'supertest';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import type { OpenAPIObject } from '@nestjs/swagger';
@@ -16,7 +15,7 @@ interface FeedItem {
   kind: 'regular' | 'initial_balance';
   transaction_type: 'income' | 'expense';
   amount: string;
-  timestamp: string;
+  date: string;
   assignment: { kind: string; user_id: number | null; status: string | null };
 }
 
@@ -29,7 +28,8 @@ interface FeedBody {
 
 interface ControlRow {
   id: string;
-  timestamp: Date;
+  date: string;
+  orderKey: bigint;
   type: TransactionType;
   cents: bigint;
   system: boolean;
@@ -40,9 +40,8 @@ interface ControlRow {
 }
 
 interface FeedQuery {
-  from: string;
-  to: string;
-  time_zone: string;
+  from_date: string;
+  to_date: string;
   q?: string;
   transaction_type?: TransactionType;
   kind?: 'regular' | 'initial_balance';
@@ -96,25 +95,21 @@ describe('Transactions feed against a control selection (e2e)', () => {
   };
 
   const expected = (q: FeedQuery) => {
-    const from = new Date(q.from).getTime();
-    const to = new Date(q.to).getTime();
     const search = q.q?.trim() ? fold(q.q.trim()) : undefined;
 
     return control
       .filter(
         (row) =>
-          row.timestamp.getTime() >= from &&
-          row.timestamp.getTime() <= to &&
+          row.date >= q.from_date &&
+          row.date <= q.to_date &&
           (!q.transaction_type || row.type === q.transaction_type) &&
           (!q.kind || row.system === (q.kind === 'initial_balance')) &&
           (!q.category_id || row.categoryId === q.category_id) &&
           (!q.assignment || row.assignment === q.assignment) &&
           (!search || row.texts.some((text) => text !== null && fold(text).includes(search))),
       )
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime() || (a.id < b.id ? 1 : -1));
+      .sort((a, b) => b.date.localeCompare(a.date) || (b.orderKey > a.orderKey ? 1 : -1));
   };
-
-  const localDay = (timestamp: Date, zone: string) => DateTime.fromJSDate(timestamp, { zone }).toISODate()!;
 
   const expectedSummary = (rows: ControlRow[]) => ({
     count: rows.length,
@@ -122,10 +117,10 @@ describe('Transactions feed against a control selection (e2e)', () => {
     expense: money(rows.filter((r) => !r.system && r.type === 'expense').reduce((sum, r) => sum + r.cents, 0n)),
   });
 
-  const expectedNet = (rows: ControlRow[], date: string, zone: string) =>
+  const expectedNet = (rows: ControlRow[], date: string) =>
     money(
       rows
-        .filter((r) => !r.system && localDay(r.timestamp, zone) === date)
+        .filter((r) => !r.system && r.date === date)
         .reduce((sum, r) => sum + (r.type === 'income' ? r.cents : -r.cents), 0n),
     );
 
@@ -150,8 +145,8 @@ describe('Transactions feed against a control selection (e2e)', () => {
     for (const page of pages) {
       expect(page.summary).toEqual(expectedSummary(rows));
 
-      const pageDays = [...new Set(page.items.map((item) => localDay(new Date(item.timestamp), q.time_zone)))];
-      expect(page.day_totals).toEqual(pageDays.map((date) => ({ date, net: expectedNet(rows, date, q.time_zone) })));
+      const pageDays = [...new Set(page.items.map((item) => item.date))];
+      expect(page.day_totals).toEqual(pageDays.map((date) => ({ date, net: expectedNet(rows, date) })));
     }
   };
 
@@ -184,7 +179,8 @@ describe('Transactions feed against a control selection (e2e)', () => {
     const system = await categories.findOneByOrFail({ space_id: owner.spaceId, is_system: 1 });
 
     const descriptions = ['Кофе с собой', 'кофе', 'CAFÉ crème', '100% refund', 'a_b test', null, 'Lunch', 'ёлка'];
-    const instants = ['2026-03-28T23:30:00.000Z', '2026-03-29T12:00:00.000Z', '2026-04-01T00:00:00.000Z'];
+    // dates of many records, a DST change in Europe among them
+    const busyDates = ['2026-03-28', '2026-03-29', '2026-04-01'];
     let seed = 7;
     const random = () => {
       seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
@@ -205,24 +201,24 @@ describe('Transactions feed against a control selection (e2e)', () => {
         category_id: system.id,
         transaction_type: TransactionType.INCOME,
         amount: '100.00',
-        timestamp: new Date('2026-03-25T00:00:00.000Z'),
+        date: '2026-03-25',
         description: null,
       },
     ];
 
     for (let i = 0; i < 240; i++) {
       const categoryOf = [coffee, coffee, salary, archived][Math.floor(random() * 4)];
-      const timestamp =
+      const date =
         random() < 0.3
-          ? new Date(instants[Math.floor(random() * instants.length)])
-          : new Date(Date.UTC(2026, 2, 20) + Math.floor(random() * 17 * 86_400_000));
+          ? busyDates[Math.floor(random() * busyDates.length)]
+          : new Date(Date.UTC(2026, 2, 20) + Math.floor(random() * 17) * 86_400_000).toISOString().slice(0, 10);
 
       rows.push({
         ...assignments[Math.floor(random() * assignments.length)],
         category_id: categoryOf.id,
         transaction_type: categoryOf.transaction_type,
         amount: (1 + Math.floor(random() * 99_999) / 100).toFixed(2),
-        timestamp,
+        date,
         description: descriptions[Math.floor(random() * descriptions.length)],
       });
     }
@@ -238,9 +234,15 @@ describe('Transactions feed against a control selection (e2e)', () => {
       [archived.id, archived.name],
       [system.id, system.name],
     ]);
+    const keys: { id: string; order_key: string }[] = await testApp.dataSource.query(
+      'SELECT id, CAST(order_key AS CHAR) AS order_key FROM transactions WHERE space_id = ?',
+      [owner.spaceId],
+    );
+    const orderKeys = new Map(keys.map((row) => [row.id, BigInt(row.order_key)]));
     control = saved.map((row) => ({
       id: row.id,
-      timestamp: row.timestamp,
+      date: row.date,
+      orderKey: orderKeys.get(row.id)!,
       type: row.transaction_type,
       cents: BigInt(row.amount.replace('.', '')),
       system: row.category_id === system.id,
@@ -259,25 +261,25 @@ describe('Transactions feed against a control selection (e2e)', () => {
     }
   });
 
-  const period = { from: '2026-03-01T00:00:00.000Z', to: '2026-04-30T23:59:59.999Z' };
+  const period = { from_date: '2026-03-01', to_date: '2026-04-30' };
 
   describe('pages and totals match the control selection', () => {
     it.each<[string, Partial<FeedQuery>, number]>([
-      ['the whole period in Berlin, across the DST change', { time_zone: 'Europe/Berlin' }, 7],
-      ['the whole period in Tokyo, pages of 100', { time_zone: 'Asia/Tokyo' }, 100],
-      ['New York, pages of 50', { time_zone: 'America/New_York' }, 50],
-      ['description and category name at once, Cyrillic in any case', { time_zone: 'UTC', q: 'КОФЕ' }, 9],
-      ['accents ignored', { time_zone: 'UTC', q: 'cafe creme' }, 5],
-      ['ё and е alike', { time_zone: 'UTC', q: 'елка' }, 6],
-      ['the name of an archived category', { time_zone: 'UTC', q: 'old 50' }, 13],
-      ['% literally', { time_zone: 'UTC', q: '50%' }, 20],
-      ['_ literally', { time_zone: 'UTC', q: 'a_b' }, 20],
-      ['outer spaces trimmed, inner kept', { time_zone: 'UTC', q: '  с собой ' }, 20],
-      ['the initial balance by its category name', { time_zone: 'UTC', q: 'initial' }, 5],
-      ['regular records only', { time_zone: 'Europe/Berlin', kind: 'regular' }, 30],
-      ['initial balances only', { time_zone: 'UTC', kind: 'initial_balance' }, 5],
-      ['income only', { time_zone: 'UTC', transaction_type: TransactionType.INCOME }, 30],
-      ['search with a type filter', { time_zone: 'UTC', q: 'кофе', transaction_type: TransactionType.EXPENSE }, 25],
+      ['the whole period, across a DST change, pages of 7', {}, 7],
+      ['the whole period, pages of 100', {}, 100],
+      ['the whole period, pages of 50', {}, 50],
+      ['description and category name at once, Cyrillic in any case', { q: 'КОФЕ' }, 9],
+      ['accents ignored', { q: 'cafe creme' }, 5],
+      ['ё and е alike', { q: 'елка' }, 6],
+      ['the name of an archived category', { q: 'old 50' }, 13],
+      ['% literally', { q: '50%' }, 20],
+      ['_ literally', { q: 'a_b' }, 20],
+      ['outer spaces trimmed, inner kept', { q: '  с собой ' }, 20],
+      ['the initial balance by its category name', { q: 'initial' }, 5],
+      ['regular records only', { kind: 'regular' }, 30],
+      ['initial balances only', { kind: 'initial_balance' }, 5],
+      ['income only', { transaction_type: TransactionType.INCOME }, 30],
+      ['search with a type filter', { q: 'кофе', transaction_type: TransactionType.EXPENSE }, 25],
     ])('%s', async (_, params, limit) => {
       const q = { ...period, ...params } as FeedQuery;
       const pages = await walkForward(q, limit);
@@ -295,22 +297,22 @@ describe('Transactions feed against a control selection (e2e)', () => {
         { assignment: 'space' },
         { assignment: 'unassigned' },
       ]) {
-        const q = { ...period, time_zone: 'UTC', ...params } as FeedQuery;
+        const q = { ...period, ...params } as FeedQuery;
 
         checkAgainstControl(q, await walkForward(q, 12));
       }
     });
 
-    it('takes both bounds inclusively, to the millisecond', async () => {
-      const bounds = { from: '2026-03-25T00:00:00.000Z', to: '2026-03-29T12:00:00.000Z', time_zone: 'UTC' };
+    it('takes both dates inclusively, each in full', async () => {
+      const bounds = { from_date: '2026-03-25', to_date: '2026-03-29' };
       const pages = await walkForward(bounds, 15);
       const ids = pages.flatMap((page) => page.items.map((item) => item.id));
 
       checkAgainstControl(bounds, pages);
       expect(ids).toContain(control[0].id);
-      expect(expected(bounds).some((row) => row.timestamp.toISOString() === bounds.to)).toBe(true);
+      expect(expected(bounds).filter((row) => row.date === bounds.to_date).length).toBeGreaterThan(1);
 
-      const narrower = { from: '2026-03-25T00:00:00.001Z', to: '2026-03-29T11:59:59.999Z', time_zone: 'UTC' };
+      const narrower = { from_date: '2026-03-26', to_date: '2026-03-28' };
       const inner = (await walkForward(narrower, 100)).flatMap((page) => page.items.map((item) => item.id));
 
       expect(inner).not.toContain(control[0].id);
@@ -318,7 +320,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
     });
 
     it('returns an empty selection with zero totals', async () => {
-      expect(await feed({ ...period, time_zone: 'UTC', q: 'nothing-like-this' })).toEqual({
+      expect(await feed({ ...period, q: 'nothing-like-this' })).toEqual({
         items: [],
         page_info: { next_cursor: null, previous_cursor: null },
         summary: { count: 0, income: '0.00', expense: '0.00' },
@@ -329,7 +331,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
 
   describe('moving both ways', () => {
     it('walks back from the last page to the first through previous_cursor', async () => {
-      const q = { ...period, time_zone: 'Europe/Berlin' };
+      const q = { ...period };
       const forward = await walkForward(q, 9);
       const back = [forward[forward.length - 1]];
 
@@ -343,7 +345,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
     });
 
     it('opens around every tenth record and reaches both ends without gaps', async () => {
-      const q = { ...period, time_zone: 'UTC' };
+      const q = { ...period };
       const all = expected(q).map((row) => row.id);
 
       for (let index = 0; index < all.length; index += 40) {
@@ -374,16 +376,16 @@ describe('Transactions feed against a control selection (e2e)', () => {
 
   describe('access and filters', () => {
     it('does not search the names of people', async () => {
-      expect((await feed({ ...period, time_zone: 'UTC', q: 'E2E' })).summary.count).toBe(0);
+      expect((await feed({ ...period, q: 'E2E' })).summary.count).toBe(0);
     });
 
     it('reads an assignment to a user who is not a member as a former member, archived categories as archived', async () => {
-      const page = await feed({ ...period, time_zone: 'UTC', assignment: `member:${outsider.userId}`, limit: 100 });
+      const page = await feed({ ...period, assignment: `member:${outsider.userId}`, limit: 100 });
 
       expect(page.items.length).toBeGreaterThan(0);
       expect(page.items.every((item) => item.assignment.status === 'former_member')).toBe(true);
 
-      const old = await feed({ ...period, time_zone: 'UTC', category_id: archived.id, limit: 1 });
+      const old = await feed({ ...period, category_id: archived.id, limit: 1 });
       expect(old.items[0]).toMatchObject({ category: { id: archived.id, is_archived: true } });
     });
 
@@ -391,7 +393,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
       ['a category of another space', () => ({ category_id: foreignCategoryId }), 'FORBIDDEN_CATEGORY'],
       ['a user the space never knew', () => ({ assignment: 'member:2147483647' }), 'FORBIDDEN_MEMBER'],
     ])('refuses %s as a filter, as the count does', async (_, params, code) => {
-      const feedRes = await get(owner, '/feed', { ...period, time_zone: 'UTC', ...params() });
+      const feedRes = await get(owner, '/feed', { ...period, ...params() });
       const countRes = await get(owner, '/count', { ...period, ...params() });
 
       expect(feedRes.status).toBe(403);
@@ -400,11 +402,11 @@ describe('Transactions feed against a control selection (e2e)', () => {
     });
 
     it('checks the request shape first, then refuses a member of another space', async () => {
-      const res = await get(outsider, '/feed', { ...period, time_zone: 'UTC', cursor: 'bogus-but-well-formed' });
+      const res = await get(outsider, '/feed', { ...period, cursor: 'bogus-but-well-formed' });
 
       expect(res.status).toBe(400);
 
-      const forbidden = await get(outsider, '/feed', { ...period, time_zone: 'UTC' });
+      const forbidden = await get(outsider, '/feed', { ...period });
       expect(forbidden.status).toBe(403);
       expect(forbidden.body.code).toBe('FORBIDDEN_SPACE');
     });
@@ -422,9 +424,9 @@ describe('Transactions feed against a control selection (e2e)', () => {
         { transaction_type: TransactionType.INCOME },
         { category_id: archived.id },
         { assignment: `member:${outsider.userId}`, q: 'кофе' },
-        { from: '2026-03-29T12:00:00.000Z', to: '2026-03-29T12:00:00.000Z' },
+        { from_date: '2026-03-29', to_date: '2026-03-29' },
       ]) {
-        const q = { ...period, time_zone: 'UTC', ...params } as FeedQuery;
+        const q = { ...period, ...params } as FeedQuery;
         const count = await get(owner, '/count', { ...period, ...params });
         const page = await feed({ ...q, limit: 1 });
 
@@ -434,7 +436,7 @@ describe('Transactions feed against a control selection (e2e)', () => {
       }
 
       const latest = await get(owner, '/latest', {});
-      const newest = expected({ from: '1970-01-01T00:00:01.000Z', to: '2038-01-19T03:14:07.999Z', time_zone: 'UTC' });
+      const newest = expected({ from_date: '1000-01-01', to_date: '9999-12-31' });
       expect(latest.body.id).toBe(newest[0].id);
     });
 
@@ -455,12 +457,11 @@ describe('Transactions feed against a control selection (e2e)', () => {
           'around_id',
           'category_id',
           'cursor',
-          'from',
+          'from_date',
           'kind',
           'limit',
           'q',
-          'time_zone',
-          'to',
+          'to_date',
           'transaction_type',
           'assignment',
         ].sort(),

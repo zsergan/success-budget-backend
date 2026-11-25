@@ -7,10 +7,15 @@ import {
   createVerifiedMember,
   deleteUsers,
   insertLegacyTransaction,
+  shiftDate,
+  today,
 } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
-import { monthPeriodAt } from '@shared/utils';
+import { calendarDateIn, monthPeriodAt } from '@shared/utils';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
+
+const dayBefore = (date: string) => shiftDate(date, -1);
+const dayAfter = (date: string) => shiftDate(date, 1);
 
 describe('Transactions (e2e)', () => {
   let testApp: TestApp;
@@ -64,7 +69,7 @@ describe('Transactions (e2e)', () => {
   }
 
   // a starting balance a wallet left in the history of the space
-  async function startingBalance(member: Member, amount: string, timestamp = new Date()): Promise<string> {
+  async function startingBalance(member: Member, amount: string, date = today()): Promise<string> {
     const [system] = await testApp.dataSource.query('SELECT id FROM categories WHERE space_id = ? AND is_system = 1', [
       member.spaceId,
     ]);
@@ -75,7 +80,7 @@ describe('Transactions (e2e)', () => {
       categoryId: system.id,
       type: 'income',
       amount,
-      timestamp,
+      date,
     });
 
     return id;
@@ -88,7 +93,8 @@ describe('Transactions (e2e)', () => {
         category_id: categoryId,
         transaction_type: 'expense',
         amount: '12.3',
-        timestamp: '2026-09-15T10:00:00.000Z',
+        date: '2026-09-15',
+        time_zone: 'UTC',
         description: 'Lunch',
         assignment: { kind: 'space' },
       })
@@ -114,7 +120,7 @@ describe('Transactions (e2e)', () => {
         .expect(200);
       const feed = await api(owner)
         .get(`${transactions(owner)}/feed`)
-        .query({ from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T23:59:59.999Z', time_zone: 'UTC' })
+        .query({ from_date: '2026-09-01', to_date: '2026-09-30' })
         .expect(200);
 
       expect(res.body).toEqual(feed.body.items.find((item: { id: string }) => item.id === id));
@@ -123,7 +129,7 @@ describe('Transactions (e2e)', () => {
         kind: 'regular',
         transaction_type: 'expense',
         amount: '12.30',
-        timestamp: '2026-09-15T10:00:00.000Z',
+        date: '2026-09-15',
         description: 'Lunch',
         version: 1,
         category: expect.objectContaining({ id: expenseCategoryId, is_active: 1, is_archived: false }),
@@ -330,7 +336,8 @@ describe('Transactions (e2e)', () => {
       category_id: expenseCategoryId,
       transaction_type: 'expense',
       amount: '12.3',
-      timestamp: '2026-09-15T10:00:00.000Z',
+      date: '2026-09-15',
+      time_zone: 'UTC',
       assignment: { kind: 'space' },
       ...overrides,
     });
@@ -352,10 +359,16 @@ describe('Transactions (e2e)', () => {
 
     it.each<[string, Record<string, unknown>, string]>([
       ['a zero amount', { amount: '0.00' }, 'amount must be greater than 0'],
+      ['a date after today', { date: dayAfter(today()) }, 'date must not be after today in time_zone'],
       [
-        'a timestamp in the future',
-        { timestamp: new Date(Date.now() + 10 * 60_000).toISOString() },
-        'timestamp must not be in the future',
+        'a date with a time',
+        { date: '2026-09-15T10:00:00.000Z' },
+        'date must be a calendar date as YYYY-MM-DD from 1000-01-01 to 9999-12-31',
+      ],
+      [
+        'a timestamp of an earlier release',
+        { timestamp: '2026-09-15T10:00:00.000Z' },
+        'property timestamp should not exist',
       ],
       [
         'a description over 140 characters',
@@ -370,13 +383,20 @@ describe('Transactions (e2e)', () => {
       );
     });
 
-    it('accepts a timestamp within the clock drift margin and 140 emoji', async () => {
+    it('accepts today in the zone of the writer and 140 emoji', async () => {
       const res = await api(owner)
         .post(transactions(owner))
-        .send(body({ timestamp: new Date(Date.now() + 30_000).toISOString(), description: '🙂'.repeat(140) }))
+        .send(
+          body({
+            date: calendarDateIn(new Date(), 'Pacific/Kiritimati'),
+            time_zone: 'Pacific/Kiritimati',
+            description: '🙂'.repeat(140),
+          }),
+        )
         .expect(201);
 
       expect([...res.body.transaction.description]).toHaveLength(140);
+      expect(res.body.transaction.date).toBe(calendarDateIn(new Date(), 'Pacific/Kiritimati'));
     });
 
     it('stores a blank description as null', async () => {
@@ -470,7 +490,7 @@ describe('Transactions (e2e)', () => {
       ) => block.by_category.primary_items.find((item) => item.id === categoryId)?.amount;
       const before = await summary('2026-08-01');
 
-      await patch(id, 1, { timestamp: '2026-08-20T10:00:00.000Z', category_id: secondExpenseCategoryId }).expect(200);
+      await patch(id, 1, { date: '2026-08-20', time_zone: 'UTC', category_id: secondExpenseCategoryId }).expect(200);
 
       const after = await summary('2026-08-01');
       const previous = Number(amountOf(before, secondExpenseCategoryId) ?? 0);
@@ -529,7 +549,8 @@ describe('Transactions (e2e)', () => {
       const res = await patch(id, 1, {
         amount: '12.30',
         description: ' Lunch ',
-        timestamp: '2026-09-15T13:00:00.000+03:00',
+        date: '2026-09-15',
+        time_zone: 'Asia/Tokyo',
         assignment: { kind: 'space' },
       }).expect(200);
 
@@ -623,7 +644,8 @@ describe('Transactions (e2e)', () => {
           category_id: expenseCategoryId,
           transaction_type: 'expense',
           amount: '12.3',
-          timestamp: '2026-09-15T10:00:00.000Z',
+          date: '2026-09-15',
+          time_zone: 'UTC',
           assignment: { kind: 'space' },
         })
         .expect(201);
@@ -690,11 +712,17 @@ describe('Transactions (e2e)', () => {
           .get(`${base(member)}/categories`)
           .expect(200);
         const categoryId = categories.body.expenses[0].id;
-        const now = new Date().toISOString();
         const add = (assignment: object, amount: string) =>
           api(member)
             .post(transactions(member))
-            .send({ assignment, category_id: categoryId, transaction_type: 'expense', amount, timestamp: now })
+            .send({
+              assignment,
+              category_id: categoryId,
+              transaction_type: 'expense',
+              amount,
+              date: today(),
+              time_zone: 'UTC',
+            })
             .expect(201)
             .then((res) => res.body.transaction.id as string);
         await add({ kind: 'space' }, '10');
@@ -715,7 +743,7 @@ describe('Transactions (e2e)', () => {
               .expect(200),
             api(member)
               .get(`${transactions(member)}/feed`)
-              .query({ from: '2000-01-01T00:00:00.000Z', to: '2037-12-31T23:59:59.999Z', time_zone: 'UTC' })
+              .query({ from_date: '2000-01-01', to_date: '2099-12-31' })
               .expect(200),
           ]);
           return {
@@ -746,32 +774,34 @@ describe('Transactions (e2e)', () => {
   });
 
   describe('history feed and count', () => {
-    it('orders equal timestamps by id and counts the records the feed returns, starting balance included', async () => {
+    it('orders the records of a date by creation and counts what the feed returns, starting balance included', async () => {
       const member = await createVerifiedMember(testApp, 'transactions-history');
 
       try {
         const categories = await api(member)
           .get(`${base(member)}/categories`)
           .expect(200);
-        await startingBalance(member, '50', new Date(Date.now() - 120_000));
-        const at = new Date(Date.now() - 60_000).toISOString();
+        await startingBalance(member, '50', '2026-09-14');
+        const created: string[] = [];
         for (let i = 0; i < 3; i++) {
-          await api(member)
+          const res = await api(member)
             .post(transactions(member))
             .send({
               category_id: categories.body.expenses[0].id,
               transaction_type: 'expense',
               amount: '1',
-              timestamp: at,
+              date: '2026-09-15',
+              time_zone: 'UTC',
               assignment: { kind: 'space' },
             })
             .expect(201);
+          created.push(res.body.transaction.id);
         }
-        const query = { from: new Date(Date.now() - 3_600_000).toISOString(), to: new Date().toISOString() };
+        const query = { from_date: '2026-09-14', to_date: '2026-09-15' };
 
         const list = await api(member)
           .get(`${transactions(member)}/feed`)
-          .query({ ...query, time_zone: 'UTC' })
+          .query(query)
           .expect(200);
         const count = await api(member)
           .get(`${transactions(member)}/count`)
@@ -782,9 +812,10 @@ describe('Transactions (e2e)', () => {
           .query({ ...query, transaction_type: 'expense' })
           .expect(200);
 
-        const sameInstant = list.body.items.filter((row: { timestamp: string }) => row.timestamp === at);
-        const ids = sameInstant.map((row: { id: string }) => row.id);
-        expect(ids).toEqual([...ids].sort().reverse());
+        expect(list.body.items.map((row: { id: string; date: string }) => [row.id, row.date])).toEqual([
+          ...created.reverse().map((id) => [id, '2026-09-15']),
+          [expect.any(String), '2026-09-14'],
+        ]);
         expect(list.body.items.some((row: { kind: string }) => row.kind === 'initial_balance')).toBe(true);
         expect(count.body).toEqual({ count: list.body.items.length });
         expect(list.body.items).toHaveLength(4);
@@ -801,8 +832,8 @@ describe('Transactions (e2e)', () => {
       const member = await createVerifiedMember(testApp, 'transactions-only-initial');
 
       try {
-        await startingBalance(member, '10', new Date(Date.now() - 60_000));
-        const query = { from: new Date(Date.now() - 3_600_000).toISOString(), to: new Date().toISOString() };
+        await startingBalance(member, '10');
+        const query = { from_date: dayBefore(today()), to_date: today() };
 
         const count = await api(member)
           .get(`${transactions(member)}/count`)
@@ -820,17 +851,29 @@ describe('Transactions (e2e)', () => {
       }
     });
 
-    it('rejects from after to on the count', async () => {
+    it('rejects from_date after to_date on the count', async () => {
       const res = await api(owner)
         .get(`${transactions(owner)}/count`)
-        .query({ from: '2026-09-02T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' })
+        .query({ from_date: '2026-09-02', to_date: '2026-09-01' })
         .expect(400);
 
       expect(res.body).toEqual(
         expect.objectContaining({
           code: 'VALIDATION_FAILED',
-          message: [{ field: 'from', error: 'from must not be after to' }],
+          message: [{ field: 'from_date', error: 'from_date must not be after to_date' }],
         }),
+      );
+    });
+
+    it('refuses the instant bounds of earlier releases', async () => {
+      const res = await api(owner)
+        .get(`${transactions(owner)}/feed`)
+        .query({ from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T23:59:59.999Z', time_zone: 'UTC' })
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+      expect(res.body.message.map((error: { field: string }) => error.field).sort()).toEqual(
+        expect.arrayContaining(['from', 'from_date', 'time_zone', 'to', 'to_date']),
       );
     });
   });
@@ -853,14 +896,15 @@ describe('Transactions (e2e)', () => {
       return res.body.expenses;
     }
 
-    function addExpense(categoryId: number, amount: string, timestamp: string) {
+    function addExpense(categoryId: number, amount: string, date: string, timeZone: string) {
       return api(member)
         .post(transactions(member))
         .send({
           category_id: categoryId,
           transaction_type: 'expense',
           amount,
-          timestamp,
+          date,
+          time_zone: timeZone,
           assignment: { kind: 'member', user_id: member.userId },
         })
         .expect(201)
@@ -873,10 +917,10 @@ describe('Transactions (e2e)', () => {
         .post(`${base(member)}/limits`)
         .send({ amount: '1000' })
         .expect(201);
-      // the first instant of this month at UTC+14 is always past, and still
-      // the previous month at UTC-11 unless that zone's month has not turned yet
+      // the first day of this month at UTC+14 is always past there, and still
+      // the previous month at UTC-11 unless that zone's month has turned too
       const east = monthPeriodAt(new Date(), 'Pacific/Kiritimati');
-      await addExpense(category.id, '10', east.from.toISOString());
+      await addExpense(category.id, '10', east.start_date, 'Pacific/Kiritimati');
 
       const limitsIn = (timeZone: string) =>
         api(member)
@@ -892,11 +936,9 @@ describe('Transactions (e2e)', () => {
         time_zone: 'Pacific/Kiritimati',
         start_date: east.start_date,
         end_date: east.end_date,
-        from: east.from.toISOString(),
-        to: east.to.toISOString(),
       });
       expect(eastLimits.total.spent).toBe(10);
-      expect(westLimits.total.spent).toBe(east.from >= west.from && east.from <= west.to ? 10 : 0);
+      expect(westLimits.total.spent).toBe(east.start_date === west.start_date ? 10 : 0);
     });
 
     it('rejects a fixed offset as the limits zone', async () => {
@@ -920,10 +962,9 @@ describe('Transactions (e2e)', () => {
         .expect(201);
       const zone = 'Europe/Moscow';
       const month = monthPeriodAt(new Date(), zone);
-      const created = await addExpense(first.id, '25', month.from.toISOString());
-      // the last millisecond of the previous month in Moscow
-      const previousMonthEnd = new Date(month.from.getTime() - 1).toISOString();
-      const bounds = { from: month.from.toISOString(), to: month.to.toISOString() };
+      const created = await addExpense(first.id, '25', month.start_date, zone);
+      const previousMonthEnd = dayBefore(month.start_date);
+      const bounds = { from_date: month.start_date, to_date: month.end_date };
 
       const snapshot = async () => {
         const [limits, summary, breakdown, history, count, categories] = await Promise.all([
@@ -941,7 +982,7 @@ describe('Transactions (e2e)', () => {
             .expect(200),
           api(member)
             .get(`${transactions(member)}/feed`)
-            .query({ ...bounds, time_zone: zone, transaction_type: 'expense' })
+            .query({ ...bounds, transaction_type: 'expense' })
             .expect(200),
           api(member)
             .get(`${transactions(member)}/count`)
@@ -974,7 +1015,7 @@ describe('Transactions (e2e)', () => {
       await api(member)
         .patch(`${transactions(member)}/${created.id}`)
         .set('If-Match', '"1"')
-        .send({ timestamp: previousMonthEnd, category_id: second.id, amount: '30' })
+        .send({ date: previousMonthEnd, time_zone: zone, category_id: second.id, amount: '30' })
         .expect(200);
 
       expect(await snapshot()).toEqual({

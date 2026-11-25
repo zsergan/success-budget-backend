@@ -342,8 +342,8 @@ describe('LimitsService', () => {
       expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
       expect(transactionQueriesService.getExpensesByCategory).toHaveBeenCalledWith(
         spaceId,
-        expect.any(Date),
-        expect.any(Date),
+        expect.stringMatching(/^\d{4}-\d{2}-01$/),
+        expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
         manager,
       );
       expect(result.total).toMatchObject({ id: 1, spent: 30, in_percent: 30 });
@@ -369,13 +369,11 @@ describe('LimitsService', () => {
         time_zone: 'Europe/Moscow',
         start_date: '2026-10-01',
         end_date: '2026-10-31',
-        from: new Date('2026-09-30T21:00:00.000Z'),
-        to: new Date('2026-10-31T20:59:59.999Z'),
       });
       expect(transactionQueriesService.getExpensesByCategory).toHaveBeenCalledWith(
         spaceId,
-        result.period.from,
-        result.period.to,
+        '2026-10-01',
+        '2026-10-31',
         manager,
       );
     });

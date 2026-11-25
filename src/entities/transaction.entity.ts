@@ -7,26 +7,27 @@ import { User } from './user.entity';
 import { AssignmentKind, AuthorSource, TransactionType } from '@shared/enums';
 
 @Entity('transactions')
-@Index('IDX_transactions_space_timestamp_id', [
+@Index('IDX_transactions_space_date', [
   'space_id',
-  'timestamp',
-  'id',
+  'date',
+  'order_key',
   'category_id',
   'transaction_type',
   'amount',
   'assignment_kind',
   'assigned_user_id',
 ])
-@Index('IDX_transactions_space_assignment', [
+@Index('IDX_transactions_space_assignment_date', [
   'space_id',
   'assignment_kind',
   'assigned_user_id',
-  'timestamp',
-  'id',
+  'date',
+  'order_key',
   'category_id',
   'transaction_type',
   'amount',
 ])
+@Index('UQ_transactions_order_key', ['order_key'], { unique: true })
 @Index('IDX_transactions_author_user', ['author_user_id'])
 @Index('IDX_transactions_assigned_user', ['assigned_user_id'])
 export class Transaction {
@@ -50,8 +51,15 @@ export class Transaction {
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   amount!: string;
 
-  @Column({ type: 'timestamp', precision: 3, default: () => 'CURRENT_TIMESTAMP(3)' })
-  timestamp!: Date;
+  // YYYY-MM-DD: the driver reads DATE columns as strings, never as a Date
+  @Column({ type: 'date' })
+  date!: string;
+
+  // AUTO_INCREMENT, set by MySQL on insert and never written by the app; it
+  // orders the records of one date. A string: a bigint may exceed Number.
+  @Exclude()
+  @Column({ type: 'bigint', unsigned: true, insert: false, update: false })
+  order_key!: string;
 
   @Column({ type: 'text', nullable: true })
   description!: string | null;

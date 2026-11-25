@@ -30,8 +30,8 @@ describe('Transaction feed selection (e2e)', () => {
   let transactions: Repository<Transaction>;
   let member: Member;
 
-  const from = new Date('2026-10-01T00:00:00.000Z');
-  const to = new Date('2026-10-31T23:59:59.999Z');
+  const fromDate = '2026-10-01';
+  const toDate = '2026-10-31';
   const ids: Record<string, string> = {};
   let coffee: Category;
   let salary: Category;
@@ -39,8 +39,8 @@ describe('Transaction feed selection (e2e)', () => {
 
   const selection = (search?: string, extra: TransactionSelection['filters'] = {}): TransactionSelection => ({
     spaceId: member.spaceId,
-    from,
-    to,
+    fromDate,
+    toDate,
     filters: { ...extra, search },
   });
 
@@ -54,14 +54,17 @@ describe('Transaction feed selection (e2e)', () => {
 
   const search = async (text: string) => (await select(text)).map((row) => row.description);
 
-  // the records of the period, newest first; tree, cafe and percent share a timestamp, so their ids decide
+  // the records of the period, newest first; tree, cafe and percent share a
+  // date, so the order of their creates decides: the last one first
   const history = () => [
     ids.quote,
     ids.cashOnly,
     ids.everywhere,
     ids.salary,
     ids.literal,
-    ...[ids.tree, ids.cafe, ids.percent].sort().reverse(),
+    ids.percent,
+    ids.cafe,
+    ids.tree,
     ids.latte,
     ids.initial,
   ];
@@ -92,13 +95,7 @@ describe('Transaction feed selection (e2e)', () => {
     archived = await category('Old 100%_off!', TransactionType.EXPENSE, { is_active: 0, archived_at: new Date() });
     const system = await categories.findOneByOrFail({ space_id: member.spaceId, is_system: 1 });
 
-    const add = async (
-      key: string,
-      timestamp: string,
-      category: Category,
-      amount: string,
-      description: string | null,
-    ) => {
+    const add = async (key: string, date: string, category: Category, amount: string, description: string | null) => {
       const saved = await transactions.save(
         transactions.create({
           space_id: member.spaceId,
@@ -107,24 +104,24 @@ describe('Transaction feed selection (e2e)', () => {
           category_id: category.id,
           transaction_type: category.transaction_type,
           amount,
-          timestamp: new Date(timestamp),
+          date,
           description,
         }),
       );
       ids[key] = saved.id;
     };
 
-    await add('initial', '2026-10-01T06:00:00.000Z', system, '100.00', null);
-    await add('latte', '2026-10-02T08:00:00.000Z', coffee, '4.50', 'ЛАТТЕ на вынос');
-    await add('tree', '2026-10-03T08:00:00.000Z', coffee, '30.00', 'Ёлка');
-    await add('cafe', '2026-10-03T08:00:00.000Z', coffee, '12.00', 'Café Central');
-    await add('percent', '2026-10-03T08:00:00.000Z', coffee, '1.00', '100 off');
-    await add('literal', '2026-10-04T09:00:00.000Z', archived, '2.00', 'a_b 50%! deal');
-    await add('salary', '2026-10-05T10:00:00.000Z', salary, '2500.00', 'October');
-    await add('everywhere', '2026-10-06T11:00:00.000Z', coffee, '3.00', 'Card кофе');
-    await add('cashOnly', '2026-10-07T12:00:00.000Z', coffee, '7.00', null);
-    await add('quote', '2026-10-08T13:00:00.000Z', coffee, '1.50', "it's -- fine");
-    await add('outside', '2026-11-02T08:00:00.000Z', coffee, '9.00', 'Кофе в ноябре');
+    await add('initial', '2026-10-01', system, '100.00', null);
+    await add('latte', '2026-10-02', coffee, '4.50', 'ЛАТТЕ на вынос');
+    await add('tree', '2026-10-03', coffee, '30.00', 'Ёлка');
+    await add('cafe', '2026-10-03', coffee, '12.00', 'Café Central');
+    await add('percent', '2026-10-03', coffee, '1.00', '100 off');
+    await add('literal', '2026-10-04', archived, '2.00', 'a_b 50%! deal');
+    await add('salary', '2026-10-05', salary, '2500.00', 'October');
+    await add('everywhere', '2026-10-06', coffee, '3.00', 'Card кофе');
+    await add('cashOnly', '2026-10-07', coffee, '7.00', null);
+    await add('quote', '2026-10-08', coffee, '1.50', "it's -- fine");
+    await add('outside', '2026-11-02', coffee, '9.00', 'Кофе в ноябре');
   });
 
   afterAll(async () => {
@@ -161,9 +158,9 @@ describe('Transaction feed selection (e2e)', () => {
       const rows = await select('кофе');
 
       expect(rows.filter((row) => row.id === ids.everywhere)).toHaveLength(1);
-      expect(await queries.countSelection({ spaceId: member.spaceId, from, to, filters: { search: 'кофе' } })).toBe(
-        rows.length,
-      );
+      expect(
+        await queries.countSelection({ spaceId: member.spaceId, fromDate, toDate, filters: { search: 'кофе' } }),
+      ).toBe(rows.length);
     });
 
     it.each([
@@ -193,8 +190,8 @@ describe('Transaction feed selection (e2e)', () => {
       expect(
         await queries.countSelection({
           spaceId: member.spaceId,
-          from,
-          to,
+          fromDate,
+          toDate,
           filters: {
             search: 'кофе',
             kind: TransactionKind.REGULAR,
@@ -240,7 +237,7 @@ describe('Transaction feed selection (e2e)', () => {
         }
 
         const last = page.items[page.items.length - 1];
-        after = { timestamp: last.timestamp, id: last.id };
+        after = { date: last.date, orderKey: last.order_key };
       }
     };
 
@@ -265,7 +262,7 @@ describe('Transaction feed selection (e2e)', () => {
 
       const page = await queries.getFeedPage(selection(), {
         limit: 3,
-        before: { timestamp: middle.timestamp, id: middle.id },
+        before: { date: middle.date, orderKey: middle.order_key },
       });
 
       expect(page.items.map((row) => row.id)).toEqual(ordered.slice(2, 5));
@@ -273,17 +270,21 @@ describe('Transaction feed selection (e2e)', () => {
 
       const top = await queries.getFeedPage(selection(), {
         limit: 10,
-        before: { timestamp: middle.timestamp, id: middle.id },
+        before: { date: middle.date, orderKey: middle.order_key },
       });
       expect(top.items.map((row) => row.id)).toEqual(ordered.slice(0, 5));
       expect(top.hasMore).toBe(false);
     });
 
-    it('orders records of one timestamp by id, descending', async () => {
-      const sameInstant = [ids.tree, ids.cafe, ids.percent].sort().reverse();
+    it('orders the records of one date by their creates, the last one first, also after an edit', async () => {
+      const sameDate = [ids.percent, ids.cafe, ids.tree];
       const seen = await walk(selection(), 1);
 
-      expect(seen.filter((id) => sameInstant.includes(id))).toEqual(sameInstant);
+      expect(seen.filter((id) => sameDate.includes(id))).toEqual(sameDate);
+
+      const tree = await transactions.findOneByOrFail({ id: ids.tree });
+      await transactions.update({ id: ids.tree }, { description: 'Ёлка' });
+      expect((await transactions.findOneByOrFail({ id: ids.tree })).order_key).toBe(tree.order_key);
     });
 
     it('sums the selection, leaving initial balances out of income and expense', async () => {
@@ -297,34 +298,20 @@ describe('Transaction feed selection (e2e)', () => {
       });
     });
 
-    it('nets each interval over the whole selection, initial balances excluded', async () => {
-      const day = (date: string) => ({
-        from: new Date(`${date}T00:00:00.000Z`),
-        to: new Date(`${date}T23:59:59.999Z`),
-      });
-
+    it('nets each date over the whole selection, initial balances excluded', async () => {
       expect(
-        await queries.getFeedIntervalNets(selection(), [
-          day('2026-10-03'),
-          day('2026-10-01'),
-          day('2026-10-05'),
-          day('2026-10-20'),
-        ]),
+        await queries.getFeedDateNets(selection(), ['2026-10-03', '2026-10-01', '2026-10-05', '2026-10-20']),
       ).toEqual([-4300n, 0n, 250000n, 0n]);
-      expect(await queries.getFeedIntervalNets(selection('café'), [day('2026-10-03')])).toEqual([-1200n]);
-      expect(
-        await queries.getFeedIntervalNets({ ...selection(), to: new Date('2026-10-03T07:59:59.999Z') }, [
-          day('2026-10-03'),
-        ]),
-      ).toEqual([0n]);
+      expect(await queries.getFeedDateNets(selection('café'), ['2026-10-03'])).toEqual([-1200n]);
+      expect(await queries.getFeedDateNets({ ...selection(), toDate: '2026-10-02' }, ['2026-10-03'])).toEqual([0n]);
     });
 
     it('finds the position of a record only inside the selection', async () => {
       const tree = await transactions.findOneByOrFail({ id: ids.tree });
 
       expect(await queries.findFeedPosition(selection('ёлка'), ids.tree)).toEqual({
-        timestamp: tree.timestamp,
-        id: ids.tree,
+        date: '2026-10-03',
+        orderKey: tree.order_key,
       });
       expect(await queries.findFeedPosition(selection('кафе'), ids.tree)).toBeNull();
       expect(await queries.findFeedPosition(selection(), ids.outside)).toBeNull();

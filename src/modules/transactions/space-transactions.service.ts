@@ -24,7 +24,7 @@ import { TransactionFeedReader } from './transaction-feed-reader';
 import { ApiException } from '@shared/api.exception';
 import { AssignmentKind, PersonStatus, TransactionOperationStatus } from '@shared/enums';
 import { recordedAuthor } from '@shared/transaction-ownership';
-import { assertFound, readSnapshot, resolveTimeZone, toDate } from '@shared/utils';
+import { assertFound, readSnapshot } from '@shared/utils';
 import {
   TransactionQueriesService,
   type LoadedTransaction,
@@ -38,8 +38,8 @@ import { CategoriesService } from '@modules/categories/categories.service';
 function toSelection(spaceId: number, query: TransactionCountQueryV2Dto): TransactionSelection {
   return {
     spaceId,
-    from: toDate(query.from),
-    to: toDate(query.to),
+    fromDate: query.from_date,
+    toDate: query.to_date,
     filters: {
       transactionType: query.transaction_type,
       kind: query.kind,
@@ -58,6 +58,23 @@ const toOption =
     name: person.name,
     status,
   });
+
+// Creates and edits of the calendar-date format: keys of the earlier format
+// (transactions.v2.create, .update) never answer them. Deletes did not change.
+const OPERATIONS = {
+  create: 'transactions.v2.date.create',
+  update: 'transactions.v2.date.update',
+  delete: 'transactions.v2.delete',
+};
+
+// What a key compares: time_zone only tells today and writes nothing, so a
+// retry from another zone is the same request.
+const fingerprint = <T extends { time_zone?: string }>(body: T): Omit<T, 'time_zone'> => {
+  const copy = { ...body };
+  delete copy.time_zone;
+
+  return copy;
+};
 
 // The transactions API (docs/transactions-v2-contract.md): records of a space
 // with an author and an assignment.
@@ -80,7 +97,7 @@ export class SpaceTransactionsService {
     dto: CreateTransactionV2Dto,
     options: WriteOptions = {},
   ): Promise<TransactionResultV2> {
-    const idempotency = { operation: 'transactions.v2.create', key: options.idempotencyKey, payload: dto };
+    const idempotency = { operation: OPERATIONS.create, key: options.idempotencyKey, payload: fingerprint(dto) };
     const operationId = dto.client_operation_id?.toLowerCase();
 
     return this.writes.run(
@@ -105,7 +122,7 @@ export class SpaceTransactionsService {
             category_id: category.id,
             transaction_type: dto.transaction_type,
             amount: dto.amount,
-            timestamp: toDate(dto.timestamp),
+            date: dto.date,
             description: normalizeDescription(dto.description),
           }),
         );
@@ -134,9 +151,9 @@ export class SpaceTransactionsService {
   ): Promise<TransactionResultV2> {
     const expectedVersion = requireVersion(options);
     const idempotency = {
-      operation: 'transactions.v2.update',
+      operation: OPERATIONS.update,
       key: options.idempotencyKey,
-      payload: { transactionId, expectedVersion, body: dto },
+      payload: { transactionId, expectedVersion, body: fingerprint(dto) },
     };
 
     return this.writes.run(
@@ -149,7 +166,7 @@ export class SpaceTransactionsService {
         assertVersion(original, expectedVersion);
 
         const changes = changedFields(original, dto);
-        assertNewValues(changes);
+        assertNewValues(changes, dto);
         await this.writes.checkChangedCategory(manager, spaceId, original, changes);
 
         if (changes.assignment_kind !== undefined) {
@@ -170,7 +187,7 @@ export class SpaceTransactionsService {
   async remove(userId: number, spaceId: number, transactionId: string, options: WriteOptions = {}): Promise<void> {
     const expectedVersion = requireVersion(options);
     const idempotency = {
-      operation: 'transactions.v2.delete',
+      operation: OPERATIONS.delete,
       key: options.idempotencyKey,
       payload: { transactionId, expectedVersion },
     };
@@ -190,7 +207,6 @@ export class SpaceTransactionsService {
     return this.feedReader.read(
       {
         selection,
-        timeZone: resolveTimeZone(query.time_zone)!,
         limit: query.limit,
         cursor: query.cursor,
         aroundId: query.around_id,
@@ -280,9 +296,9 @@ export class SpaceTransactionsService {
   // An archived category is a valid filter: its history is kept. A member
   // filter takes anyone the space knows as an assignee, so former members
   // stay filterable.
-  private async checkHistoryQuery(userId: number, { spaceId, from, to, filters = {} }: TransactionSelection) {
-    if (from.getTime() > to.getTime()) {
-      throw new BadRequestException([{ field: 'from', error: 'from must not be after to' }]);
+  private async checkHistoryQuery(userId: number, { spaceId, fromDate, toDate, filters = {} }: TransactionSelection) {
+    if (fromDate > toDate) {
+      throw new BadRequestException([{ field: 'from_date', error: 'from_date must not be after to_date' }]);
     }
 
     await this.spaceAccessService.assertMembership(spaceId, userId);

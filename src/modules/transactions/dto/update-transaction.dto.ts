@@ -2,14 +2,14 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsInt, Min, Max, IsEnum } from 'class-validator';
 
 import { TransactionType } from '@shared/enums';
-import { IsInTimestampRange, IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
+import { IsCalendarDate } from '@shared/decorators/is-calendar-date.decorator';
 import { IsMoneyAmount } from '@shared/decorators/is-money-amount.decorator';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
-import { IsDescription } from './transaction-field.decorators';
+import { IsDescription, IsTimeZoneWithDate } from './transaction-field.decorators';
 
 // Only the format is checked here: whether an amount must be positive or a
-// timestamp not in the future depends on whether it differs from the stored
-// value, so SpaceTransactionsService.update() checks that.
+// date not after today depends on whether it differs from the stored value,
+// so SpaceTransactionsService.update() checks that.
 export class UpdateTransactionDto {
   @ApiPropertyOptional({
     type: 'integer',
@@ -33,13 +33,20 @@ export class UpdateTransactionDto {
   amount?: string;
 
   @ApiPropertyOptional({
-    example: '2026-09-15T10:00:00.000Z',
-    description: 'With Z or a UTC offset; a changed one must not be in the future.',
+    format: 'date',
+    example: '2026-09-15',
+    description: 'YYYY-MM-DD; a changed one must not be after today in time_zone.',
   })
   @IsOptionalNonNull()
-  @IsIsoInstant()
-  @IsInTimestampRange()
-  timestamp?: string;
+  @IsCalendarDate()
+  date?: string;
+
+  @ApiPropertyOptional({
+    example: 'Europe/Moscow',
+    description: "Required with date: the device's IANA zone, telling which day is today. Not stored.",
+  })
+  @IsTimeZoneWithDate()
+  time_zone?: string;
 
   @ApiPropertyOptional({
     type: String,

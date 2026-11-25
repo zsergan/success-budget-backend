@@ -4,8 +4,7 @@ import { IsEnum, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateBy } 
 
 import { TransactionKind, TransactionType } from '@shared/enums';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
-import { IsIsoInstant } from '@shared/decorators/is-iso-date.decorator';
-import { IsTimeZone } from '@shared/decorators/is-local-date.decorator';
+import { IsCalendarDate } from '@shared/decorators/is-calendar-date.decorator';
 import { FEED_CURSOR_MAX_LENGTH } from '../feed-cursor';
 import { MAX_SEARCH_LENGTH, SEARCH_TOO_LONG, isSearchWithinLimit, normalizeSearch } from '../transaction-rules';
 
@@ -22,26 +21,17 @@ const trimSearch = ({ value }: { value: unknown }) => (typeof value === 'string'
 
 // Swagger metadata is explicit: tests build the document without the CLI plugin.
 export class TransactionFeedQueryDto {
-  @ApiProperty({
-    description: 'First instant, inclusive, with Z or a UTC offset.',
-    example: '2026-09-30T21:00:00.000Z',
-  })
-  @IsIsoInstant()
-  from!: string;
+  @ApiProperty({ format: 'date', description: 'First date, inclusive, YYYY-MM-DD.', example: '2026-10-01' })
+  @IsCalendarDate()
+  from_date!: string;
 
   @ApiProperty({
-    description: 'Last instant, inclusive, with Z or a UTC offset; not before from.',
-    example: '2026-10-31T20:59:59.999Z',
+    format: 'date',
+    description: 'Last date, inclusive, YYYY-MM-DD; not before from_date.',
+    example: '2026-10-31',
   })
-  @IsIsoInstant()
-  to!: string;
-
-  @ApiProperty({
-    description: 'IANA zone of the device; groups day_totals. Fixed offsets are rejected.',
-    example: 'Europe/Moscow',
-  })
-  @IsTimeZone()
-  time_zone!: string;
+  @IsCalendarDate()
+  to_date!: string;
 
   @ApiPropertyOptional({
     maxLength: MAX_SEARCH_LENGTH,
