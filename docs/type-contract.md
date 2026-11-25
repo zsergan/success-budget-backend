@@ -107,7 +107,7 @@ decide which day is today, never a stored date. Regression coverage:
 
 Anything else is `400 VALIDATION_FAILED`, field `color`: `#RGB`,
 `#RRGGBBAA`, a missing `#`, CSS names (`red`), functions (`rgb(…)`), a
-preset in another case (`Slate`), whitespace. The type is `CategoryColor`
+preset in another case (`Slate`), whitespace, `null`. The type is `CategoryColor`
 (`@shared/category-color`). The server never maps a custom color to a
 preset or adjusts it: the client adapts contrast for its theme. Every
 category-bearing response (categories, transaction `category`, statistics
