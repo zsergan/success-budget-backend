@@ -248,3 +248,56 @@ The page query alone stays under 7 ms for every period; the all-history
 summary is 56 ms. Every page and aggregate plan is an index range scan or
 lookup on one of the two indexes, with no sort; the loaded rows are read by
 primary key. Reproduce with `npm run bench:feed -- --noise 380000`.
+
+## Calendar dates
+
+Since `1791500000000-ReplaceTransactionTimestampWithDate`
+([v2 contract](transactions-v2-contract.md#calendar-dates-release-c)) a
+record has a `date` (MySQL `DATE`) and an `order_key` (`BIGINT UNSIGNED
+AUTO_INCREMENT`, unique) instead of a timestamp. The history order is
+`date DESC, order_key DESC`, and the two indexes above were replaced with
+the same shapes on the new columns:
+
+- `IDX_transactions_space_date (space_id, date, order_key, category_id,
+transaction_type, amount, assignment_kind, assigned_user_id)`;
+- `IDX_transactions_space_assignment_date (space_id, assignment_kind,
+assigned_user_id, date, order_key, category_id, transaction_type, amount)`.
+
+Every selection compares the column itself (`date >= :fromDate AND date <=
+:toDate`), never a function of it, so the ranges stay index ranges. A page
+keeps the keyset form above: `date <= :d AND (date < :d OR order_key <
+CAST(:k AS UNSIGNED))`; the cast keeps every digit of a key beyond 2^53,
+which a string compared with a `BIGINT` would lose as a double. Day totals
+group by the stored date (`date IN (...) GROUP BY date`) instead of one
+`BETWEEN` per local day. Ties need no `id`: the ordering key is unique.
+
+Measured with `npm run bench:feed -- --noise 380000 --runs 5` (500,000
+rows, 120,000 in the space), median of 5 runs, ms, on the same machine as
+the space-index column above. The generator now draws a date per record, so
+the selections differ slightly; "inside 2000 records of one date" replaces
+the scenario of one instant.
+
+| Scenario                                            | Selection | Space indexes (above) | Date indexes |
+| --------------------------------------------------- | --------: | --------------------: | -----------: |
+| Month, first page                                   |     2,712 |                  10.9 |          9.8 |
+| Year, first page                                    |    29,093 |                    24 |           33 |
+| All history, home (`limit=5`)                       |   120,000 |                    64 |           83 |
+| All history, page 100,000 records deep              |   120,000 |                    70 |           92 |
+| Month, search "coffee"                              |       432 |                    18 |           20 |
+| Year, search "coffee"                               |     4,597 |                    94 |           93 |
+| All history, search "coffee"                        |    17,822 |                   270 |          294 |
+| All history, search with no match                   |         0 |                   270 |          306 |
+| Inside 2,000 records of one date                    |     4,772 |                     - |           14 |
+| All history, around a 2023 record                   |   120,000 |                    71 |           93 |
+| One day with 5,000 records, around the middle       |     5,000 |                    26 |           25 |
+| v2 month, `assignment=unassigned`                   |       402 |                  11.5 |          9.6 |
+| v2 year, `assignment=member:<id>`                   |     7,020 |                  12.2 |         14.3 |
+| v2 all history, `assignment=unassigned`, `limit=5`  |    18,492 |                  18.4 |         18.2 |
+| v2 all history, `assignment=space`, search "coffee" |    10,537 |                   169 |          202 |
+| v2 breakdown by assignment, a year                  |         - |                    26 |           37 |
+
+The page query alone stays under 5 ms for every period; the all-history
+summary is 76 ms. The all-history figures are dominated by that summary,
+which reads the whole space either way. Every page and aggregate plan is a
+covering index range scan or lookup on one of the two date indexes, with
+no sort; the loaded rows are read by primary key.
