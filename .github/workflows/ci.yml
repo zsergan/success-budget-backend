@@ -181,6 +181,10 @@ jobs:
             echo "dist/migrations in the image differs from src/migrations" >&2
             exit 1
           }
+      - name: The image's Node has the zone data the date migration needs
+        run: |
+          docker run --rm success-budget-backend:ci \
+            node -e "require('./dist/database/legacy-transaction-dates').assertLegacyZoneData()"
       - name: The app refuses to start before the migrations ran
         run: |
           set +e
