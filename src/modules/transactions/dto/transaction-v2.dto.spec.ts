@@ -17,7 +17,8 @@ describe('CreateTransactionV2Dto', () => {
     category_id: 5,
     transaction_type: 'expense',
     amount: '12.3',
-    timestamp: '2026-01-15T10:00:00.000Z',
+    date: '2026-01-15',
+    time_zone: 'Europe/Moscow',
     assignment: { kind: 'member', user_id: 31 },
   };
 
@@ -43,9 +44,12 @@ describe('CreateTransactionV2Dto', () => {
     expect(await fieldsOf(CreateTransactionV2Dto, { ...valid, assignment })).toContain(field);
   });
 
-  it.each(['wallet_id', 'author', 'author_user_id', 'space_id'])('refuses %s', async (field) => {
-    expect(await fieldsOf(CreateTransactionV2Dto, { ...valid, [field]: 1 })).toEqual([field]);
-  });
+  it.each(['wallet_id', 'author', 'author_user_id', 'space_id', 'timestamp', 'order_key'])(
+    'refuses %s',
+    async (field) => {
+      expect(await fieldsOf(CreateTransactionV2Dto, { ...valid, [field]: 1 })).toEqual([field]);
+    },
+  );
 
   it('keeps the v1 field rules', async () => {
     expect(await fieldsOf(CreateTransactionV2Dto, { ...valid, amount: '0' })).toEqual(['amount']);
@@ -65,7 +69,7 @@ describe('UpdateTransactionV2Dto', () => {
 });
 
 describe('TransactionFeedQueryV2Dto', () => {
-  const valid = { from: '2026-09-30T21:00:00.000Z', to: '2026-10-31T20:59:59.999Z', time_zone: 'Europe/Moscow' };
+  const valid = { from_date: '2026-10-01', to_date: '2026-10-31' };
 
   it.each(['space', 'unassigned', 'deleted_member', 'member:31'])('accepts the assignment %p', async (assignment) => {
     expect(await fieldsOf(TransactionFeedQueryV2Dto, { ...valid, assignment })).toEqual([]);
@@ -82,11 +86,16 @@ describe('TransactionFeedQueryV2Dto', () => {
     expect(await fieldsOf(TransactionFeedQueryV2Dto, { ...valid, wallet_id: '3' })).toEqual(['wallet_id']);
   });
 
-  it('counts with required instants and no paging', async () => {
-    expect(await fieldsOf(TransactionCountQueryV2Dto, { from: valid.from, to: valid.to, assignment: 'space' })).toEqual(
-      [],
-    );
-    expect(await fieldsOf(TransactionCountQueryV2Dto, { to: valid.to })).toEqual(['from']);
-    expect(await fieldsOf(TransactionCountQueryV2Dto, { ...valid, limit: '5' })).toEqual(['time_zone', 'limit']);
+  it('counts with required dates and no paging', async () => {
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { ...valid, assignment: 'space' })).toEqual([]);
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { to_date: valid.to_date })).toEqual(['from_date']);
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { ...valid, limit: '5' })).toEqual(['limit']);
+  });
+
+  it.each(['from', 'to', 'time_zone'])('refuses the parameter %s of earlier releases', async (field) => {
+    expect(await fieldsOf(TransactionFeedQueryV2Dto, { ...valid, [field]: '2026-10-01T00:00:00.000Z' })).toEqual([
+      field,
+    ]);
+    expect(await fieldsOf(TransactionCountQueryV2Dto, { ...valid, [field]: 'Europe/Moscow' })).toEqual([field]);
   });
 });

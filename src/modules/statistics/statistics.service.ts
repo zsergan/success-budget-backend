@@ -4,7 +4,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import type { StatisticsBreakdownQueryDto, StatisticsQueryDto } from './dto/statistics-query.dto';
 import { type CategoryBreakdown, buildCategoryBreakdown, sumOf } from './statistics-breakdown';
 import { type AssignmentBreakdown, buildAssignmentBreakdown } from './assignment-breakdown';
-import { calendarDateAt, formatCalendarDate } from './statistics-calendar';
+import { formatCalendarDate } from './statistics-calendar';
 import {
   type PreviousPeriod,
   type StatisticsPeriod,
@@ -13,6 +13,7 @@ import {
   resolvePreviousPeriod,
   resolveStatisticsPeriod,
   resolveTrendIntervals,
+  todayOf,
   trendGranularity,
 } from './statistics-period';
 import { TransactionType } from '@shared/enums';
@@ -50,9 +51,9 @@ interface Figures {
 export interface StatisticsSummary extends StatisticsBlock, Figures {
   previous: (PreviousPeriod & Figures) | null;
   change: { income: Change; expense: Change; net: Change } | null;
-  // any statistics transaction up to as_of, in any period
+  // any statistics transaction dated up to today, in any period
   has_any_transactions: boolean;
-  // local date in period.time_zone
+  // as stored
   last_transaction_date: string | null;
 }
 
@@ -113,18 +114,24 @@ export class StatisticsService {
     const block = await this.openBlock(userId, spaceId, query);
     const { period } = block;
     const previousPeriod = resolvePreviousPeriod(period);
-    const [totals, previousTotals, lastTimestamp] = await this.readSnapshot(async (manager) => [
-      period.actual_to === null
+    const today = formatCalendarDate(todayOf(period));
+    const [totals, previousTotals, lastDate] = await this.readSnapshot(async (manager) => [
+      period.actual_end_date === null
         ? EMPTY_TOTALS
-        : await this.transactionQueriesService.getStatisticsTotals(spaceId, period.from, period.actual_to, manager),
+        : await this.transactionQueriesService.getStatisticsTotals(
+            spaceId,
+            period.start_date,
+            period.actual_end_date,
+            manager,
+          ),
       previousPeriod &&
         (await this.transactionQueriesService.getStatisticsTotals(
           spaceId,
-          previousPeriod.from,
-          previousPeriod.actual_to,
+          previousPeriod.start_date,
+          previousPeriod.actual_end_date,
           manager,
         )),
-      await this.transactionQueriesService.getLastStatisticsTimestamp(spaceId, period.as_of, manager),
+      await this.transactionQueriesService.getLastStatisticsDate(spaceId, today, manager),
     ]);
 
     return {
@@ -136,8 +143,8 @@ export class StatisticsService {
         expense: changeOf(totals.expense, previousTotals.expense),
         net: changeOf(totals.income - totals.expense, previousTotals.income - previousTotals.expense),
       },
-      has_any_transactions: lastTimestamp !== null,
-      last_transaction_date: lastTimestamp && formatCalendarDate(calendarDateAt(lastTimestamp, period.time_zone)),
+      has_any_transactions: lastDate !== null,
+      last_transaction_date: lastDate,
     };
   }
 
@@ -148,13 +155,13 @@ export class StatisticsService {
     const intervals = resolveTrendIntervals(period, granularity);
     const started = intervals.filter((interval) => interval.state !== 'future');
     const sums =
-      period.actual_to === null
+      period.actual_end_date === null
         ? []
         : await this.transactionQueriesService.getStatisticsIntervalTotals(
             spaceId,
-            period.from,
-            period.actual_to,
-            started.map((interval) => interval.to),
+            period.start_date,
+            period.actual_end_date,
+            started.map((interval) => interval.end_date),
           );
     const totals = sums.reduce(addTotals, EMPTY_TOTALS);
     const figures = figuresOf(totals);
@@ -179,26 +186,14 @@ export class StatisticsService {
   ): Promise<StatisticsBreakdownV2> {
     const block = await this.openBlock(userId, spaceId, query);
     const { period } = block;
-    const { actual_to: to } = period;
+    const { start_date: from, actual_end_date: to } = period;
     const transactionType = query.transaction_type ?? TransactionType.EXPENSE;
     const [categories, assignments] =
       to === null
         ? [[], []]
         : await this.readSnapshot(async (manager) => [
-            await this.transactionQueriesService.getStatisticsByCategory(
-              spaceId,
-              transactionType,
-              period.from,
-              to,
-              manager,
-            ),
-            await this.transactionQueriesService.getStatisticsByAssignment(
-              spaceId,
-              transactionType,
-              period.from,
-              to,
-              manager,
-            ),
+            await this.transactionQueriesService.getStatisticsByCategory(spaceId, transactionType, from, to, manager),
+            await this.transactionQueriesService.getStatisticsByAssignment(spaceId, transactionType, from, to, manager),
           ]);
 
     return {

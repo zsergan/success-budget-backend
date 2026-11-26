@@ -967,6 +967,139 @@ the wallets.
   until that decision is no longer needed; then remove them as in
   [A database to restore into](#a-database-to-restore-into).
 
+### Rolling out calendar dates
+
+Release C of the [v2 transactions contract](transactions-v2-contract.md#calendar-dates-release-c):
+`ReplaceTransactionTimestampWithDate1791500000000` gives every transaction
+the Chicago calendar day of its instant and an ordering key in the old
+order, converts retained idempotency results, and drops
+`transactions.timestamp`; `AllowCustomCategoryColors1791600000000` turns
+the category color enum into a string, keeping every preset. The new image
+reads and writes dates only.
+
+**This is a coordinated breaking release.** It refuses every request of an
+earlier app build that carries a `timestamp`, feed `from`/`to` instants or a
+feed `time_zone` (`400 VALIDATION_FAILED`), and its statistics and limits
+periods have new fields. Do not deploy it when the backend work is merely
+finished. Before the rollout:
+
+1. The compatible mobile build is complete and tested against this backend
+   (a staging database migrated with this runbook).
+2. That build is ready for release in the stores, with its handling of
+   pending writes kept by older builds
+   ([contract](transactions-v2-contract.md#pending-writes-across-release-c)),
+   and the date and the "Update the app" handling are agreed.
+3. The database is on Release B: with the new image, `migration:show` lists
+   exactly `ReplaceTransactionTimestampWithDate1791500000000` and
+   `AllowCustomCategoryColors1791600000000` as pending.
+
+**The previous image cannot work after the migration**: its inserts and
+reads name `transactions.timestamp`. The rollout therefore runs in a
+**write pause**: no instance of the previous image runs from step 2 until
+the new image starts (step 8).
+
+1. **Build** the new image.
+2. **Pause writes and drain them** exactly as in step 3 of
+   [Rolling out space-owned transactions](#rolling-out-space-owned-transactions):
+   stop every instance of the previous image, wait until each has exited,
+   and confirm that nothing is still connected with the app's account. The
+   idempotency purge runs inside the app, so it is stopped too.
+3. **Back up and verify the backup**, as in step 4 there, into
+   `<database>_rollback` ([A database to restore into](#a-database-to-restore-into)).
+   **The backup is the only copy of the transactions' times of day**: the
+   migration keeps only their dates, and no revert can bring the times back.
+4. **Snapshot** the history as the migration must leave it, every record
+   read as the Chicago day of its instant, on the live database and on the
+   restored backup, and compare them:
+
+   ```bash
+   docker run --rm --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-dates-check.js snapshot - > dates-before.json
+   docker run --rm --env-file .env.production -e DB_DATABASE=<database>_rollback \
+     success-budget-backend:<tag> \
+     node dist/database/transaction-dates-check.js snapshot - > dates-backup.json
+   diff <(jq 'del(.taken_at)' dates-backup.json) <(jq 'del(.taken_at)' dates-before.json)
+   ```
+
+   No output means the backup holds every transaction; on a difference
+   something still writes: stop it and repeat from step 3. The snapshot
+   refuses (exit `1`) on a database that has already migrated.
+
+5. **Migrate** with the command of step 2 of the deploy procedure. The
+   date migration checks, before it drops the timestamps, that every
+   record lies within the Chicago day it was given; on a failure it keeps
+   the timestamps and names the dates, and it can run again. MySQL commits
+   each `ALTER TABLE` on its own: a run stopped midway (a lost connection,
+   a killed container) finishes when run again, and running it after it
+   finished changes nothing. The migration fails before changing anything
+   when the image's Node lacks the zone data of `America/Chicago`.
+6. **Check the schema** and the reference data (steps 3 and 4 of the
+   deploy procedure).
+7. **Reconcile** the dates with the snapshot:
+
+   ```bash
+   docker run --rm -i --env-file .env.production success-budget-backend:<tag> \
+     node dist/database/transaction-dates-check.js verify - < dates-before.json
+   # Reconciliation OK: <n> transactions in <m> spaces keep their Chicago days, order, <d> day totals and <k> month totals.
+   ```
+
+   It compares every record (id, date, category, type, amount,
+   description, version, author, assignment), the history order of every
+   space, the ordinary income, expense and count of every space, day and
+   month, the starting balances, the number of operation records and of
+   retained transaction results, and that no retained result still holds a
+   `timestamp`. On any difference, do not start the new image: keep the
+   pause and recover (below), or investigate and fix forward.
+8. **Start the new image** and run the health check and the smoke tests
+   (steps 5 to 7 of the deploy procedure), then the smoke test below.
+   Writes resume here.
+9. **Release the compatible mobile build.** Watch the `400` responses with
+   `field: timestamp`, `from` or `time_zone` in the logs: they come from
+   installed builds of before this release, which must update.
+
+Smoke test, with the token of the smoke-test account:
+
+```bash
+space=$(curl -sf http://<host>:3000/api/v1/spaces -H "Authorization: Bearer $token" | jq '.[0].id')
+category=$(curl -sf http://<host>:3000/api/v1/spaces/$space/categories -H "Authorization: Bearer $token" | jq '.expenses[0].id')
+id=$(curl -sf -X POST http://<host>:3000/api/v2/spaces/$space/transactions \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d "{\"category_id\":$category,\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"date\":\"$(date -u +%Y-%m-%d)\",\"time_zone\":\"UTC\",\"assignment\":{\"kind\":\"space\"}}" \
+  | jq -r .transaction.id)
+curl -sf http://<host>:3000/api/v2/spaces/$space/transactions/$id -H "Authorization: Bearer $token" | jq .date
+# "<today>"
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://<host>:3000/api/v2/spaces/$space/transactions \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d "{\"category_id\":$category,\"transaction_type\":\"expense\",\"amount\":\"1.00\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"assignment\":{\"kind\":\"space\"}}"
+# 400
+curl -sf -X DELETE http://<host>:3000/api/v2/spaces/$space/transactions/$id -H "Authorization: Bearer $token" -H 'If-Match: "1"'
+```
+
+**Recovering before the new image starts**, from step 5 on: restore the
+backup of step 3 into a new, empty database, verify it with the previous
+image's schema check and a `transaction-ownership-check.js snapshot` of it
+compared with one of the backup, point the previous image at it and start
+it, as in the recovery of
+[Rolling out the removal of wallets](#rolling-out-the-removal-of-wallets).
+That ends the pause.
+
+**Rollback limits** once the new image accepted writes (step 8):
+
+- This release is the earliest image that may run on the migrated
+  database; an older image starts (its schema check only warns) but can
+  neither read nor write transactions. Fix forward.
+- `migration:revert` of `AllowCustomCategoryColors1791600000000` refuses
+  while a category has a custom color. `migration:revert` of the date
+  migration gives every record the first instant of its Chicago day plus a
+  millisecond per record before it that day, so the previous image runs and
+  lists the history in the same order, but **the original times of day are
+  gone**; only the backup of step 3 has them, and restoring it discards
+  every write since step 8. It refuses while a date lies outside what a
+  `TIMESTAMP` holds (before 1970). Treat both as a last resort, decided
+  separately, in a write pause.
+- Keep the backup of step 3 and `<database>_rollback` until that decision
+  is no longer needed.
+
 ### Schema check
 
 On boot the app compares the migrations compiled into its build
@@ -991,6 +1124,9 @@ before it cannot write on the migrated schema (see
 `DropWallets1791400000000` is another: it drops a column and a table that
 images before it read and write (see
 [Rolling out the removal of wallets](#rolling-out-the-removal-of-wallets)).
+`ReplaceTransactionTimestampWithDate1791500000000` is a third: it replaces
+the transaction timestamp with a date (see
+[Rolling out calendar dates](#rolling-out-calendar-dates)).
 
 `REQUIRED_MIGRATION` is kept equal to the newest file in `src/migrations`
 by a unit test, so adding a migration without updating it fails CI. CI's

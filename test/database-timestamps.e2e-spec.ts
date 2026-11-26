@@ -2,9 +2,9 @@ import request from 'supertest';
 
 import { type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 
-// Also run with TZ=America/Chicago: client instants and server-generated
+// Also run with TZ=America/Chicago: calendar dates and server-generated
 // timestamps must not depend on the Node host's local timezone.
-describe('Database timestamps (e2e)', () => {
+describe('Database dates and timestamps (e2e)', () => {
   let testApp: TestApp;
   const userIds: number[] = [];
 
@@ -20,38 +20,48 @@ describe('Database timestamps (e2e)', () => {
     }
   });
 
-  it.each([
-    '2026-09-15T10:00:00.250Z',
-    '2025-11-02T06:30:00.000Z',
-    '2025-11-02T07:30:00.000Z',
-    '1970-01-01T00:00:01.000Z',
-  ])('stores %s as the exact instant, including DST overlap and the minimum timestamp', async (timestamp) => {
-    const member = await createVerifiedMember(testApp, 'database-timestamps');
-    userIds.push(member.userId);
-    const auth = { Authorization: `Bearer ${member.token}` };
-    const server = testApp.app.getHttpServer();
-    const categories = await request(server).get(`/api/v1/spaces/${member.spaceId}/categories`).set(auth).expect(200);
-    const created = await request(server)
-      .post(`/api/v2/spaces/${member.spaceId}/transactions`)
-      .set(auth)
-      .send({
-        category_id: categories.body.expenses[0].id,
-        transaction_type: 'expense',
-        amount: '10',
-        timestamp,
-        assignment: { kind: 'space' },
-      })
-      .expect(201);
+  it.each(['2026-09-15', '2025-11-02', '2026-03-08', '2000-02-29', '1969-12-31', '1000-01-01'])(
+    'stores %s as that calendar date and reads it back unchanged, in any zone',
+    async (date) => {
+      const member = await createVerifiedMember(testApp, 'database-dates');
+      userIds.push(member.userId);
+      const auth = { Authorization: `Bearer ${member.token}` };
+      const server = testApp.app.getHttpServer();
+      const categories = await request(server).get(`/api/v1/spaces/${member.spaceId}/categories`).set(auth).expect(200);
+      const created = await request(server)
+        .post(`/api/v2/spaces/${member.spaceId}/transactions`)
+        .set(auth)
+        .send({
+          category_id: categories.body.expenses[0].id,
+          transaction_type: 'expense',
+          amount: '10',
+          date,
+          time_zone: 'Pacific/Kiritimati',
+          assignment: { kind: 'space' },
+        })
+        .expect(201);
 
-    expect(created.body.transaction.timestamp).toBe(timestamp);
-    const [stored] = await testApp.dataSource.query(
-      'SELECT UNIX_TIMESTAMP(timestamp) AS epoch FROM transactions WHERE id = ?',
-      [created.body.transaction.id],
-    );
-    expect(Number(stored.epoch) * 1000).toBe(Date.parse(timestamp));
+      expect(created.body.transaction.date).toBe(date);
+      const [stored] = await testApp.dataSource.query(
+        "SELECT DATE_FORMAT(date, '%Y-%m-%d') AS formatted, date FROM transactions WHERE id = ?",
+        [created.body.transaction.id],
+      );
+      expect(stored).toEqual({ formatted: date, date });
+      const feed = await request(server)
+        .get(`/api/v2/spaces/${member.spaceId}/transactions/feed`)
+        .set(auth)
+        .query({ from_date: date, to_date: date })
+        .expect(200);
+      expect(feed.body.items.map((item: { date: string }) => item.date)).toEqual([date]);
+      expect(feed.body.day_totals).toEqual([{ date, net: '-10.00' }]);
+    },
+  );
+
+  it('reads server-generated timestamps as UTC', async () => {
     const [clock] = await testApp.dataSource.query(
       'SELECT CURRENT_TIMESTAMP(3) AS now, UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) AS epoch',
     );
+
     expect(clock.now.getTime()).toBe(Number(clock.epoch) * 1000);
   });
 });

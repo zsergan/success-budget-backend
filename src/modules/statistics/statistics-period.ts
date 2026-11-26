@@ -2,25 +2,25 @@ import { BadRequestException } from '@nestjs/common';
 
 import type { StatisticsQueryDto } from './dto/statistics-query.dto';
 import {
+  type CalendarDate,
   type CalendarUnit,
   type DateRange,
+  FIRST_DATE,
+  LAST_DATE,
   type TimeState,
   calendarDateAt,
   daysIn,
-  endOfDay,
+  earlier,
   formatCalendarDate,
   parseCalendarDate,
   rangeOf,
   shift,
-  shiftInstant,
   splitRange,
-  startOfDay,
   timeState,
   unitKey,
 } from './statistics-calendar';
 import { StatisticsPeriodType } from '@shared/enums';
-import { TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
-import { resolveTimeZone } from '@shared/utils';
+import { MAX_CALENDAR_DATE, MIN_CALENDAR_DATE, resolveTimeZone } from '@shared/utils';
 import { CLOCK_SKEW_MS } from '@shared/constants';
 
 export const MAX_CUSTOM_PERIOD_DAYS = 366;
@@ -30,28 +30,26 @@ export const AS_OF_CLOCK_SKEW_MS = CLOCK_SKEW_MS;
 
 export type TrendGranularity = 'day' | 'week' | 'month';
 
-interface Bounds {
+interface Dates {
   start_date: string;
   end_date: string;
-  from: Date;
-  to: Date;
 }
 
-export interface StatisticsPeriod extends Bounds {
+export interface StatisticsPeriod extends Dates {
   type: StatisticsPeriodType;
   time_zone: string;
   as_of: Date;
-  // min(to, as_of); null while the period has not started
-  actual_to: Date | null;
+  // min(end_date, today); null while the period has not started
+  actual_end_date: string | null;
   state: TimeState;
 }
 
-export interface PreviousPeriod extends Bounds {
-  // the like-for-like cut of a current period, otherwise to
-  actual_to: Date;
+export interface PreviousPeriod extends Dates {
+  // the like-for-like cut of a current period, otherwise end_date
+  actual_end_date: string;
 }
 
-export interface TrendInterval extends Bounds {
+export interface TrendInterval extends Dates {
   key: string;
   state: TimeState;
 }
@@ -68,17 +66,18 @@ const TREND_GRANULARITY: Record<Exclude<StatisticsPeriodType, StatisticsPeriodTy
   [StatisticsPeriodType.YEAR]: 'month',
 };
 
-const boundsOf = (range: DateRange, timeZone: string): Bounds => ({
+const datesOf = (range: DateRange): Dates => ({
   start_date: formatCalendarDate(range.start),
   end_date: formatCalendarDate(range.end),
-  from: startOfDay(range.start, timeZone),
-  to: endOfDay(range.end, timeZone),
 });
 
 const rangeOfPeriod = (period: StatisticsPeriod): DateRange => ({
   start: parseCalendarDate(period.start_date),
   end: parseCalendarDate(period.end_date),
 });
+
+// The date of as_of in the period's zone: the last day a current period counts.
+export const todayOf = (period: StatisticsPeriod): CalendarDate => calendarDateAt(period.as_of, period.time_zone);
 
 interface FieldError {
   field: string;
@@ -114,7 +113,7 @@ const checkPeriodFields = (query: StatisticsQueryDto): FieldError[] => {
 };
 
 // The DTO has already validated each field on its own; this checks how they
-// combine and turns them into instants.
+// combine and turns them into the period's dates.
 export const resolveStatisticsPeriod = (query: StatisticsQueryDto, serverNow: Date): StatisticsPeriod => {
   const errors = checkPeriodFields(query);
   const timeZone = resolveTimeZone(query.time_zone)!;
@@ -128,6 +127,7 @@ export const resolveStatisticsPeriod = (query: StatisticsQueryDto, serverNow: Da
     fail(errors);
   }
 
+  const today = calendarDateAt(asOf, timeZone);
   let range: DateRange;
   let rangeField: 'anchor_date' | 'to_date';
 
@@ -143,31 +143,23 @@ export const resolveStatisticsPeriod = (query: StatisticsQueryDto, serverNow: Da
       fail([{ field: 'to_date', error: `a custom period must not exceed ${MAX_CUSTOM_PERIOD_DAYS} days` }]);
     }
   } else {
-    const anchor =
-      query.anchor_date === undefined ? calendarDateAt(asOf, timeZone) : parseCalendarDate(query.anchor_date);
+    const anchor = query.anchor_date === undefined ? today : parseCalendarDate(query.anchor_date);
     range = rangeOf(STANDARD_UNIT[query.period], anchor);
     rangeField = 'anchor_date';
   }
 
-  const bounds = boundsOf(range, timeZone);
-
-  if (bounds.from < TIMESTAMP_MIN || bounds.to > TIMESTAMP_MAX) {
-    fail([
-      {
-        field: rangeField,
-        error: `the period must be within ${TIMESTAMP_MIN.toISOString()} and ${TIMESTAMP_MAX.toISOString()}`,
-      },
-    ]);
+  if (range.start < FIRST_DATE || range.end > LAST_DATE) {
+    fail([{ field: rangeField, error: `the period must be within ${MIN_CALENDAR_DATE} and ${MAX_CALENDAR_DATE}` }]);
   }
 
-  const state = timeState(bounds.from, bounds.to, asOf);
+  const state = timeState(range, today);
 
   return {
     type: query.period,
     time_zone: timeZone,
-    ...bounds,
+    ...datesOf(range),
     as_of: asOf,
-    actual_to: state === 'future' ? null : state === 'past' ? bounds.to : asOf,
+    actual_end_date: state === 'future' ? null : formatCalendarDate(earlier(range.end, today)),
     state,
   };
 };
@@ -182,28 +174,27 @@ export const trendGranularity = (period: StatisticsPeriod): TrendGranularity => 
   return days <= MAX_DAILY_CUSTOM_DAYS ? 'day' : days <= MAX_WEEKLY_CUSTOM_DAYS ? 'week' : 'month';
 };
 
-export const resolveTrendIntervals = (period: StatisticsPeriod, granularity: TrendGranularity): TrendInterval[] =>
-  splitRange(rangeOfPeriod(period), granularity).map((range) => {
-    const bounds = boundsOf(range, period.time_zone);
+export const resolveTrendIntervals = (period: StatisticsPeriod, granularity: TrendGranularity): TrendInterval[] => {
+  const today = todayOf(period);
 
-    return {
-      key: unitKey(range.start, granularity),
-      ...bounds,
-      state: timeState(bounds.from, bounds.to, period.as_of),
-    };
-  });
+  return splitRange(rangeOfPeriod(period), granularity).map((range) => ({
+    key: unitKey(range.start, granularity),
+    ...datesOf(range),
+    state: timeState(range, today),
+  }));
+};
 
 // A finished period is compared with the whole previous one, a current
-// period with the same elapsed part of it; custom and future periods are not
-// compared.
+// period with the previous one up to the equivalent day of today, that day
+// included; custom and future periods are not compared.
 export const resolvePreviousPeriod = (period: StatisticsPeriod): PreviousPeriod | null => {
   if (period.type === StatisticsPeriodType.CUSTOM || period.state === 'future') {
     return null;
   }
 
   const unit = STANDARD_UNIT[period.type];
-  const bounds = boundsOf(rangeOf(unit, shift(rangeOfPeriod(period).start, unit, -1)), period.time_zone);
-  const actualTo = period.state === 'past' ? bounds.to : shiftInstant(period.as_of, period.time_zone, unit, -1);
+  const range = rangeOf(unit, shift(rangeOfPeriod(period).start, unit, -1));
+  const actualEnd = period.state === 'past' ? range.end : earlier(shift(todayOf(period), unit, -1), range.end);
 
-  return { ...bounds, actual_to: actualTo < bounds.to ? actualTo : bounds.to };
+  return { ...datesOf(range), actual_end_date: formatCalendarDate(actualEnd) };
 };

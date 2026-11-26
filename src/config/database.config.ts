@@ -60,6 +60,8 @@ export function buildDataSourceOptions(env: DatabaseEnv): MysqlDataSourceOptions
     // MySQL sessions use UTC. Never encode or decode TIMESTAMP values in
     // the Node host's local zone (which can also change with DST).
     timezone: 'Z',
+    // A calendar date stays YYYY-MM-DD: a Date would place it in a zone.
+    dateStrings: ['DATE'],
     ssl: buildSslOptions(env),
     entities: [join(__dirname, '../entities/**.entity{.ts,.js}')],
     migrations: [join(__dirname, '../migrations/**{.ts,.js}')],

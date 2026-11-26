@@ -89,7 +89,9 @@ describe('space setup', () => {
         ['income', 'Initial balance', 'Savings'],
       ]);
       expect(saved.slice(0, -1).every((category: Category) => !category.is_system)).toBe(true);
-      expect(saved.every((category: Category) => Object.values(AppColor).includes(category.color))).toBe(true);
+      expect(saved.every((category: Category) => (Object.values(AppColor) as string[]).includes(category.color))).toBe(
+        true,
+      );
     });
   });
 });

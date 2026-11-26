@@ -20,7 +20,8 @@ describe('CreateTransactionDto', () => {
     category_id: 5,
     transaction_type: 'expense',
     amount: '12.3',
-    timestamp: '2026-01-15T10:00:00.000Z',
+    date: '2026-01-15',
+    time_zone: 'Europe/Moscow',
   };
 
   it('accepts a valid request', async () => {
@@ -45,29 +46,82 @@ describe('CreateTransactionDto', () => {
     expect(errors.amount).toEqual(['amount must be a non-negative decimal string with at most 2 decimal places']);
   });
 
-  it.each(['2026-01-15', '2026-01-15T10:00:00', '2026-01-15T10:00:00.000'])(
-    'refuses the timestamp %p without Z or an offset',
-    async (timestamp) => {
-      expect((await errorsOf(CreateTransactionDto, { ...valid, timestamp })).errors).toEqual({
-        timestamp: ['timestamp must be an ISO 8601 date-time with Z or a UTC offset'],
-      });
-    },
-  );
+  const DATE_FORMAT = 'date must be a calendar date as YYYY-MM-DD from 1000-01-01 to 9999-12-31';
 
-  it.each(['2026-01-15T10:00:00Z', '2026-01-15T10:00:00.250+03:00', '2026-01-15T10:00:00-0530'])(
-    'accepts the instant %p',
-    async (timestamp) => {
-      expect((await errorsOf(CreateTransactionDto, { ...valid, timestamp })).errors).toEqual({});
-    },
-  );
+  it.each<unknown>([
+    '2026-01-15T10:00:00.000Z',
+    '2026-01-15T10:00:00',
+    '2026-01-15+03:00',
+    '2026-01-15Z',
+    '2026-1-15',
+    '15.01.2026',
+    '2026-02-29',
+    '2026-04-31',
+    '2026-13-01',
+    '0999-12-31',
+    '',
+    20260115,
+  ])('refuses the date %p', async (date) => {
+    expect((await errorsOf(CreateTransactionDto, { ...valid, date })).errors).toEqual({ date: [DATE_FORMAT] });
+  });
 
-  it('refuses a timestamp more than a minute ahead, accepts one within it', async () => {
-    const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
+  it.each(['2024-02-29', '2000-02-29', '1969-12-31', '1000-01-01'])('accepts the date %p', async (date) => {
+    expect((await errorsOf(CreateTransactionDto, { ...valid, date })).errors).toEqual({});
+  });
 
-    expect((await errorsOf(CreateTransactionDto, { ...valid, timestamp: ahead(5 * 60_000) })).errors).toEqual({
-      timestamp: ['timestamp must not be in the future'],
+  it('requires the date and the zone that tells today', async () => {
+    const body: Record<string, unknown> = { ...valid };
+    delete body.date;
+    delete body.time_zone;
+
+    expect(Object.keys((await errorsOf(CreateTransactionDto, body)).errors).sort()).toEqual(['date', 'time_zone']);
+  });
+
+  it.each(['+03:00', 'UTC+3', 'Mars/Olympus', ''])('refuses the time_zone %p', async (time_zone) => {
+    expect((await errorsOf(CreateTransactionDto, { ...valid, time_zone })).errors).toEqual({
+      time_zone: ['time_zone must be an IANA time zone name'],
     });
-    expect((await errorsOf(CreateTransactionDto, { ...valid, timestamp: ahead(30_000) })).errors).toEqual({});
+  });
+
+  it('refuses a timestamp, the field of earlier releases', async () => {
+    expect(
+      Object.keys((await errorsOf(CreateTransactionDto, { ...valid, timestamp: '2026-01-15T10:00:00.000Z' })).errors),
+    ).toEqual(['timestamp']);
+  });
+
+  describe('today in time_zone', () => {
+    afterEach(() => jest.useRealTimers());
+
+    const at = (now: string) => jest.useFakeTimers({ now: new Date(now) });
+    const check = async (date: string, time_zone: string) =>
+      (await errorsOf(CreateTransactionDto, { ...valid, date, time_zone })).errors;
+    const AFTER_TODAY = { date: ['date must not be after today in time_zone'] };
+
+    it('accepts today and earlier in the zone, refuses tomorrow', async () => {
+      // 21:30 UTC: already the 9th in Moscow, still the 8th in Chicago
+      at('2026-10-08T21:30:00.000Z');
+
+      expect(await check('2026-10-09', 'Europe/Moscow')).toEqual({});
+      expect(await check('2026-10-08', 'America/Chicago')).toEqual({});
+      expect(await check('2026-10-09', 'America/Chicago')).toEqual(AFTER_TODAY);
+      expect(await check('2026-10-09', 'Pacific/Kiritimati')).toEqual({});
+      expect(await check('2026-10-10', 'Pacific/Kiritimati')).toEqual(AFTER_TODAY);
+    });
+
+    it('gives a device clock up to a minute ahead the next day at midnight', async () => {
+      at('2026-10-08T23:59:30.000Z');
+      expect(await check('2026-10-09', 'UTC')).toEqual({});
+
+      at('2026-10-08T23:58:30.000Z');
+      expect(await check('2026-10-09', 'UTC')).toEqual(AFTER_TODAY);
+    });
+
+    it('takes a midnight after a DST change like any other', async () => {
+      // 00:30 CDT, the first half hour of the day DST ends in Chicago
+      at('2026-11-01T05:30:00.000Z');
+      expect(await check('2026-11-01', 'America/Chicago')).toEqual({});
+      expect(await check('2026-11-02', 'America/Chicago')).toEqual(AFTER_TODAY);
+    });
   });
 
   it.each<[unknown, string | null | undefined]>([
@@ -98,19 +152,36 @@ describe('UpdateTransactionDto', () => {
     expect((await errorsOf(UpdateTransactionDto, {})).errors).toEqual({});
   });
 
-  it('requires an instant for a timestamp', async () => {
-    expect((await errorsOf(UpdateTransactionDto, { timestamp: '2026-01-15' })).errors).toEqual({
-      timestamp: ['timestamp must be an ISO 8601 date-time with Z or a UTC offset'],
-    });
+  it('requires a calendar date for a date', async () => {
+    expect(
+      (await errorsOf(UpdateTransactionDto, { date: '2026-01-15T10:00:00.000Z', time_zone: 'UTC' })).errors,
+    ).toEqual({ date: ['date must be a calendar date as YYYY-MM-DD from 1000-01-01 to 9999-12-31'] });
   });
 
-  it('leaves the amount and timestamp rules for new values to the service', async () => {
-    const { errors } = await errorsOf(UpdateTransactionDto, { amount: '0', timestamp: '2037-01-01T00:00:00.000Z' });
+  it('requires a time_zone with a date, and only then', async () => {
+    expect((await errorsOf(UpdateTransactionDto, { date: '2026-01-15' })).errors).toEqual({
+      time_zone: ['time_zone is required with date'],
+    });
+    expect((await errorsOf(UpdateTransactionDto, { date: '2026-01-15', time_zone: '+03:00' })).errors).toEqual({
+      time_zone: ['time_zone must be an IANA time zone name'],
+    });
+    expect((await errorsOf(UpdateTransactionDto, { amount: '5' })).errors).toEqual({});
+    expect((await errorsOf(UpdateTransactionDto, { amount: '5', time_zone: 'UTC' })).errors).toEqual({});
+  });
+
+  it('leaves the amount and date rules for new values to the service', async () => {
+    const { errors } = await errorsOf(UpdateTransactionDto, { amount: '0', date: '2999-01-01', time_zone: 'UTC' });
 
     expect(errors).toEqual({});
   });
 
-  it.each(['category_id', 'transaction_type', 'amount', 'timestamp'])('refuses a null %s', async (field) => {
+  it('refuses a timestamp, the field of earlier releases', async () => {
+    expect(Object.keys((await errorsOf(UpdateTransactionDto, { timestamp: '2026-01-15T10:00:00Z' })).errors)).toEqual([
+      'timestamp',
+    ]);
+  });
+
+  it.each(['category_id', 'transaction_type', 'amount', 'date'])('refuses a null %s', async (field) => {
     expect((await errorsOf(UpdateTransactionDto, { [field]: null })).errors[field]).toContain(
       `${field} must not be null`,
     );
@@ -129,7 +200,7 @@ describe('UpdateTransactionDto', () => {
 });
 
 describe('TransactionFeedQueryDto', () => {
-  const valid = { from: '2026-09-30T21:00:00.000Z', to: '2026-10-31T20:59:59.999Z', time_zone: 'Europe/Moscow' };
+  const valid = { from_date: '2026-10-01', to_date: '2026-10-31' };
 
   it('accepts a minimal query with a page of 50', async () => {
     const { dto, errors } = await errorsOf(TransactionFeedQueryDto, valid);
@@ -138,19 +209,33 @@ describe('TransactionFeedQueryDto', () => {
     expect(dto.limit).toBe(50);
   });
 
-  it.each(['from', 'to', 'time_zone'])('requires %s', async (field) => {
+  it.each(['from_date', 'to_date'])('requires %s', async (field) => {
     expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, [field]: undefined })).errors)).toEqual([
       field,
     ]);
   });
 
-  it.each(['2026-10-01', '2026-10-01T00:00:00'])('refuses the bound %p without Z or an offset', async (from) => {
-    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, from })).errors)).toEqual(['from']);
+  it.each<unknown>([
+    '2026-10-01T00:00:00.000Z',
+    '2026-10-01T00:00:00',
+    '2026-02-30',
+    '2026-10',
+    ['2026-10-01', '2026-10-02'],
+  ])('refuses the date %p', async (from_date) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, from_date })).errors)).toEqual([
+      'from_date',
+    ]);
   });
 
-  it('refuses a fixed offset as time_zone', async () => {
-    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, time_zone: '+03:00' })).errors)).toEqual([
-      'time_zone',
+  it('takes any dates of the DATE range, those a TIMESTAMP could not hold included', async () => {
+    expect(
+      (await errorsOf(TransactionFeedQueryDto, { from_date: '1000-01-01', to_date: '9999-12-31' })).errors,
+    ).toEqual({});
+  });
+
+  it.each(['from', 'to', 'time_zone'])('refuses %s, a parameter of earlier releases', async (field) => {
+    expect(Object.keys((await errorsOf(TransactionFeedQueryDto, { ...valid, [field]: 'UTC' })).errors)).toEqual([
+      field,
     ]);
   });
 

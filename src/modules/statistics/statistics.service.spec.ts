@@ -59,7 +59,7 @@ describe('StatisticsService', () => {
               .mockResolvedValueOnce(AUGUST_TO_28TH)
               .mockResolvedValue(SEPTEMBER),
             getStatisticsIntervalTotals: jest.fn(),
-            getLastStatisticsTimestamp: jest.fn().mockResolvedValue(new Date('2026-09-27T21:30:00.000Z')),
+            getLastStatisticsDate: jest.fn().mockResolvedValue('2026-09-28'),
             getStatisticsByCategory: jest.fn().mockResolvedValue([
               {
                 id: 10,
@@ -96,17 +96,13 @@ describe('StatisticsService', () => {
     time_zone: 'Europe/Moscow',
     start_date: '2026-09-01',
     end_date: '2026-09-30',
-    from: new Date('2026-08-31T21:00:00.000Z'),
-    to: new Date('2026-09-30T20:59:59.999Z'),
     as_of: now,
-    actual_to: now,
+    actual_end_date: '2026-09-28',
     state: 'current',
   };
 
-  it('summary: totals of the actual range compared with the same part of the previous month', async () => {
+  it('summary: totals up to today compared with the previous month up to the same day', async () => {
     const result = await service.getSummary(userId, spaceId, query);
-    const previousFrom = new Date('2026-07-31T21:00:00.000Z');
-    const previousCut = new Date('2026-08-28T12:00:00.000Z');
 
     expect(result).toEqual({
       period,
@@ -118,9 +114,7 @@ describe('StatisticsService', () => {
       previous: {
         start_date: '2026-08-01',
         end_date: '2026-08-31',
-        from: previousFrom,
-        to: new Date('2026-08-31T20:59:59.999Z'),
-        actual_to: previousCut,
+        actual_end_date: '2026-08-28',
         income: { amount: '3000.00', count: 1 },
         expense: { amount: '300.00', count: 2 },
         net: '2700.00',
@@ -132,23 +126,22 @@ describe('StatisticsService', () => {
         net: { delta: '-510.50', percent: -18.9 },
       },
       has_any_transactions: true,
-      // 00:30 on Sep 28 in Moscow
       last_transaction_date: '2026-09-28',
     });
-    expect(transactionQueriesService.getLastStatisticsTimestamp).toHaveBeenCalledWith(spaceId, now, manager);
+    expect(transactionQueriesService.getLastStatisticsDate).toHaveBeenCalledWith(spaceId, '2026-09-28', manager);
     expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(spaceId, userId);
     expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(
       1,
       spaceId,
-      period.from,
-      now,
+      '2026-09-01',
+      '2026-09-28',
       manager,
     );
     expect(transactionQueriesService.getStatisticsTotals).toHaveBeenNthCalledWith(
       2,
       spaceId,
-      previousFrom,
-      previousCut,
+      '2026-08-01',
+      '2026-08-28',
       manager,
     );
     expect(dataSource.transaction).toHaveBeenCalledTimes(1);
@@ -210,10 +203,18 @@ describe('StatisticsService', () => {
     ]);
     expect(transactionQueriesService.getStatisticsIntervalTotals).toHaveBeenCalledWith(
       spaceId,
-      new Date('2026-09-25T21:00:00.000Z'),
-      now,
-      result.buckets.slice(0, 3).map((bucket) => bucket.to),
+      '2026-09-26',
+      '2026-09-28',
+      ['2026-09-26', '2026-09-27', '2026-09-28'],
     );
+    expect(result.buckets[0]).toEqual({
+      key: '2026-09-26',
+      start_date: '2026-09-26',
+      end_date: '2026-09-26',
+      state: 'past',
+      income: '3000.00',
+      expense: '570.25',
+    });
   });
 
   it('breakdown: the expense total of the same selection', async () => {
@@ -235,15 +236,15 @@ describe('StatisticsService', () => {
     expect(transactionQueriesService.getStatisticsByCategory).toHaveBeenCalledWith(
       spaceId,
       TransactionType.EXPENSE,
-      period.from,
-      now,
+      '2026-09-01',
+      '2026-09-28',
       manager,
     );
     expect(transactionQueriesService.getStatisticsByAssignment).toHaveBeenCalledWith(
       spaceId,
       TransactionType.EXPENSE,
-      period.from,
-      now,
+      '2026-09-01',
+      '2026-09-28',
       manager,
     );
     expect(dataSource.transaction).toHaveBeenCalledTimes(1);
@@ -258,8 +259,8 @@ describe('StatisticsService', () => {
       expect(transactionQueriesService[method]).toHaveBeenCalledWith(
         spaceId,
         TransactionType.INCOME,
-        period.from,
-        now,
+        '2026-09-01',
+        '2026-09-28',
         manager,
       );
     }
@@ -267,7 +268,7 @@ describe('StatisticsService', () => {
   });
 
   it('summary: no transactions at all', async () => {
-    transactionQueriesService.getLastStatisticsTimestamp.mockResolvedValue(null);
+    transactionQueriesService.getLastStatisticsDate.mockResolvedValue(null);
 
     const result = await service.getSummary(userId, spaceId, query);
 
@@ -359,8 +360,8 @@ describe('StatisticsService', () => {
       expect(transactionQueriesService.getStatisticsByAssignment).toHaveBeenCalledWith(
         spaceId,
         TransactionType.EXPENSE,
-        expect.any(Date),
-        expect.any(Date),
+        '2026-09-01',
+        '2026-09-28',
         manager,
       );
     });

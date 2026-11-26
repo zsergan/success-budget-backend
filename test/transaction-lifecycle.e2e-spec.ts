@@ -1,9 +1,8 @@
 import request from 'supertest';
-import { DateTime } from 'luxon';
 
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { monthPeriodAt } from '@shared/utils';
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers, today } from './support/app';
 import { overlap, pauseAfterFirstCall } from './support/concurrency';
 import { createOpenApiDocument } from './support/openapi';
 
@@ -53,7 +52,7 @@ describe('Transaction lifecycle (e2e)', () => {
   function create(body: Record<string, unknown>) {
     return api()
       .post(`${v2()}/transactions`)
-      .send({ assignment: { kind: 'space' }, ...body });
+      .send({ assignment: { kind: 'space' }, time_zone: ZONE, ...body });
   }
 
   function patch(id: string, version: number, body: object) {
@@ -67,7 +66,7 @@ describe('Transaction lifecycle (e2e)', () => {
   // every derived figure of the space for the current month in ZONE
   async function snapshot() {
     const month = monthPeriodAt(new Date(), ZONE);
-    const bounds = { from: month.from.toISOString(), to: month.to.toISOString() };
+    const bounds = { from_date: month.start_date, to_date: month.end_date };
     const [limits, summary, breakdown, count, list] = await Promise.all([
       api().get(`${base()}/limits`).query({ time_zone: ZONE }).expect(200),
       api().get(`${v2()}/statistics/summary`).query({ period: 'month', time_zone: ZONE }).expect(200),
@@ -99,7 +98,7 @@ describe('Transaction lifecycle (e2e)', () => {
     const [salary] = categories.incomes;
     const [food, transport] = categories.expenses;
     await api().post(`${base()}/limits`).send({ amount: '1000' }).expect(201);
-    const now = () => new Date(Date.now() - 1000).toISOString();
+    const now = () => today(ZONE);
     const me = `member:${member.userId}`;
 
     expect(await snapshot()).toEqual({
@@ -115,7 +114,7 @@ describe('Transaction lifecycle (e2e)', () => {
       category_id: food.id,
       transaction_type: 'expense',
       amount: '12.30',
-      timestamp: now(),
+      date: now(),
       description: 'Lunch',
     }).expect(201);
     const id = created.body.transaction.id;
@@ -179,7 +178,7 @@ describe('Transaction lifecycle (e2e)', () => {
       category_id: food.id,
       transaction_type: 'expense',
       amount: '5',
-      timestamp: now(),
+      date: now(),
     }).expect(201);
     await remove(again.body.transaction.id, again.body.transaction.version).expect(200);
     expect(await snapshot()).toEqual(expect.objectContaining({ assignments: {}, spent: 0, rows: 0 }));
@@ -199,14 +198,16 @@ describe('Transaction lifecycle (e2e)', () => {
       category_id: own,
       transaction_type: 'expense',
       amount: '1',
-      timestamp: '2026-09-15T10:00:00.000Z',
+      date: '2026-09-15',
+      time_zone: 'UTC',
     }).expect(201);
     // gives Other history too, so deleting it archives it
     const keepOther = await create({
       category_id: other,
       transaction_type: 'expense',
       amount: '1',
-      timestamp: '2026-09-15T10:00:00.000Z',
+      date: '2026-09-15',
+      time_zone: 'UTC',
     }).expect(201);
     for (const id of [own, other]) {
       expect((await api().delete(`${base()}/categories/${id}`).expect(200)).body).toEqual({ archived: true });
@@ -220,26 +221,25 @@ describe('Transaction lifecycle (e2e)', () => {
     expect(keepOther.status).toBe(201);
   });
 
-  it('keeps a legacy future timestamp on an unrelated edit and refuses a new future one', async () => {
+  it('keeps a legacy date after today on an unrelated edit and refuses a new one', async () => {
     const created = await create({
       category_id: categories.expenses[0].id,
       transaction_type: 'expense',
       amount: '1',
-      timestamp: '2026-09-15T10:00:00.000Z',
+      date: '2026-09-15',
     }).expect(201);
     const id = created.body.transaction.id;
-    const legacyFuture = new Date('2037-06-01T00:00:00.000Z');
-    await testApp.dataSource.query('UPDATE transactions SET timestamp = ? WHERE id = ?', [legacyFuture, id]);
+    const legacyFuture = '2037-06-01';
+    await testApp.dataSource.query('UPDATE transactions SET date = ? WHERE id = ?', [legacyFuture, id]);
 
-    const kept = await patch(id, 1, { description: 'Still planned', timestamp: legacyFuture.toISOString() }).expect(
-      200,
-    );
-    const refused = await patch(id, 2, { timestamp: '2037-07-01T00:00:00.000Z' }).expect(400);
+    const kept = await patch(id, 1, { description: 'Still planned', date: legacyFuture, time_zone: 'UTC' }).expect(200);
+    const refused = await patch(id, 2, { date: '2037-07-01', time_zone: 'Pacific/Kiritimati' }).expect(400);
 
     expect(kept.body.transaction).toEqual(
-      expect.objectContaining({ timestamp: legacyFuture.toISOString(), description: 'Still planned' }),
+      expect.objectContaining({ date: legacyFuture, description: 'Still planned' }),
     );
-    expect(refused.body.message).toEqual([{ field: 'timestamp', error: 'timestamp must not be in the future' }]);
+    expect(kept.body.transaction.version).toBe(2);
+    expect(refused.body.message).toEqual([{ field: 'date', error: 'date must not be after today in time_zone' }]);
   });
 
   it('refuses a delete of the version an edit is replacing: the delete waits, then conflicts', async () => {
@@ -247,7 +247,8 @@ describe('Transaction lifecycle (e2e)', () => {
       category_id: categories.expenses[0].id,
       transaction_type: 'expense',
       amount: '1',
-      timestamp: '2026-09-15T10:00:00.000Z',
+      date: '2026-09-15',
+      time_zone: 'UTC',
     }).expect(201);
     const id = created.body.transaction.id;
     const queries = testApp.app.get(TransactionQueriesService);
@@ -269,48 +270,39 @@ describe('Transaction lifecycle (e2e)', () => {
     );
   });
 
-  it('bounds a local day across a DST change the same way in history and statistics', async () => {
-    const zone = 'America/New_York';
-    // 2026-03-08 is 23 hours long in New York: clocks go from 02:00 EST to 03:00 EDT
-    const day = DateTime.fromISO('2026-03-08', { zone });
-    const from = day.startOf('day').toJSDate();
-    const to = new Date(day.plus({ days: 1 }).startOf('day').toJSDate().getTime() - 1);
-    expect(to.getTime() - from.getTime()).toBe(23 * 3_600_000 - 1);
-    const add = async (timestamp: string) =>
+  it('selects a DST day by its date the same way in history and statistics, in every zone', async () => {
+    // 2026-03-08 is 23 hours long in New York: nothing about its records depends on that
+    const add = async (date: string) =>
       create({
         category_id: categories.expenses[0].id,
         transaction_type: 'expense',
         amount: '1',
-        timestamp,
+        date,
       }).expect(201);
-    // 23:30 EDT on March 8, the day's last half hour
-    const late = await add('2026-03-09T03:30:00.000Z');
-    // 00:30 EDT on March 9: inside a naive 24-hour day from midnight EST
-    await add('2026-03-09T04:30:00.000Z');
+    const onTheDay = await add('2026-03-08');
+    await add('2026-03-09');
+    const day = { from_date: '2026-03-08', to_date: '2026-03-08' };
+    const statisticsIn = (zone: string) =>
+      api()
+        .get(`${v2()}/statistics/summary`)
+        .query({ period: 'custom', from_date: '2026-03-08', to_date: '2026-03-08', time_zone: zone })
+        .expect(200);
 
-    const count = await api()
-      .get(`${v2()}/transactions/count`)
-      .query({ from: from.toISOString(), to: to.toISOString() })
-      .expect(200);
-    const statistics = await api()
-      .get(`${v2()}/statistics/summary`)
-      .query({ period: 'custom', from_date: '2026-03-08', to_date: '2026-03-08', time_zone: zone })
-      .expect(200);
+    const count = await api().get(`${v2()}/transactions/count`).query(day).expect(200);
+    for (const zone of ['America/New_York', 'Asia/Tokyo', 'Pacific/Kiritimati']) {
+      const statistics = await statisticsIn(zone);
 
+      expect(statistics.body.expense).toEqual({ amount: '1.00', count: 1 });
+      expect(statistics.body.period).toEqual(
+        expect.objectContaining({ start_date: '2026-03-08', end_date: '2026-03-08', actual_end_date: '2026-03-08' }),
+      );
+    }
     expect(count.body).toEqual({ count: 1 });
-    expect(statistics.body.expense).toEqual({ amount: '1.00', count: 1 });
-    expect(statistics.body.period).toEqual(expect.objectContaining({ from: from.toISOString(), to: to.toISOString() }));
 
-    // moving it by an hour, across midnight, takes it out of the day everywhere
-    await patch(late.body.transaction.id, 1, { timestamp: '2026-03-09T04:15:00.000Z' }).expect(200);
-    const after = await api()
-      .get(`${v2()}/transactions/count`)
-      .query({ from: from.toISOString(), to: to.toISOString() })
-      .expect(200);
-    const statisticsAfter = await api()
-      .get(`${v2()}/statistics/summary`)
-      .query({ period: 'custom', from_date: '2026-03-08', to_date: '2026-03-08', time_zone: zone })
-      .expect(200);
+    // moving it to the next day takes it out of the day everywhere
+    await patch(onTheDay.body.transaction.id, 1, { date: '2026-03-09', time_zone: 'America/New_York' }).expect(200);
+    const after = await api().get(`${v2()}/transactions/count`).query(day).expect(200);
+    const statisticsAfter = await statisticsIn('America/New_York');
     expect(after.body).toEqual({ count: 0 });
     expect(statisticsAfter.body.expense).toEqual({ amount: '0.00', count: 0 });
   });

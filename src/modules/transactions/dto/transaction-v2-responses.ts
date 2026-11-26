@@ -84,8 +84,13 @@ export class TransactionViewV2 {
   @ApiProperty({ pattern: '^\\d+\\.\\d{2}$', example: '12.30', description: 'Non-negative; type gives the sign.' })
   amount!: string;
 
-  @ApiProperty(INSTANT)
-  timestamp!: Date;
+  @ApiProperty({
+    type: String,
+    format: 'date',
+    example: '2026-09-28',
+    description: 'The calendar day, YYYY-MM-DD, as stored: the same in every zone.',
+  })
+  date!: string;
 
   @ApiProperty({ type: String, nullable: true, description: 'null when there is no description, never "".' })
   description!: string | null;
@@ -134,7 +139,11 @@ export class TransactionOperationViewV2 {
 }
 
 export class TransactionFeedV2 {
-  @ApiProperty({ type: TransactionViewV2, isArray: true, description: 'Newest first: timestamp, then id, descending.' })
+  @ApiProperty({
+    type: TransactionViewV2,
+    isArray: true,
+    description: 'Newest date first; within a date, the record created last first.',
+  })
   items!: TransactionViewV2[];
 
   @ApiProperty({ type: TransactionFeedPageInfo })
@@ -149,7 +158,7 @@ export class TransactionFeedV2 {
   @ApiProperty({
     type: TransactionFeedDayTotal,
     isArray: true,
-    description: 'One entry per local day that has a record in items, in the order of items.',
+    description: 'One entry per date that has a record in items, in the order of items.',
   })
   day_totals!: TransactionFeedDayTotal[];
 }

@@ -5,7 +5,7 @@ created them and say who they are for. It replaced wallets as the owner of
 a transaction. This document is the source of truth for the backend and the
 mobile v2 integration; the [transactions contract](transactions-contract.md)
 and the [statistics contract](statistics-contract.md) hold every rule this
-document does not change (amounts, timestamps, descriptions, versions,
+document does not change (amounts, dates, descriptions, versions,
 idempotency, cursors, periods, money, Other).
 
 ## Releases
@@ -14,6 +14,10 @@ idempotency, cursors, periods, money, Other).
 | ------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | A       | New schema and v2 routes; existing history migrated; v1 routes and wallets keep working  | Installed builds keep using v1; mobile v2 moves to v2 |
 | B       | v1 transaction, statistics and wallet routes, the wallet code and the `wallets` table go | Only builds that use v2                               |
+| C       | Transactions carry a calendar `date` instead of a `timestamp`; custom category colors    | Only builds of the calendar-date release              |
+
+Release C changes the v2 routes in place: it is a coordinated breaking
+release, see [Calendar dates (Release C)](#calendar-dates-release-c).
 
 Release B ships only after mobile v2 is available, older builds have moved
 over, and the checks in [Release B](#release-b) pass. Under Release A every
@@ -34,6 +38,7 @@ under Release B every v1 transaction, statistics and wallet route is
 | `LEGACY_WRITES=retired` (v1 writes refused before Release B)              | A       | removed (B) |
 | v1 transaction, statistics and wallet routes answer `410`                 | B       | implemented |
 | Wallet code, `transactions.wallet_id` and the `wallets` table dropped     | B       | implemented |
+| Calendar `date` and ordering key; `timestamp` dropped; custom colors      | C       | implemented |
 
 Code: `src/modules/transactions` (`transactions-v2.controller.ts`,
 `space-transactions.service.ts`, `transaction-writes.ts`,
@@ -42,15 +47,20 @@ Code: `src/modules/transactions` (`transactions-v2.controller.ts`,
 (`statistics-v2.controller.ts`, `assignment-breakdown.ts`),
 `src/modules/transaction-queries`, `src/modules/retired-routes`, the
 migrations `1791200000000-AddTransactionSpaceOwnership`,
-`1791300000000-AddCompatibilityWallet` (Release A) and
-`1791400000000-DropWallets` (Release B), the deploy checks in
-`src/database/transaction-ownership*.ts`. Tests:
+`1791300000000-AddCompatibilityWallet` (Release A),
+`1791400000000-DropWallets` (Release B),
+`1791500000000-ReplaceTransactionTimestampWithDate` and
+`1791600000000-AllowCustomCategoryColors` (Release C), the deploy checks in
+`src/database/transaction-ownership*.ts` and
+`src/database/transaction-dates*.ts`. Tests:
 `test/transactions-v2.e2e-spec.ts` (writes, races with member removal,
 retries, stored v1 results), `test/transactions-v2-reads.e2e-spec.ts`
 (filters, totals, DST, statistics, limits, OpenAPI),
 `test/transaction-ownership-migration.e2e-spec.ts` and
 `test/wallet-removal-migration.e2e-spec.ts` (both migrations and their
-reconciliation, on a disposable database), `test/transaction-recovery.e2e-spec.ts`
+reconciliation, on a disposable database),
+`test/transaction-dates-migration.e2e-spec.ts` (the date migration, its
+reconciliation and recovery, on a disposable database), `test/transaction-recovery.e2e-spec.ts`
 (pending writes of older builds, the retired routes), and the unit specs
 next to the code.
 
@@ -152,12 +162,11 @@ One shape for every v2 read and write result.
 
 ```ts
 interface TransactionCategory {
-  // unchanged from v1
   id: number;
   name: string;
   transaction_type: 'income' | 'expense';
   icon: CategoryIcon;
-  color: AppColor;
+  color: CategoryColor; // a preset token or '#RRGGBB', see the type contract
   is_active: 0 | 1;
   is_archived: boolean;
   created_at: string;
@@ -169,7 +178,7 @@ interface TransactionViewV2 {
   kind: 'regular' | 'initial_balance';
   transaction_type: 'income' | 'expense';
   amount: string; // "12.30"
-  timestamp: string; // ISO-8601 UTC with milliseconds
+  date: string; // calendar date, YYYY-MM-DD; no time, no zone
   description: string | null; // never ""
   version: number;
   category: TransactionCategory;
@@ -186,7 +195,7 @@ Example, a shared expense entered by Lena who has since left:
   "kind": "regular",
   "transaction_type": "expense",
   "amount": "42.80",
-  "timestamp": "2026-10-08T18:30:00.000Z",
+  "date": "2026-10-08",
   "description": "Dinner",
   "version": 1,
   "category": {
@@ -247,7 +256,8 @@ interface CreateTransactionRequestV2 {
   category_id: number;
   transaction_type: 'income' | 'expense';
   amount: string;
-  timestamp: string;
+  date: string; // YYYY-MM-DD, not after today in time_zone
+  time_zone: string; // IANA zone of the device: tells today; not stored
   description?: string | null;
   assignment: TransactionAssignment; // required
   client_operation_id?: string; // UUID, as in v1
@@ -267,9 +277,10 @@ interface CreateTransactionResultV2 {
   of the space. The check runs under a lock on that member's row, so the
   member cannot leave or be removed between the check and the commit.
   Pending invitations are not members.
-- `wallet_id`, `author` or any other unknown field is
+- `wallet_id`, `author`, `timestamp` or any other unknown field is
   `400 VALIDATION_FAILED`.
-- The amount, timestamp, description and category rules are those of v1.
+- The amount, date, description and category rules are those of the
+  [transactions contract](transactions-contract.md#field-rules).
 
 Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
 `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_OPERATION_EXISTS`,
@@ -281,13 +292,13 @@ POST /api/v2/spaces/4/transactions
 Idempotency-Key: 0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70
 
 { "category_id": 12, "transaction_type": "expense", "amount": "42.8",
-  "timestamp": "2026-10-08T21:30:00+03:00", "description": " Dinner ",
+  "date": "2026-10-08", "time_zone": "Europe/Moscow", "description": " Dinner ",
   "assignment": { "kind": "member", "user_id": 31 },
   "client_operation_id": "0f8e3b1c-5d2a-4e8f-9a61-2c7d4b5e6f70" }
 
 201
 { "transaction": { "id": "9b1d…", "kind": "regular", "amount": "42.80", "version": 1,
-                   "description": "Dinner", …,
+                   "date": "2026-10-08", "description": "Dinner", …,
                    "author": { "user_id": 7, "name": "Zakhar", "status": "member", "source": "recorded" },
                    "assignment": { "kind": "member", "user_id": 31, "name": "Lena", "status": "member" } } }
 ```
@@ -308,7 +319,8 @@ interface UpdateTransactionRequestV2 {
   category_id?: number;
   transaction_type?: 'income' | 'expense';
   amount?: string;
-  timestamp?: string;
+  date?: string; // YYYY-MM-DD
+  time_zone?: string; // required whenever date is sent; tells today
   description?: string | null;
   assignment?: TransactionAssignment;
 }
@@ -332,7 +344,7 @@ interface UpdateTransactionRequestV2 {
 Errors, in check order: `VALIDATION_FAILED`, `TRANSACTION_VERSION_REQUIRED`,
 `FORBIDDEN_SPACE`, `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_NOT_FOUND`,
 `TRANSACTION_IS_SYSTEM`, `TRANSACTION_VERSION_CONFLICT`, then for changed
-values: `VALIDATION_FAILED` (amount, timestamp), `FORBIDDEN_CATEGORY`,
+values: `VALIDATION_FAILED` (amount, date), `FORBIDDEN_CATEGORY`,
 `CATEGORY_ARCHIVED`, `CATEGORY_TYPE_MISMATCH`, `ASSIGNEE_NOT_MEMBER`.
 
 ```http
@@ -383,8 +395,9 @@ interface TransactionOperationV2 {
 ### History selection v2
 
 `/feed` and `/count` select every record of the space (by its own
-`space_id`) with `from <= timestamp <= to` that matches the filters and
-`q`, newest first, then by `id` descending.
+`space_id`) with `from_date <= date <= to_date` that matches the filters
+and `q`, newest date first, then by the server's ordering key descending
+(see the [history order](transactions-contract.md#history-selection)).
 
 | Parameter          | Rule                                                                                                  | Refused                                                                                        |
 | ------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -415,9 +428,10 @@ case and accents, as in v1. Names of people and wallets are not searched:
 
 ### `GET /api/v2/spaces/:spaceId/transactions/feed`
 
-Query: `from`, `to`, `time_zone` (required), `q`, `limit`, `cursor`,
-`around_id`, and the filters above. Response: the v1 feed shape with v2
-items.
+Query: `from_date`, `to_date` (required), `q`, `limit`, `cursor`,
+`around_id`, and the filters above. Response: the feed shape of the
+[transactions contract](transactions-contract.md#get-spacesspaceidtransactionsfeed)
+with v2 items.
 
 ```ts
 interface TransactionFeedV2 {
@@ -432,18 +446,20 @@ interface TransactionFeedV2 {
   from: period, `q`, `transaction_type`, `kind`, `category_id` **and**
   `assignment`. A day total with `assignment=member:31` is Lena's net for
   that day.
-- A cursor belongs to its query: period, `time_zone`, `q`, every filter,
-  `assignment` included, and the API version. A v1 cursor, or a cursor
-  sent with another `assignment`, is `400 VALIDATION_FAILED`, field
-  `cursor`; the client reloads the first page.
-- `around_id`, the snapshot, money and day rules are those of v1.
+- A cursor belongs to its query: `from_date`, `to_date`, `q`, every
+  filter, `assignment` included, and its format version. A cursor issued
+  before Release C, or a cursor sent with another `assignment`, is
+  `400 VALIDATION_FAILED`, field `cursor`; the client reloads the first
+  page.
+- `around_id`, the snapshot, money and day rules are those of the
+  transactions contract.
 
 Errors, in check order: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`,
 `FORBIDDEN_CATEGORY`, `FORBIDDEN_MEMBER`, `TRANSACTION_NOT_FOUND`,
 `TRANSACTION_NOT_IN_FEED`.
 
 ```http
-GET /api/v2/spaces/4/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-31T20:59:59.999Z&time_zone=Europe/Moscow&transaction_type=expense&kind=regular&assignment=member:31
+GET /api/v2/spaces/4/transactions/feed?from_date=2026-10-01&to_date=2026-10-31&transaction_type=expense&kind=regular&assignment=member:31
 
 200
 { "items": [ { "id": "9b1d…", "amount": "42.80",
@@ -455,8 +471,8 @@ GET /api/v2/spaces/4/transactions/feed?from=2026-09-30T21:00:00.000Z&to=2026-10-
 
 ### `GET /api/v2/spaces/:spaceId/transactions/count`
 
-`200 { count: number }`: the feed's `summary.count` for the same `from`,
-`to` (both required, instants with `Z` or an offset), `q` and filters.
+`200 { count: number }`: the feed's `summary.count` for the same
+`from_date`, `to_date` (both required calendar dates), `q` and filters.
 Errors: `VALIDATION_FAILED`, `FORBIDDEN_SPACE`, `FORBIDDEN_CATEGORY`,
 `FORBIDDEN_MEMBER`.
 
@@ -547,7 +563,7 @@ template:
 
 ```
 GET /api/v2/spaces/:spaceId/transactions/feed
-    ?from={period.from}&to={period.actual_to}&time_zone={period.time_zone}
+    ?from_date={period.start_date}&to_date={period.actual_end_date}
     &transaction_type={transaction_type}&kind=regular
     &{category_id={item.id} | assignment={item.key}}
 ```
@@ -562,7 +578,7 @@ same cycle, as in v1.
 | Home: month net, Income, Expenses | `statistics/summary?period=month&anchor_date=&time_zone=&as_of=`                                                                                                 |
 | Home: Top spending                | `statistics/breakdown` (same cycle, `transaction_type=expense`) → `by_category`                                                                                  |
 | Home: Spending by assignment      | the same breakdown → `by_assignment` (`primary_items` and `other.children`; the client shows up to 5 rows, `space` and `unassigned` always). Shared spaces only. |
-| Home: Activity                    | `transactions/feed?from=period.from&to=period.actual_to&time_zone=&limit=5`                                                                                      |
+| Home: Activity                    | `transactions/feed?from_date=period.start_date&to_date=period.actual_end_date&limit=5`                                                                           |
 | Home: assignment row → History    | the drill-down template with `assignment={item.key}`                                                                                                             |
 | History                           | `transactions/feed` with the period, `q`, filters and `assignment`; `assignees` for the filter chips; `count` for the period picker                              |
 | Stats                             | `statistics/summary`, `trend`, `breakdown` (By category, By assignment)                                                                                          |
@@ -602,10 +618,12 @@ with `ASSIGNEE_NOT_MEMBER`, or the write commits first and the record
 keeps its assignment to the person who then leaves (`former_member`).
 
 Idempotency keys of v2 writes are scoped to their own operations
-(`transactions.v2.create`, `transactions.v2.update`,
-`transactions.v2.delete`). A key used with a v1 write is a different key
-for v2: a v2 request never receives a stored v1 result (which carries a
-wallet). `client_operation_id` is different: one table for both versions,
+(`transactions.v2.date.create`, `transactions.v2.date.update`,
+`transactions.v2.delete`). A key used with a v1 write, or with a create or
+edit before Release C (`transactions.v2.create`, `transactions.v2.update`),
+is a different key now: a request never receives a stored result of
+another request format (see
+[Calendar dates (Release C)](#calendar-dates-release-c)). `client_operation_id` is different: one table for both versions,
 unique per space, so a create can happen once whichever version sent it,
 also when a v1 create committed before Release B.
 
@@ -663,7 +681,7 @@ ids are kept through both releases.
 | Path                | When                                                                 | Request                                                                                                                                                                                                                                                                  |
 | ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Exact legacy replay | Release A only, while v1 writes are enabled; what the old build does | `POST /api/v1/spaces/{spaceId}/transactions`, the stored body byte for byte, `Idempotency-Key: {idempotencyKey}`; `410` under Release B                                                                                                                                  |
-| Converted v2 create | Release A and B; what the v2 build does                              | `POST /api/v2/spaces/{spaceId}/transactions`, `Idempotency-Key: {idempotencyKey}`, body: the stored `category_id`, `transaction_type`, `amount`, `timestamp`, `description`, `client_operation_id: {idempotencyKey}` and `assignment: { kind: 'space' }`; no `wallet_id` |
+| Converted v2 create | Release A and B; what the v2 build does                              | `POST /api/v2/spaces/{spaceId}/transactions`, `Idempotency-Key: {idempotencyKey}`, body: the stored `category_id`, `transaction_type`, `amount`, `timestamp`, `description`, `client_operation_id: {idempotencyKey}` and `assignment: { kind: 'space' }`; no `wallet_id`. Since Release C, `date` and `time_zone` in place of `timestamp` ([conversion](#pending-writes-across-release-c)) |
 
 A converted create records the authenticated user as the author
 (`source: 'recorded'`) and assigns the whole space, because the old body
@@ -825,3 +843,164 @@ either version; a create that never committed is sent as the converted v2
 create; a stored edit or delete is sent through v2 without its
 `wallet_id`. The exact legacy replay is `410` and is not used. Operation
 records are kept for as long as their space.
+
+## Calendar dates (Release C)
+
+A transaction happens on a **calendar day**, not at an instant. Release C
+stores `transactions.date` (MySQL `DATE`) instead of `transactions.timestamp`
+and changes every v2 transaction and statistics route, and the limits
+period, to calendar dates. It is a coordinated breaking release: the
+backend refuses the requests of earlier builds that carry `timestamp`,
+`from`/`to` instants or a feed `time_zone`, so the compatible mobile build
+ships with it ([deployment](deployment.md#rolling-out-calendar-dates)).
+Routes, versions, assignments, authors, money, Other and every error code
+of earlier releases are unchanged unless listed here.
+
+### Dates
+
+| Where                                                         | Rule                                                                                                                                                                                          |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every date (`date`, `from_date`, `to_date`, `anchor_date`, …) | Exactly `YYYY-MM-DD`, a real day of the Gregorian calendar (`2028-02-29` yes, `2026-02-29` no), from `1000-01-01` to `9999-12-31`. A time, an offset, `Z` or another layout is refused, never cut |
+| `date` of a record, read                                      | Returned exactly as stored, whatever zone the reader is in. It never shifts with a zone or DST                                                                                               |
+| `time_zone` of a write                                        | IANA name (`Europe/Moscow`). It only tells which day is **today** for the writer; it is not stored and does not change the date                                                               |
+| Today                                                         | The calendar date in `time_zone` of the server clock plus 60 seconds (the margin absorbs device clock drift, as before)                                                                       |
+| A new or changed `date`                                       | Not after today: `400 VALIDATION_FAILED`, field `date`. An unchanged stored date is never re-checked                                                                                          |
+
+Examples, the server clock at `2026-10-08T21:30:00Z`:
+
+| Request                                                    | Result                                                             |
+| ---------------------------------------------------------- | ------------------------------------------------------------------ |
+| `date: "2026-10-09", time_zone: "Europe/Moscow"`           | `201`: it is already 00:30 on October 9 in Moscow                  |
+| `date: "2026-10-09", time_zone: "America/Chicago"`         | `400`, field `date`: it is 16:30 on October 8 in Chicago           |
+| `date: "2026-10-08", time_zone: "Asia/Tokyo"`              | `201`: an earlier day is always fine                               |
+| `date: "2026-10-08T21:30:00Z"`, `"2026-10-08+03:00"`       | `400`, field `date`: not a calendar date                           |
+| `date: "2026-02-29"`, `"2026-13-01"`, `"2026-10-8"`        | `400`, field `date`                                                |
+| `timestamp: "2026-10-08T21:30:00Z"` (an earlier build)     | `400`, field `timestamp`: an unknown field, nothing is written     |
+| `PATCH { "date": "2026-10-08" }` without `time_zone`       | `400`, field `time_zone`                                           |
+| `PATCH { "date": <the stored date>, "time_zone": "UTC" }`  | `200`, no change, `version` kept, even if that date is after today |
+
+A record keeps its date when the device travels: a purchase on October 8
+in Chicago reads `2026-10-08` in Tokyo, and the history of October 8 lists
+it in every zone.
+
+### History order
+
+Records of one date are ordered by a server-side ordering key, assigned on
+create in the order of the creates and never changed by an edit; the
+client never sees it. The history order is `date` descending, then that
+key descending: within a day the record created last comes first. Moving a
+record to another date keeps its key, so it takes its place by creation
+among that day's records. There is no time of day anywhere: not in the
+view, not in the order, not hidden.
+
+### Request and response changes
+
+| Endpoint                                                | Before                                                        | Release C                                                                                        |
+| ------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Every transaction view (feed, latest, details, results) | `timestamp: "2026-10-08T18:30:00.000Z"`                       | `date: "2026-10-08"`; no `timestamp`                                                             |
+| `POST /transactions`                                    | `timestamp` (instant)                                         | `date` and `time_zone`, both required                                                            |
+| `PATCH /transactions/:id`                               | `timestamp` (instant)                                         | `date`, optional; `time_zone` required with it                                                   |
+| `GET /transactions/feed`                                | `from`, `to` (instants), `time_zone` (required)               | `from_date`, `to_date` (dates, inclusive, required); no `time_zone`                              |
+| `GET /transactions/count`                               | `from`, `to`                                                  | `from_date`, `to_date`                                                                           |
+| Feed `day_totals[].date`                                | the local day of each record in `time_zone`                   | the stored `date`                                                                                |
+| Feed cursors                                            | format 1                                                      | format 2; a format 1 cursor is `400`, field `cursor`                                             |
+| `period` of statistics                                  | `from`, `to`, `actual_to` (instants)                          | `actual_end_date` (date or `null`); `from`, `to`, `actual_to` gone                               |
+| Summary `previous`                                      | `from`, `to`, `actual_to`                                     | `actual_end_date`                                                                                |
+| Trend buckets                                           | `from`, `to`                                                  | dates only (`start_date`, `end_date`)                                                            |
+| Statistics periods                                      | within 1970–2038                                              | within `1000-01-01`–`9999-12-31`                                                                 |
+| `GET /api/v1/spaces/:id/limits` `period`                | `from`, `to` (instants)                                       | `time_zone`, `start_date`, `end_date` only                                                       |
+| Category `color` (categories, transactions, statistics, limits) | one of the six presets                                | a preset or `#RRGGBB` (see the [type contract](type-contract.md#category-colors))                 |
+
+### Migrating existing history
+
+`ReplaceTransactionTimestampWithDate1791500000000` gives every record the
+calendar day its instant had in **`America/Chicago`**, where the existing
+history was entered, with that zone's DST rules on the record's own day:
+
+| Stored instant             | Chicago local time      | `date`       |
+| -------------------------- | ----------------------- | ------------ |
+| `2026-01-15T05:59:59.999Z` | Jan 14, 23:59:59.999 CST | `2026-01-14` |
+| `2026-01-15T06:00:00.000Z` | Jan 15, 00:00 CST        | `2026-01-15` |
+| `2026-07-15T04:59:59.999Z` | Jul 14, 23:59:59.999 CDT | `2026-07-14` |
+| `2026-07-15T05:00:00.000Z` | Jul 15, 00:00 CDT        | `2026-07-15` |
+| `2026-11-01T04:59:59.999Z` | Oct 31, 23:59:59.999 CDT | `2026-10-31` |
+| `2026-11-01T06:30:00.000Z` | Nov 1, 01:30 CDT         | `2026-11-01` |
+| `2027-01-01T05:59:59.999Z` | Dec 31, 23:59:59.999 CST | `2026-12-31` |
+
+The conversion runs in Node with the zone data of
+its ICU, never with a fixed `-05:00`/`-06:00` and independently of the
+host's and the MySQL session's zones.
+
+| Kept, unchanged                                                                                         | Changed                                                                  | Gone                                                       |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| id, space, amount, type, category, description, author, assignment, `version`; starting balances too | `date`: the Chicago day of the old instant                               | `timestamp`: the time of day cannot be recovered afterwards |
+| operation records (`transaction_operations`), their ids and their own `created_at`/`deleted_at`       | the ordering key: the old order (`timestamp`, then `id`), so every list keeps its order | |
+| idempotency records, their keys, operations, fingerprints and expiry                                    | a retained stored result: its `transaction.timestamp` becomes `transaction.date` |                                                            |
+
+Records created after the migration get ordering keys after every migrated
+record. The migration refuses to finish when a day total or a month total
+by the old Chicago interpretation differs from the stored dates, and the
+deploy check compares every record, count and sum against a snapshot taken
+before it ([deployment](deployment.md#rolling-out-calendar-dates)).
+
+### Stored results and retries
+
+- Creates and edits use new idempotency operations
+  (`transactions.v2.date.create`, `transactions.v2.date.update`), so a key
+  used before Release C never answers, nor refuses, a request of the new
+  format: no stored `timestamp` result is replayed, and a converted retry
+  is never `IDEMPOTENCY_KEY_REUSED` because of the conversion. A key
+  compares the request without `time_zone`, which writes nothing: a retry
+  sent after the device changed zones gets the stored result. Deletes keep
+  `transactions.v2.delete`: their request and result (`true`) did not
+  change, so a repeat of a delete sent before the upgrade still answers
+  `200 true`.
+- `client_operation_id` stays unique per space across the release: a
+  create that committed before it is found by the operation lookup, which
+  returns the record with its `date`, and a converted retry of it is
+  `409 TRANSACTION_OPERATION_EXISTS`. No retry creates a second record.
+- An edit or a delete of a version read before the upgrade is applied, or
+  refused with `409 TRANSACTION_VERSION_CONFLICT`, exactly as before: the
+  migration keeps every `version`.
+
+### Pending writes across Release C
+
+A build before Release C keeps pending writes with `timestamp` instants
+(an ISO string with `Z` or an offset). The Release C build converts each
+one before sending it, and resolves it as in
+[Recovering writes across the upgrade](#recovering-writes-across-the-upgrade):
+
+| Stored write                    | Request of the Release C build                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create                          | Look it up first (`GET /operations/{id}`). On `404`, `POST` with the same `Idempotency-Key` and `client_operation_id`, `timestamp` replaced by `date` and `time_zone` (below)        |
+| Edit with `timestamp`           | `PATCH` with the same `If-Match` and key, `timestamp` replaced by `date` and `time_zone`                                                                                              |
+| Edit without `timestamp`        | `PATCH` as stored                                                                                                                                                                     |
+| Delete                          | `DELETE` as stored                                                                                                                                                                    |
+
+`date` is the day the user picked: the `YYYY-MM-DD` part of the stored
+string when it carries an offset (`2026-10-08T21:30:00+03:00` →
+`2026-10-08`), otherwise the day of the instant in the device's zone.
+`time_zone` is the device's zone now. A converted date after today in that
+zone (a write stored in a zone east of the current one) is `400`, field
+`date`: the client shows the draft for the user to pick the date again.
+
+### Mobile changes
+
+| Endpoint                                     | Trigger                                                       | Status | `code`                                    | New shape                                                         | Client                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------- | ------ | ----------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Every transaction read and write result      | always                                                        | 200/201 | —                                        | `date: "YYYY-MM-DD"`, no `timestamp`                              | Show the date as is; never convert it with a zone                                       |
+| `POST /api/v2/.../transactions`              | `date` and `time_zone` sent                                   | 201    | —                                         | unchanged result shape                                            | Send the picked day and the device's IANA zone                                          |
+| `POST`                                       | `date` or `time_zone` missing or malformed                    | 400    | `VALIDATION_FAILED` (`date`, `time_zone`) | —                                                                 | Client bug: fix the request                                                             |
+| `POST`, `PATCH`                              | a new `date` after today in `time_zone`                       | 400    | `VALIDATION_FAILED` (`date`)              | —                                                                 | Keep the draft; let the user pick today or earlier                                      |
+| `POST`, `PATCH`                              | `timestamp` sent (an earlier build or an unconverted pending write) | 400 | `VALIDATION_FAILED` (`timestamp`)      | —                                                                 | Convert it ([pending writes](#pending-writes-across-release-c)) and resend              |
+| `PATCH /api/v2/.../transactions/:id`         | `date` sent without `time_zone`                               | 400    | `VALIDATION_FAILED` (`time_zone`)         | —                                                                 | Send `time_zone` with every `date`                                                      |
+| `GET .../transactions/feed`, `/count`        | `from_date`, `to_date` sent                                   | 200    | —                                         | unchanged shapes                                                  | Send the days of the period, both inclusive                                             |
+| `GET .../transactions/feed`, `/count`        | `from`, `to` or (feed) `time_zone` sent                       | 400    | `VALIDATION_FAILED` (that parameter)      | —                                                                 | Client bug: send `from_date`/`to_date` only                                             |
+| `GET .../transactions/feed`, `/count`        | `from_date` after `to_date`                                   | 400    | `VALIDATION_FAILED` (`from_date`)         | —                                                                 | Client bug                                                                              |
+| `GET .../transactions/feed`                  | a cursor from before Release C                                | 400    | `VALIDATION_FAILED` (`cursor`)            | —                                                                 | Drop stored cursors and reload the first page                                           |
+| `GET /api/v2/.../statistics/*`               | always                                                        | 200    | —                                         | `period.actual_end_date`, `previous.actual_end_date`; no `from`/`to`/`actual_to`; buckets without `from`/`to` | Open the history with `from_date=start_date&to_date=actual_end_date`; label comparisons from dates |
+| `GET /api/v1/.../limits`                     | always                                                        | 200    | —                                         | `period: { time_zone, start_date, end_date }`                     | History of this month: `from_date=start_date&to_date=end_date`                          |
+| `POST`/`PUT /api/v1/.../categories`          | `color` a preset or `#rrggbb`                                 | 201/200 | —                                        | `color` as stored: the preset, or `#RRGGBB` upper-case            | Offer custom colors; adjust contrast on the device                                      |
+| `POST`/`PUT /api/v1/.../categories`          | `color` `#RGB`, `#RRGGBBAA`, `red`, `rgb(…)`, `Slate`, `null` | 400    | `VALIDATION_FAILED` (`color`)             | —                                                                 | Client bug                                                                              |
+| Every category-bearing read                  | a category with a custom color                                | 200    | —                                         | `color: "#3A7BD5"`                                                | Accept any `#RRGGBB` next to the presets, also in transactions, statistics and limits  |
+| `GET .../transactions/operations/:id`        | a create committed before Release C                           | 200    | —                                         | `transaction.date`                                                | As before: never create it again                                                        |

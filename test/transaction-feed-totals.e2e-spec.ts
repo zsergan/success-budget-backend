@@ -32,7 +32,7 @@ describe('Transactions feed totals (e2e)', () => {
         .expect(200)
     ).body;
 
-  async function add(type: 'income' | 'expense', amount: string, timestamp: string) {
+  async function add(type: 'income' | 'expense', amount: string, date: string) {
     await request(testApp.app.getHttpServer())
       .post(`/api/v2/spaces/${owner.spaceId}/transactions`)
       .set('Authorization', `Bearer ${owner.token}`)
@@ -40,7 +40,8 @@ describe('Transactions feed totals (e2e)', () => {
         category_id: type === 'income' ? incomeCategoryId : expenseCategoryId,
         transaction_type: type,
         amount,
-        timestamp,
+        date,
+        time_zone: 'UTC',
         assignment: { kind: 'space' },
       })
       .expect(201);
@@ -59,7 +60,7 @@ describe('Transactions feed totals (e2e)', () => {
       categoryId: system.id,
       type: 'income',
       amount: '100.00',
-      timestamp: new Date('2026-02-10T09:00:00.000Z'),
+      date: '2026-02-10',
     });
 
     const categories = await request(server)
@@ -69,27 +70,25 @@ describe('Transactions feed totals (e2e)', () => {
     expenseCategoryId = categories.body.expenses[0].id;
     incomeCategoryId = categories.body.incomes[0].id;
 
-    await add('income', '50.00', '2026-02-09T10:00:00.000Z');
-    for (const hour of ['10', '11', '12', '13']) {
-      await add('expense', '1.00', `2026-02-10T${hour}:00:00.000Z`);
+    await add('income', '50.00', '2026-02-09');
+    for (let i = 0; i < 4; i++) {
+      await add('expense', '1.00', '2026-02-10');
     }
-    await add('expense', '2.00', '2026-02-11T10:00:00.000Z');
+    await add('expense', '2.00', '2026-02-11');
 
-    // Europe/Berlin leaves summer time on 2025-10-26 (a 25-hour day)
-    await add('expense', '1.00', '2025-10-25T21:30:00.000Z');
-    await add('expense', '10.00', '2025-10-25T22:30:00.000Z');
-    await add('expense', '5.00', '2025-10-26T22:30:00.000Z');
-    await add('income', '100.00', '2025-10-26T23:30:00.000Z');
+    // Europe/Berlin leaves summer time on 2025-10-26 (a 25-hour day) and
+    // enters it on 2026-03-29 (a 23-hour day): days of records all the same
+    await add('expense', '1.00', '2025-10-25');
+    await add('expense', '10.00', '2025-10-26');
+    await add('expense', '5.00', '2025-10-26');
+    await add('income', '100.00', '2025-10-27');
+    await add('expense', '4.00', '2026-03-29');
+    await add('expense', '2.00', '2026-03-29');
 
-    // ... and enters it on 2026-03-29 (a 23-hour day)
-    await add('expense', '4.00', '2026-03-28T23:30:00.000Z');
-    await add('expense', '2.00', '2026-03-29T21:30:00.000Z');
-    await add('expense', '3.00', '2026-03-29T22:30:00.000Z');
-
-    for (const minute of ['00', '01', '02']) {
-      await add('expense', '99999999.99', `2026-01-15T10:${minute}:00.000Z`);
+    for (let i = 0; i < 3; i++) {
+      await add('expense', '99999999.99', '2026-01-15');
     }
-    await add('income', '99999999.99', '2026-01-16T10:00:00.000Z');
+    await add('income', '99999999.99', '2026-01-16');
   });
 
   afterAll(async () => {
@@ -100,7 +99,7 @@ describe('Transactions feed totals (e2e)', () => {
     }
   });
 
-  const february = 'from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z&time_zone=UTC';
+  const february = 'from_date=2026-02-01&to_date=2026-02-28';
 
   describe('summary', () => {
     it('covers the whole selection on the first page, initial balance counted but not income', async () => {
@@ -133,14 +132,12 @@ describe('Transactions feed totals (e2e)', () => {
     });
 
     it('sums exactly beyond the maximum of one amount', async () => {
-      const page = await feed('from=2026-01-01T00:00:00.000Z&to=2026-01-31T23:59:59.999Z&time_zone=UTC&limit=1');
+      const page = await feed('from_date=2026-01-01&to_date=2026-01-31&limit=1');
 
       expect(page.summary).toEqual({ count: 4, income: '99999999.99', expense: '299999999.97' });
       expect(page.day_totals).toEqual([{ date: '2026-01-16', net: '99999999.99' }]);
 
-      const next = await feed(
-        `from=2026-01-01T00:00:00.000Z&to=2026-01-31T23:59:59.999Z&time_zone=UTC&limit=1&cursor=${page.page_info.next_cursor}`,
-      );
+      const next = await feed(`from_date=2026-01-01&to_date=2026-01-31&limit=1&cursor=${page.page_info.next_cursor}`);
       expect(next.day_totals).toEqual([{ date: '2026-01-15', net: '-299999999.97' }]);
     });
   });
@@ -169,47 +166,36 @@ describe('Transactions feed totals (e2e)', () => {
       expect((await feed(`${february}&q=initial`)).day_totals).toEqual([{ date: '2026-02-10', net: '0.00' }]);
     });
 
-    it('counts only the part of a day inside the period', async () => {
-      const page = await feed('from=2026-02-10T11:30:00.000Z&to=2026-02-10T23:59:59.999Z&time_zone=UTC');
+    it('takes a period of one day as that whole day', async () => {
+      const page = await feed('from_date=2026-02-10&to_date=2026-02-10');
 
-      expect(page.day_totals).toEqual([{ date: '2026-02-10', net: '-2.00' }]);
+      expect(page.summary).toEqual({ count: 5, income: '0.00', expense: '4.00' });
+      expect(page.day_totals).toEqual([{ date: '2026-02-10', net: '-4.00' }]);
     });
 
-    it('groups by the local day of time_zone', async () => {
-      const page = await feed('from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z&time_zone=Asia/Tokyo');
+    it('takes no time_zone: a date is the same day for every reader', async () => {
+      const res = await request(testApp.app.getHttpServer())
+        .get(`/api/v2/spaces/${owner.spaceId}/transactions/feed?${february}&time_zone=Asia/Tokyo`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(400);
 
-      // 2026-02-10T13:00Z is 22:00 in Tokyo; 2026-02-11T10:00Z is 19:00 on the 11th
-      expect(page.day_totals).toEqual([
-        { date: '2026-02-11', net: '-2.00' },
-        { date: '2026-02-10', net: '-4.00' },
-        { date: '2026-02-09', net: '50.00' },
-      ]);
+      expect(res.body.message).toEqual([expect.objectContaining({ field: 'time_zone' })]);
     });
 
-    it('takes a 25-hour day when summer time ends', async () => {
-      const page = await feed(
-        'from=2025-10-20T00:00:00.000Z&to=2025-10-31T23:59:59.999Z&time_zone=Europe/Berlin&limit=2',
-      );
+    it('takes the days of DST changes like any other, one entry per stored date', async () => {
+      const page = await feed('from_date=2025-10-20&to_date=2025-10-31&limit=2');
 
       expect(page.day_totals).toEqual([
         { date: '2025-10-27', net: '100.00' },
         { date: '2025-10-26', net: '-15.00' },
       ]);
 
-      const next = await feed(
-        `from=2025-10-20T00:00:00.000Z&to=2025-10-31T23:59:59.999Z&time_zone=Europe/Berlin&limit=2&cursor=${page.page_info.next_cursor}`,
-      );
+      const next = await feed(`from_date=2025-10-20&to_date=2025-10-31&limit=2&cursor=${page.page_info.next_cursor}`);
       expect(next.day_totals).toEqual([
         { date: '2025-10-26', net: '-15.00' },
         { date: '2025-10-25', net: '-1.00' },
       ]);
-    });
-
-    it('takes a 23-hour day when summer time starts', async () => {
-      const page = await feed('from=2026-03-20T00:00:00.000Z&to=2026-03-31T23:59:59.999Z&time_zone=Europe/Berlin');
-
-      expect(page.day_totals).toEqual([
-        { date: '2026-03-30', net: '-3.00' },
+      expect((await feed('from_date=2026-03-29&to_date=2026-03-29')).day_totals).toEqual([
         { date: '2026-03-29', net: '-6.00' },
       ]);
     });
@@ -222,12 +208,12 @@ describe('Transactions feed totals (e2e)', () => {
           .get(`/api/v2/spaces/${owner.spaceId}/transactions/count?${query}`)
           .set('Authorization', `Bearer ${owner.token}`)
       ).body;
-    const period = 'from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z';
+    const period = 'from_date=2026-02-01&to_date=2026-02-28';
 
     it.each(['', 'q=initial', 'q=%20%20Card%20', 'q=nothing-like-it', 'q=card&kind=regular', 'q=%20%20%20'])(
       'counts what the feed summary counts for %p',
       async (query) => {
-        const feedCount = (await feed(`${period}&time_zone=UTC&${query}`)).summary.count;
+        const feedCount = (await feed(`${period}&${query}`)).summary.count;
 
         expect(await count(`${period}&${query}`)).toEqual({ count: feedCount });
       },
@@ -249,15 +235,19 @@ describe('Transactions feed totals (e2e)', () => {
       });
     });
 
-    it('takes both bounds as instants, in order', async () => {
-      expect(await count('from=2026-02-01&to=2026-02-28')).toMatchObject({
+    it('takes both bounds as calendar dates, in order', async () => {
+      expect(await count('from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z')).toMatchObject({
         statusCode: 400,
         code: 'VALIDATION_FAILED',
       });
-      expect(await count('')).toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' });
-      expect(await count('from=2026-02-28T00:00:00.000Z&to=2026-02-01T00:00:00.000Z')).toMatchObject({
+      expect(await count('from_date=2026-02-01T00:00:00.000Z&to_date=2026-02-28')).toMatchObject({
         statusCode: 400,
-        message: [{ field: 'from', error: 'from must not be after to' }],
+        message: [expect.objectContaining({ field: 'from_date' })],
+      });
+      expect(await count('')).toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' });
+      expect(await count('from_date=2026-02-28&to_date=2026-02-01')).toMatchObject({
+        statusCode: 400,
+        message: [{ field: 'from_date', error: 'from_date must not be after to_date' }],
       });
     });
   });

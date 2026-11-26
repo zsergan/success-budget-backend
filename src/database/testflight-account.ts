@@ -261,7 +261,7 @@ async function createAccount(manager: EntityManager, input: TestFlightAccountInp
         category_id: categoryId(sample.type, sample.category),
         transaction_type: sample.type,
         amount: sample.amount,
-        timestamp: new Date(monthStart + Math.floor((now.getTime() - monthStart) * sample.at)),
+        date: new Date(monthStart + Math.floor((now.getTime() - monthStart) * sample.at)).toISOString().slice(0, 10),
         description: sample.description,
       }),
     ),

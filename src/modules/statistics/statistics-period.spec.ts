@@ -34,33 +34,41 @@ const errorsOf = (overrides: Partial<StatisticsQueryDto>, now = NOW) => {
 };
 
 describe('resolveStatisticsPeriod', () => {
-  it('resolves the current month in the given zone, cut at as_of', () => {
+  it('resolves the current month, ending with the date of as_of in the zone', () => {
     expect(resolve()).toEqual({
       type: 'month',
       time_zone: 'Europe/Moscow',
       start_date: '2026-09-01',
       end_date: '2026-09-30',
-      from: '2026-08-31T21:00:00.000Z',
-      to: '2026-09-30T20:59:59.999Z',
       as_of: '2026-09-28T12:00:00.000Z',
-      actual_to: '2026-09-28T12:00:00.000Z',
+      actual_end_date: '2026-09-28',
       state: 'current',
     });
   });
 
-  it('takes the anchor date from as_of in the zone, not in UTC', () => {
+  it('takes today from as_of in the zone, not in UTC', () => {
     const period = resolve({ period: StatisticsPeriodType.WEEK, as_of: '2026-09-27T21:30:00.000Z' });
 
     expect(period).toMatchObject({
       start_date: '2026-09-28',
       end_date: '2026-10-04',
-      from: '2026-09-27T21:00:00.000Z',
       as_of: '2026-09-27T21:30:00.000Z',
+      actual_end_date: '2026-09-28',
       state: 'current',
     });
     expect(
       resolve({ period: StatisticsPeriodType.WEEK, as_of: '2026-09-27T21:30:00.000Z', time_zone: 'UTC' }),
-    ).toMatchObject({ start_date: '2026-09-21', end_date: '2026-09-27' });
+    ).toMatchObject({ start_date: '2026-09-21', end_date: '2026-09-27', actual_end_date: '2026-09-27' });
+  });
+
+  it('makes a period current on its first day and past only after its last day', () => {
+    const firstDay = resolve({}, new Date('2026-08-31T21:00:00.000Z'));
+    const lastMoment = resolve({ anchor_date: '2026-09-15' }, new Date('2026-09-30T20:59:59.999Z'));
+    const nextDay = resolve({ anchor_date: '2026-09-15' }, new Date('2026-09-30T21:00:00.000Z'));
+
+    expect(firstDay).toMatchObject({ start_date: '2026-09-01', state: 'current', actual_end_date: '2026-09-01' });
+    expect(lastMoment).toMatchObject({ state: 'current', actual_end_date: '2026-09-30' });
+    expect(nextDay).toMatchObject({ state: 'past', actual_end_date: '2026-09-30' });
   });
 
   it.each([
@@ -74,29 +82,31 @@ describe('resolveStatisticsPeriod', () => {
   });
 
   it('marks a finished period past and a coming one future', () => {
-    expect(resolve({ anchor_date: '2026-08-15' })).toMatchObject({
-      state: 'past',
-      actual_to: '2026-08-31T20:59:59.999Z',
-    });
-    expect(resolve({ anchor_date: '2026-10-15' })).toMatchObject({ state: 'future', actual_to: null });
+    expect(resolve({ anchor_date: '2026-08-15' })).toMatchObject({ state: 'past', actual_end_date: '2026-08-31' });
+    expect(resolve({ anchor_date: '2026-10-15' })).toMatchObject({ state: 'future', actual_end_date: null });
   });
 
-  it('resolves a custom period with inclusive local dates', () => {
+  it('resolves a custom period with inclusive dates', () => {
     expect(
       resolve({ period: StatisticsPeriodType.CUSTOM, from_date: '2026-09-10', to_date: '2026-09-20' }),
     ).toMatchObject({
       start_date: '2026-09-10',
       end_date: '2026-09-20',
-      from: '2026-09-09T21:00:00.000Z',
-      to: '2026-09-20T20:59:59.999Z',
+      actual_end_date: '2026-09-20',
       state: 'past',
     });
   });
 
-  it('follows DST in the period bounds', () => {
-    expect(
-      resolve({ period: StatisticsPeriodType.WEEK, anchor_date: '2026-10-25', time_zone: 'Europe/Berlin' }),
-    ).toMatchObject({ from: '2026-10-18T22:00:00.000Z', to: '2026-10-25T22:59:59.999Z' });
+  it('gives a period the same dates in every zone, across DST', () => {
+    const berlin = resolve({
+      period: StatisticsPeriodType.WEEK,
+      anchor_date: '2026-10-25',
+      time_zone: 'Europe/Berlin',
+    });
+    const tokyo = resolve({ period: StatisticsPeriodType.WEEK, anchor_date: '2026-10-25', time_zone: 'Asia/Tokyo' });
+
+    expect(berlin).toMatchObject({ start_date: '2026-10-19', end_date: '2026-10-25', state: 'future' });
+    expect(tokyo).toMatchObject({ start_date: '2026-10-19', end_date: '2026-10-25', state: 'future' });
   });
 
   it('reports the canonical zone name', () => {
@@ -150,12 +160,28 @@ describe('resolveStatisticsPeriod', () => {
       );
     });
 
-    it('rejects a period outside the TIMESTAMP range', () => {
-      expect(messages({ period: StatisticsPeriodType.YEAR, anchor_date: '2038-01-01' })).toEqual([
-        {
-          field: 'anchor_date',
-          error: 'the period must be within 1970-01-01T00:00:01.000Z and 2038-01-19T03:14:07.000Z',
-        },
+    it('takes periods TIMESTAMP could not hold, within the DATE range', () => {
+      expect(resolve({ period: StatisticsPeriodType.YEAR, anchor_date: '2040-06-01' })).toMatchObject({
+        start_date: '2040-01-01',
+        end_date: '2040-12-31',
+        state: 'future',
+      });
+      expect(resolve({ anchor_date: '1969-12-31', time_zone: 'Asia/Tokyo' })).toMatchObject({
+        start_date: '1969-12-01',
+        actual_end_date: '1969-12-31',
+        state: 'past',
+      });
+      expect(resolve({ period: StatisticsPeriodType.YEAR, anchor_date: '9999-03-01' }).end_date).toBe('9999-12-31');
+    });
+
+    it('rejects a period reaching outside the DATE range', () => {
+      const error = { error: 'the period must be within 1000-01-01 and 9999-12-31' };
+
+      expect(messages({ period: StatisticsPeriodType.WEEK, anchor_date: '9999-12-31' })).toEqual([
+        { field: 'anchor_date', ...error },
+      ]);
+      expect(messages({ period: StatisticsPeriodType.WEEK, anchor_date: '1000-01-01' })).toEqual([
+        { field: 'anchor_date', ...error },
       ]);
     });
   });
@@ -175,25 +201,11 @@ describe('trend intervals', () => {
 
     expect(granularity).toBe('week');
     expect(intervals).toEqual([
-      {
-        key: '2026-W36',
-        start_date: '2026-09-01',
-        end_date: '2026-09-06',
-        from: '2026-08-31T21:00:00.000Z',
-        to: '2026-09-06T20:59:59.999Z',
-        state: 'past',
-      },
+      { key: '2026-W36', start_date: '2026-09-01', end_date: '2026-09-06', state: 'past' },
       expect.objectContaining({ key: '2026-W37', start_date: '2026-09-07', end_date: '2026-09-13', state: 'past' }),
       expect.objectContaining({ key: '2026-W38', state: 'past' }),
       expect.objectContaining({ key: '2026-W39', state: 'past' }),
-      {
-        key: '2026-W40',
-        start_date: '2026-09-28',
-        end_date: '2026-09-30',
-        from: '2026-09-27T21:00:00.000Z',
-        to: '2026-09-30T20:59:59.999Z',
-        state: 'current',
-      },
+      { key: '2026-W40', start_date: '2026-09-28', end_date: '2026-09-30', state: 'current' },
     ]);
   });
 
@@ -260,19 +272,19 @@ describe('trend intervals', () => {
     ]);
   });
 
-  it('keeps DST days whole', () => {
-    const { intervals } = trend({
-      period: StatisticsPeriodType.WEEK,
-      anchor_date: '2026-10-25',
-      time_zone: 'Europe/Berlin',
-    });
+  it('gives a DST day one bucket like any other day', () => {
+    const { intervals } = trend(
+      { period: StatisticsPeriodType.WEEK, anchor_date: '2026-10-25', time_zone: 'Europe/Berlin' },
+      new Date('2026-10-25T12:00:00.000Z'),
+    );
 
-    expect(intervals[6]).toMatchObject({
+    expect(intervals[6]).toEqual({
+      key: '2026-10-25',
       start_date: '2026-10-25',
-      from: '2026-10-24T22:00:00.000Z',
-      to: '2026-10-25T22:59:59.999Z',
+      end_date: '2026-10-25',
+      state: 'current',
     });
-    expect(intervals[5].to).toBe('2026-10-24T21:59:59.999Z');
+    expect(intervals[5]).toMatchObject({ key: '2026-10-24', state: 'past' });
   });
 });
 
@@ -280,53 +292,50 @@ describe('resolvePreviousPeriod', () => {
   const previous = (overrides: Partial<StatisticsQueryDto>, now = NOW) =>
     JSON.parse(JSON.stringify(resolvePreviousPeriod(resolveStatisticsPeriod(query(overrides), now))));
 
-  it('cuts the previous month at the same local moment for a current month', () => {
-    expect(previous({})).toEqual({
-      start_date: '2026-08-01',
-      end_date: '2026-08-31',
-      from: '2026-07-31T21:00:00.000Z',
-      to: '2026-08-31T20:59:59.999Z',
-      actual_to: '2026-08-28T12:00:00.000Z',
-    });
+  it('cuts the previous month at the equivalent day of a current month, that day included', () => {
+    expect(previous({})).toEqual({ start_date: '2026-08-01', end_date: '2026-08-31', actual_end_date: '2026-08-28' });
   });
 
   it('takes the whole previous period for a finished one', () => {
-    expect(previous({ anchor_date: '2026-03-10' })).toMatchObject({
+    expect(previous({ anchor_date: '2026-03-10' })).toEqual({
       start_date: '2026-02-01',
       end_date: '2026-02-28',
-      actual_to: '2026-02-28T20:59:59.999Z',
+      actual_end_date: '2026-02-28',
     });
   });
 
-  it('clamps a missing day to the end of the shorter month', () => {
-    expect(previous({ time_zone: 'UTC' }, new Date('2026-03-31T10:00:00.000Z'))).toMatchObject({
-      start_date: '2026-02-01',
-      actual_to: '2026-02-28T10:00:00.000Z',
-    });
+  it.each([
+    ['2026-03-31T10:00:00.000Z', '2026-02-01', '2026-02-28'],
+    ['2026-10-31T10:00:00.000Z', '2026-09-01', '2026-09-30'],
+    ['2028-03-30T10:00:00.000Z', '2028-02-01', '2028-02-29'],
+  ])('clamps a missing day to the end of the shorter month on %s', (now, start, end) => {
+    expect(previous({ time_zone: 'UTC' }, new Date(now))).toMatchObject({ start_date: start, actual_end_date: end });
   });
 
   it('compares a week with the week before and a year across the leap day', () => {
-    expect(previous({ period: StatisticsPeriodType.WEEK })).toMatchObject({
+    expect(previous({ period: StatisticsPeriodType.WEEK })).toEqual({
       start_date: '2026-09-21',
       end_date: '2026-09-27',
-      actual_to: '2026-09-21T12:00:00.000Z',
+      actual_end_date: '2026-09-21',
     });
     expect(
       previous({ period: StatisticsPeriodType.YEAR, time_zone: 'UTC' }, new Date('2028-02-29T10:00:00.000Z')),
-    ).toMatchObject({ start_date: '2027-01-01', end_date: '2027-12-31', actual_to: '2027-02-28T10:00:00.000Z' });
+    ).toEqual({ start_date: '2027-01-01', end_date: '2027-12-31', actual_end_date: '2027-02-28' });
   });
 
   it('compares the first week of a year with the last week of the previous one', () => {
     expect(
       previous({ period: StatisticsPeriodType.WEEK, anchor_date: '2027-01-01' }, new Date('2027-01-10T12:00:00.000Z')),
-    ).toMatchObject({ start_date: '2026-12-21', end_date: '2026-12-27', actual_to: '2026-12-27T20:59:59.999Z' });
+    ).toEqual({ start_date: '2026-12-21', end_date: '2026-12-27', actual_end_date: '2026-12-27' });
   });
 
-  it('keeps the wall-clock time across a DST change', () => {
-    // 12:00 in Berlin on Monday after DST ended, and 12:00 a week earlier
+  it('compares by days across a DST change and a year boundary', () => {
     expect(
       previous({ period: StatisticsPeriodType.WEEK, time_zone: 'Europe/Berlin' }, new Date('2026-10-26T11:00:00.000Z')),
-    ).toMatchObject({ from: '2026-10-18T22:00:00.000Z', actual_to: '2026-10-19T10:00:00.000Z' });
+    ).toMatchObject({ start_date: '2026-10-19', actual_end_date: '2026-10-19' });
+    expect(
+      previous({ period: StatisticsPeriodType.MONTH, time_zone: 'UTC' }, new Date('2027-01-05T00:00:00.000Z')),
+    ).toEqual({ start_date: '2026-12-01', end_date: '2026-12-31', actual_end_date: '2026-12-05' });
   });
 
   it('does not compare a custom or a future period', () => {

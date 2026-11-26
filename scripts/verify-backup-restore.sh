@@ -139,7 +139,7 @@ SPACE_ID=$(curl -sf "http://127.0.0.1:$APP_PORT/api/v1/spaces" -H "Authorization
 CATEGORY_ID=$(curl -sf "http://127.0.0.1:$APP_PORT/api/v1/spaces/$SPACE_ID/categories" -H "Authorization: Bearer $TOKEN" | jq -r '.expenses[0].id')
 TRANSACTION_JSON=$(curl -sf -X POST "http://127.0.0.1:$APP_PORT/api/v2/spaces/$SPACE_ID/transactions" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"category_id\":$CATEGORY_ID,\"transaction_type\":\"expense\",\"amount\":\"250.00\",\"timestamp\":\"2026-01-15T10:00:00Z\",\"description\":\"Restore Verify\",\"assignment\":{\"kind\":\"space\"}}")
+  -d "{\"category_id\":$CATEGORY_ID,\"transaction_type\":\"expense\",\"amount\":\"250.00\",\"date\":\"2026-01-15\",\"time_zone\":\"UTC\",\"description\":\"Restore Verify\",\"assignment\":{\"kind\":\"space\"}}")
 TRANSACTION_ID=$(echo "$TRANSACTION_JSON" | jq -er '.transaction.id') \
   || { echo "FAIL: transaction creation did not return a transaction" >&2; exit 1; }
 echo "OK: created user, verified, logged in, created a transaction"

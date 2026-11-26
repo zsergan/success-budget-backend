@@ -64,38 +64,58 @@ Response field types stay as listed in the table above.
 
 ## Dates
 
-All incoming dates go through `parseIsoDate` (`@shared/utils`): strict
-ISO 8601 calendar dates, `YYYY-MM-DD` optionally followed by `T` or a space,
-`HH:mm[:ss[.fraction]]` and `Z`/`±HH:MM`/`±HHMM`. A date-only or offset-less
-value is local time, as TypeORM parses strings for timestamp columns; a
-`Z`/offset value is an exact instant. Week, ordinal, year-only, year-month,
-compact and epoch forms are rejected.
+A transaction's day is a **calendar date**: `YYYY-MM-DD`, no time, no
+zone, stored in a MySQL `DATE` column and returned exactly as stored.
+Every date the API takes is checked by `isCalendarDate`
+(`@shared/utils`, decorator `@IsCalendarDate`): exactly ten characters
+`YYYY-MM-DD`, a real Gregorian day (leap years included), from
+`1000-01-01` to `9999-12-31`, the `DATE` range. Instants are only the
+technical timestamps (`created_at`, `as_of`, ...); no transaction is ever
+converted to or from one.
 
-| Where                                                                              | Declared | Actual                                                                                                                                                                                         |
-| ---------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Request `timestamp` (`@IsIsoInstant`, `@IsInTimestampRange`)                       | `string` | ISO instant **with** `Z` or an offset, within the MySQL `TIMESTAMP` range (1970-01-01T00:00:01Z to 2038-01-19T03:14:07Z), at most 60 s ahead; converted with `toDate` before it is saved       |
-| Query `from`/`to` on `GET /transactions/feed` and `/count` (`@IsIsoInstant`)       | `string` | required ISO instant **with** `Z` or an offset, no default; may lie outside the `TIMESTAMP` range (only the part inside it can hold records)                                                   |
-| Query `time_zone` on `GET /limits` (`ParseOptionalTimeZonePipe`)                   | `string` | optional IANA name; absent → the server's zone; a fixed offset is a 400                                                                                                                        |
-| Query `anchor_date`/`from_date`/`to_date` on `GET /statistics/*` (`@IsLocalDate`)  | `string` | a real calendar date `YYYY-MM-DD`, no time; interpreted in `time_zone`                                                                                                                         |
-| Query `time_zone` on `GET /statistics/*` (`@IsTimeZone`)                           | `string` | IANA name, echoed canonical; a fixed offset (`+03:00`) is a 400                                                                                                                                |
-| Query `as_of` on `GET /statistics/*` (`@IsIsoInstant`)                             | `string` | ISO instant **with** `Z` or an offset (no local-time reading), in the `TIMESTAMP` range, at most 60 s ahead of the server                                                                      |
-| `period.from`/`to`/`as_of`/`actual_to`, bucket `from`/`to` in statistics responses | `Date`   | ISO-8601 UTC string with milliseconds; passed verbatim as history `from`/`to`                                                                                                                  |
-| `TIMESTAMP` columns read                                                           | `Date`   | `Date`; serialized as ISO-8601 UTC string                                                                                                                                                      |
-| `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`)                          | `Date`   | read as UTC, independently of the Node host's local zone                                                                                                                                       |
+| Where                                                                              | Declared | Actual                                                                                                                                     |
+| ---------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Request `date` of a transaction (`@IsCalendarDate`)                                | `string` | a calendar date; a new or changed one is not after today in the request's `time_zone`                                                     |
+| Request `time_zone` of a transaction write (`@IsTimeZone`)                         | `string` | IANA name; required on create and with every `PATCH` `date`; tells today only, never stored                                                |
+| Query `from_date`/`to_date` on `GET /transactions/feed` and `/count`               | `string` | required calendar dates, inclusive, compared with the stored `date` directly                                                               |
+| Query `time_zone` on `GET /limits` (`ParseOptionalTimeZonePipe`)                   | `string` | optional IANA name; absent → the server's zone; decides the current month only; a fixed offset is a 400                                    |
+| Query `anchor_date`/`from_date`/`to_date` on `GET /statistics/*`                   | `string` | calendar dates; the period must lie within the `DATE` range                                                                                |
+| Query `time_zone` on `GET /statistics/*` (`@IsTimeZone`)                           | `string` | IANA name, echoed canonical; turns `as_of` into today; a fixed offset (`+03:00`) is a 400                                                  |
+| Query `as_of` on `GET /statistics/*` (`@IsIsoInstant`)                             | `string` | ISO instant **with** `Z` or an offset (no local-time reading), at most 60 s ahead of the server                                            |
+| Transaction `date`, feed `day_totals[].date`, statistics `*_date`, limits period   | `string` | `YYYY-MM-DD`, read from MySQL as a string (`dateStrings: ['DATE']`), never through a JS `Date`, so no zone can shift it                    |
+| `period.as_of` in statistics responses                                             | `Date`   | ISO-8601 UTC string with milliseconds                                                                                                      |
+| `TIMESTAMP` columns read                                                           | `Date`   | `Date`; serialized as ISO-8601 UTC string                                                                                                  |
+| `CURRENT_TIMESTAMP` defaults (`created_at`, `updated_at`)                          | `Date`   | read as UTC, independently of the Node host's local zone                                                                                   |
 
-Period filters stay inclusive on both ends. Request instants need an
-explicit offset; the few date-only values (`anchor_date`, `from_date`,
-`to_date`) are calendar dates read in the request's `time_zone`. The driver writes and reads all database dates in
-UTC (`timezone: 'Z'`), including migrations and server-generated audit
-timestamps. MySQL sessions must use UTC too (server `time_zone = '+00:00'`,
-or `SYSTEM` on a UTC host). Client calendar zones affect period boundaries,
-never the storage zone.
+Period filters stay inclusive on both ends. The remaining request instant
+(`as_of`) needs an explicit offset. The driver writes and reads all
+database timestamps in UTC (`timezone: 'Z'`), including migrations and
+server-generated audit timestamps. MySQL sessions must use UTC too
+(server `time_zone = '+00:00'`, or `SYSTEM` on a UTC host). Client zones
+decide which day is today, never a stored date. Regression coverage:
+`test/database-timestamps.e2e-spec.ts`, also run with
+`TZ=America/Chicago`.
 
-This does not rewrite existing timestamps. Records previously written by
-a non-UTC Node process against a UTC MySQL session may already be shifted;
-they require a separate data audit before any correction. UTC deployments
-keep the same stored instants. Regression coverage:
-`test/database-timestamps.e2e-spec.ts`, also run with `TZ=America/Chicago`.
+## Category colors
+
+`Category.color` is a bounded string (`varchar(16)`), one of:
+
+- a preset token, exactly as listed: `slate`, `amber`, `evergreen`,
+  `indigo`, `clay`, `plum`;
+- a custom color `#RRGGBB`: `#` and six hexadecimal digits, accepted in
+  any case and stored and returned upper-case (`#3a7bd5` → `#3A7BD5`).
+
+Anything else is `400 VALIDATION_FAILED`, field `color`: `#RGB`,
+`#RRGGBBAA`, a missing `#`, CSS names (`red`), functions (`rgb(…)`), a
+preset in another case (`Slate`), whitespace, `null`. The type is `CategoryColor`
+(`@shared/category-color`). The server never maps a custom color to a
+preset or adjusts it: the client adapts contrast for its theme. Every
+category-bearing response (categories, transaction `category`, statistics
+`CategoryItem`, limit `categories`) returns the stored value.
+`AllowCustomCategoryColors1791600000000` turned the closed enum into this
+string, keeping every stored preset; reverting it refuses while a category
+has a custom color. Tests: `src/shared/category-color.spec.ts`,
+`test/category-colors.e2e-spec.ts`, `test/category-color-migration.e2e-spec.ts`.
 
 ## Nullable columns and relations
 
@@ -145,14 +165,14 @@ nulled use `@IsOptionalNonNull()` (`@shared/decorators`), which skips only
 | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Field absent in an update DTO                                                                                                     | left unchanged                                                                                                                                    |
 | `null` for a nullable field (`Limit.name`, transaction `description`)                                                             | stored as `null` (typed `string \| null`)                                                                                                         |
-| `null` for a NOT NULL field (transaction `amount`/`category_id`/`assignment`, category `name`/`icon`/`color`/`is_active`, limit `amount`) | 400 `<field> must not be null`                                                                                                                    |
+| `null` for a NOT NULL field (transaction `amount`/`date`/`category_id`/`assignment`, category `name`/`icon`/`color`/`is_active`, limit `amount`) | 400 `<field> must not be null`                                                                                                                    |
 | `category_ids` (limit create/update)                                                                                              | absent: keep current categories (create: none); `[]`: total limit; `null`: 400                                                                    |
 | `invites` (space create)                                                                                                          | absent or `[]`: no invites; `null`: 400                                                                                                           |
 | `""` for a field required non-empty on create (category `name`)                                                                   | 400 on update as on create                                                                                                                        |
 | `""` for `description`                                                                                                            | stored as `""`; transaction reads return a blank description as `null`                                                                            |
 | Query param absent                                                                                                                | controller default applies                                                                                                                        |
 | `GET /transactions/feed` and `/count` `transaction_type`, `kind`, `category_id`, `assignment` absent                              | no filter; malformed, empty or repeated: 400 (`TransactionFeedQueryV2Dto`, `TransactionCountQueryV2Dto`)                                          |
-| Statistics `null` fields (`actual_to`, `previous`, `change`, bucket amounts, `other`, `last_transaction_date`)                    | always present, `null` when not applicable; never omitted                                                                                         |
+| Statistics `null` fields (`actual_end_date`, `previous`, `change`, bucket amounts, `other`, `last_transaction_date`)               | always present, `null` when not applicable; never omitted                                                                                         |
 | Query date param `""`                                                                                                             | 400                                                                                                                                               |
 
 Validation errors keep the `message: [{ field, error }]` shape; nested errors

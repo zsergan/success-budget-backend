@@ -11,7 +11,6 @@ import {
   type LoadedTransaction,
   type TransactionSelection,
 } from '@modules/transaction-queries/transaction-queries.service';
-import { calendarDateAt, endOfDay, formatCalendarDate, startOfDay } from '@modules/statistics/statistics-calendar';
 import { type FeedCursor, decodeFeedCursor, encodeFeedCursor, selectionDigest } from './feed-cursor';
 import type {
   TransactionFeedDayTotal,
@@ -21,7 +20,6 @@ import type {
 
 export interface FeedRequest {
   selection: TransactionSelection;
-  timeZone: string;
   limit: number;
   cursor?: string;
   aroundId?: string;
@@ -41,9 +39,9 @@ interface FeedWindow {
   hasNewer: boolean;
 }
 
-const positionOf = (transaction: Pick<Transaction, 'timestamp' | 'id'>): FeedPosition => ({
-  timestamp: transaction.timestamp,
-  id: transaction.id,
+const positionOf = (transaction: Pick<Transaction, 'date' | 'order_key'>): FeedPosition => ({
+  date: transaction.date,
+  orderKey: transaction.order_key,
 });
 
 // The feed: cursor pages, the window around a record, and the totals of the
@@ -62,8 +60,8 @@ export class TransactionFeedReader {
     checkAccess: () => Promise<void>,
     toViews: (items: LoadedTransaction[], manager: EntityManager) => Promise<V[]>,
   ): Promise<FeedResult<V>> {
-    const { selection, timeZone, limit, aroundId } = request;
-    const digest = selectionDigest(selection, timeZone);
+    const { selection, limit, aroundId } = request;
+    const digest = selectionDigest(selection);
 
     if (request.cursor !== undefined && aroundId !== undefined) {
       throw new BadRequestException([{ field: 'cursor', error: 'cursor and around_id cannot be used together' }]);
@@ -96,7 +94,7 @@ export class TransactionFeedReader {
         window,
         items,
         summary: await this.transactionQueriesService.getFeedSummary(selection, manager),
-        dayTotals: await this.readFeedDayTotals(selection, window.items, timeZone, manager),
+        dayTotals: await this.readFeedDayTotals(selection, window.items, manager),
       };
     });
 
@@ -160,31 +158,17 @@ export class TransactionFeedReader {
       : { items: page.items, hasOlder: page.hasMore, hasNewer: beyondEdge };
   }
 
-  // The local days of the page, each netted over the whole selection, so a
-  // day split between pages has one total. Day bounds are computed here, in
-  // the zone with its DST changes, and passed to MySQL as instants.
+  // The dates of the page, each netted over the whole selection, so a date
+  // split between pages has one total.
   private async readFeedDayTotals(
     selection: TransactionSelection,
     items: LoadedTransaction[],
-    timeZone: string,
     manager: EntityManager,
   ): Promise<TransactionFeedDayTotal[]> {
-    const days = [
-      ...new Map(
-        items.map((item) => {
-          const day = calendarDateAt(item.timestamp, timeZone);
+    const dates = [...new Set(items.map((item) => item.date))];
+    const nets = await this.transactionQueriesService.getFeedDateNets(selection, dates, manager);
 
-          return [formatCalendarDate(day), day] as const;
-        }),
-      ),
-    ];
-    const nets = await this.transactionQueriesService.getFeedIntervalNets(
-      selection,
-      days.map(([, day]) => ({ from: startOfDay(day, timeZone), to: endOfDay(day, timeZone) })),
-      manager,
-    );
-
-    return days.map(([date], i) => ({ date, net: formatMoney(nets[i]) }));
+    return dates.map((date, i) => ({ date, net: formatMoney(nets[i]) }));
   }
 
   // The record and its neighbours, read outward from its position: up to

@@ -1,7 +1,11 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 
-import { AppColor, CategoryIcon } from '@shared/enums';
+import { CategoryIcon } from '@shared/enums';
+import type { CategoryColor } from '@shared/category-color';
 import { IsOptionalNonNull } from '@shared/decorators/is-optional-non-null.decorator';
+import { IsCategoryColor } from '@shared/decorators/is-category-color.decorator';
+import { CATEGORY_COLOR_PROPERTY } from './create-category.dto';
 
 // transaction_type is intentionally not a field here - immutable after creation.
 export class UpdateCategoryDto {
@@ -15,9 +19,10 @@ export class UpdateCategoryDto {
   @IsEnum(CategoryIcon)
   icon?: CategoryIcon;
 
+  @ApiPropertyOptional(CATEGORY_COLOR_PROPERTY)
   @IsOptionalNonNull()
-  @IsEnum(AppColor)
-  color?: AppColor;
+  @IsCategoryColor()
+  color?: CategoryColor;
 
   @IsOptionalNonNull()
   @IsIn([0, 1])

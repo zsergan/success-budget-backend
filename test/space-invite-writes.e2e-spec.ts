@@ -454,7 +454,8 @@ describe('Space invitation writes (e2e)', () => {
           category_id: categories.body.expenses[0].id,
           transaction_type: 'expense',
           amount: '12.30',
-          timestamp: '2026-09-15T10:00:00.000Z',
+          date: '2026-09-15',
+          time_zone: 'UTC',
           assignment: { kind: 'member', user_id: owner.userId },
         })
         .expect(201);

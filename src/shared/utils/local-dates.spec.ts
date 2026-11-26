@@ -1,16 +1,42 @@
-import { isLocalDate, monthPeriodAt, resolveTimeZone } from './local-dates';
+import { calendarDateIn, isCalendarDate, monthPeriodAt, resolveTimeZone } from './local-dates';
 
-describe('isLocalDate', () => {
-  it.each(['2026-09-28', '2028-02-29'])('accepts %p', (value) => {
-    expect(isLocalDate(value)).toBe(true);
-  });
-
-  it.each(['2026-02-29', '2026-13-01', '2026-09-31', '2026-9-28', '2026-09-28T00:00', '2026-W40', '20260928', ''])(
-    'rejects %p',
+describe('isCalendarDate', () => {
+  it.each(['2026-09-28', '2028-02-29', '2000-02-29', '1000-01-01', '9999-12-31', '1969-12-31'])(
+    'accepts %p',
     (value) => {
-      expect(isLocalDate(value)).toBe(false);
+      expect(isCalendarDate(value)).toBe(true);
     },
   );
+
+  it.each([
+    '2026-02-29',
+    '1900-02-29',
+    '2026-13-01',
+    '2026-09-31',
+    '2026-00-10',
+    '2026-9-28',
+    '2026-09-28T00:00',
+    '2026-09-28T00:00:00Z',
+    '2026-09-28+03:00',
+    ' 2026-09-28',
+    '2026-W40',
+    '20260928',
+    '0999-12-31',
+    '+010000-01-01',
+    '',
+  ])('rejects %p', (value) => {
+    expect(isCalendarDate(value)).toBe(false);
+  });
+});
+
+describe('calendarDateIn', () => {
+  it('gives the day the instant has in the zone', () => {
+    const instant = new Date('2026-10-08T21:30:00.000Z');
+
+    expect(calendarDateIn(instant, 'Europe/Moscow')).toBe('2026-10-09');
+    expect(calendarDateIn(instant, 'America/Chicago')).toBe('2026-10-08');
+    expect(calendarDateIn(instant, 'UTC')).toBe('2026-10-08');
+  });
 });
 
 describe('resolveTimeZone', () => {
@@ -26,21 +52,20 @@ describe('resolveTimeZone', () => {
 });
 
 describe('monthPeriodAt', () => {
-  it('returns the month of the instant in the zone, to the millisecond', () => {
+  it('returns the calendar month current at the instant in the zone', () => {
     expect(monthPeriodAt(new Date('2026-09-30T21:30:00.000Z'), 'Europe/Moscow')).toEqual({
       time_zone: 'Europe/Moscow',
       start_date: '2026-10-01',
       end_date: '2026-10-31',
-      from: new Date('2026-09-30T21:00:00.000Z'),
-      to: new Date('2026-10-31T20:59:59.999Z'),
+    });
+    expect(monthPeriodAt(new Date('2026-09-30T21:30:00.000Z'), 'America/Chicago')).toEqual({
+      time_zone: 'America/Chicago',
+      start_date: '2026-09-01',
+      end_date: '2026-09-30',
     });
   });
 
-  it('follows a DST change inside the month', () => {
-    const period = monthPeriodAt(new Date('2026-03-15T12:00:00.000Z'), 'America/New_York');
-
-    expect(period.from).toEqual(new Date('2026-03-01T05:00:00.000Z'));
-    expect(period.to).toEqual(new Date('2026-04-01T03:59:59.999Z'));
-    expect(period.end_date).toBe('2026-03-31');
+  it('knows leap years', () => {
+    expect(monthPeriodAt(new Date('2028-02-10T12:00:00.000Z'), 'UTC').end_date).toBe('2028-02-29');
   });
 });

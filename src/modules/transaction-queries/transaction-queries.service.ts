@@ -4,10 +4,10 @@ import { EntityManager, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Transaction } from '@entities/transaction.entity';
 import { SpaceMember } from '@entities/space-member.entity';
-import { AppColor, AssignmentKind, TransactionKind, TransactionType } from '@shared/enums';
+import { AssignmentKind, TransactionKind, TransactionType } from '@shared/enums';
+import type { CategoryColor } from '@shared/category-color';
 import type { WithRelations } from '@shared/types';
 import { parseMoney, withRelations } from '@shared/utils';
-import { STORED_TIMESTAMP_MAX, TIMESTAMP_MIN } from '@shared/decorators/is-iso-date.decorator';
 import { type AssignmentFilter, DELETED_MEMBER_KEY } from './assignment-filter';
 
 // author and assignedUser carry only id and name; null when not loaded
@@ -23,19 +23,19 @@ export interface TransactionFilters {
   search?: string;
 }
 
-// What the history and the feed select: one space, both bounds inclusive.
-// The bounds may lie outside what a TIMESTAMP column holds.
+// What the history and the feed select: one space, both calendar dates inclusive.
 export interface TransactionSelection {
   spaceId: number;
-  from: Date;
-  to: Date;
+  fromDate: string;
+  toDate: string;
   filters?: TransactionFilters;
 }
 
-// A place in the history order (timestamp, then id, both descending).
+// A place in the history order (date, then ordering key, both descending).
 export interface FeedPosition {
-  timestamp: Date;
-  id: string;
+  date: string;
+  // the BIGINT ordering key as a decimal string
+  orderKey: string;
 }
 
 export interface FeedPageRequest {
@@ -57,11 +57,6 @@ export interface FeedSummary {
   count: number;
   income: bigint;
   expense: bigint;
-}
-
-export interface TimeInterval {
-  from: Date;
-  to: Date;
 }
 
 // Searched text is compared in one fixed collation, whatever the columns or
@@ -90,7 +85,7 @@ export interface StatisticsCategoryGroup {
   id: number;
   name: string;
   icon: string;
-  color: AppColor;
+  color: CategoryColor;
   isArchived: boolean;
   // in cents
   amount: bigint;
@@ -122,8 +117,9 @@ export interface StatisticsTotals {
   expenseCount: number;
 }
 
-const clampToStored = (date: Date): Date =>
-  new Date(Math.min(Math.max(date.getTime(), TIMESTAMP_MIN.getTime()), STORED_TIMESTAMP_MAX.getTime()));
+// A string parameter compared with a BIGINT column is read as a double;
+// the cast keeps every digit of an ordering key.
+const ORDER_KEY_PARAMETER = (name: string) => `CAST(:${name} AS UNSIGNED)`;
 
 @Injectable()
 export class TransactionQueriesService {
@@ -164,8 +160,8 @@ export class TransactionQueriesService {
   // whoever it is assigned to. Sums are in cents.
   async getExpensesByCategory(
     spaceId: number,
-    from: Date,
-    to: Date,
+    fromDate: string,
+    toDate: string,
     manager?: EntityManager,
   ): Promise<Map<number, bigint>> {
     const rows = await this.repository(manager)
@@ -174,8 +170,8 @@ export class TransactionQueriesService {
       .addSelect('SUM(transaction.amount)', 'spent')
       .where('transaction.space_id = :spaceId', { spaceId })
       .andWhere('transaction.transaction_type = :expense', { expense: TransactionType.EXPENSE })
-      .andWhere('transaction.timestamp >= :from', { from })
-      .andWhere('transaction.timestamp <= :to', { to })
+      .andWhere('transaction.date >= :fromDate', { fromDate })
+      .andWhere('transaction.date <= :toDate', { toDate })
       .groupBy('transaction.category_id')
       .getRawMany<{ category_id: number; spent: string }>();
 
@@ -189,7 +185,7 @@ export class TransactionQueriesService {
 
   // Up to `limit` records of the selection next to a position, in the
   // history order. One more is read to tell whether the direction goes on.
-  // With the space as a constant, MySQL walks (space_id, timestamp, id) in
+  // With the space as a constant, MySQL walks (space_id, date, order_key) in
   // index order and stops at the limit, so the cost does not grow with the
   // history; an assignment filter walks its own index the same way.
   async getFeedPage(
@@ -200,22 +196,21 @@ export class TransactionQueriesService {
     const newer = page.before !== undefined;
     const position = page.before ?? page.after;
     const direction = newer ? 'ASC' : 'DESC';
-    const query = this.selectionScope(selection, manager)
-      .select('transaction.id', 'id')
-      .addSelect('transaction.timestamp', 'timestamp');
+    const query = this.selectionScope(selection, manager).select('transaction.id', 'id');
 
     if (position) {
       const operator = newer ? '>' : '<';
       query.andWhere(
-        `transaction.timestamp ${operator}= :positionTimestamp AND ` +
-          `(transaction.timestamp ${operator} :positionTimestamp OR transaction.id ${operator} :positionId)`,
-        { positionTimestamp: position.timestamp, positionId: position.id },
+        `transaction.date ${operator}= :positionDate AND ` +
+          `(transaction.date ${operator} :positionDate OR ` +
+          `transaction.order_key ${operator} ${ORDER_KEY_PARAMETER('positionKey')})`,
+        { positionDate: position.date, positionKey: position.orderKey },
       );
     }
 
     const rows = await query
-      .orderBy('transaction.timestamp', direction)
-      .addOrderBy('transaction.id', direction)
+      .orderBy('transaction.date', direction)
+      .addOrderBy('transaction.order_key', direction)
       .limit(page.limit + 1)
       .getRawMany<{ id: string }>();
     const ids = rows.slice(0, page.limit).map((row) => row.id);
@@ -246,46 +241,28 @@ export class TransactionQueriesService {
     };
   }
 
-  // Income minus expense of the selection within each interval, initial
-  // balances left out. Intervals must not overlap; the i-th net is for the
-  // i-th interval, 0 when it has no records.
-  async getFeedIntervalNets(
-    selection: TransactionSelection,
-    intervals: TimeInterval[],
-    manager?: EntityManager,
-  ): Promise<bigint[]> {
-    const nets = intervals.map(() => 0n);
-
-    if (intervals.length === 0) {
-      return nets;
+  // Income minus expense of the selection on each date, initial balances
+  // left out, grouped by the stored date; the i-th net is for the i-th
+  // date, 0 when it has no records.
+  async getFeedDateNets(selection: TransactionSelection, dates: string[], manager?: EntityManager): Promise<bigint[]> {
+    if (dates.length === 0) {
+      return [];
     }
 
-    const within = (i: number) => `transaction.timestamp BETWEEN :intervalFrom${i} AND :intervalTo${i}`;
     const rows = await this.selectionScope(selection, manager)
-      .select(`CASE ${intervals.map((_, i) => `WHEN ${within(i)} THEN ${i}`).join(' ')} END`, 'interval_index')
+      .select('transaction.date', 'date')
       .addSelect(
         'SUM(CASE WHEN category.is_system = 1 THEN 0 ' +
           'WHEN transaction.transaction_type = :income THEN transaction.amount ELSE -transaction.amount END)',
         'net',
       )
-      .andWhere(`(${intervals.map((_, i) => within(i)).join(' OR ')})`)
-      .setParameters(
-        Object.fromEntries(
-          intervals.flatMap((interval, i) => [
-            [`intervalFrom${i}`, clampToStored(interval.from)],
-            [`intervalTo${i}`, clampToStored(interval.to)],
-          ]),
-        ),
-      )
+      .andWhere('transaction.date IN (:...dates)', { dates })
       .setParameter('income', TransactionType.INCOME)
-      .groupBy('interval_index')
-      .getRawMany<{ interval_index: string | number; net: string }>();
+      .groupBy('transaction.date')
+      .getRawMany<{ date: string; net: string }>();
+    const nets = new Map(rows.map((row) => [row.date, parseMoney(row.net)]));
 
-    for (const row of rows) {
-      nets[Number(row.interval_index)] = parseMoney(row.net);
-    }
-
-    return nets;
+    return dates.map((date) => nets.get(date) ?? 0n);
   }
 
   // The position of a transaction of the space, or null when the selection
@@ -296,22 +273,18 @@ export class TransactionQueriesService {
     manager?: EntityManager,
   ): Promise<FeedPosition | null> {
     const transaction = await this.selectionScope(selection, manager)
-      .select(['transaction.id', 'transaction.timestamp'])
+      .select(['transaction.id', 'transaction.date', 'transaction.order_key'])
       .andWhere('transaction.id = :transactionId', { transactionId })
       .getOne();
 
-    return transaction && { timestamp: transaction.timestamp, id: transaction.id };
+    return transaction && { date: transaction.date, orderKey: transaction.order_key };
   }
 
   async getLatest(spaceId: number, manager?: EntityManager): Promise<LoadedTransaction | null> {
     const transaction = await this.loadQuery(manager)
       .where('transaction.space_id = :spaceId', { spaceId })
-      .orderBy('transaction.timestamp', 'DESC')
-      // Deterministic tie-break for the (now rare, since timestamp is
-      // millisecond-precision) case of two transactions landing on the
-      // exact same value - a single "latest" result can't be left to
-      // depend on MySQL's unspecified tie order.
-      .addOrderBy('transaction.id', 'DESC')
+      .orderBy('transaction.date', 'DESC')
+      .addOrderBy('transaction.order_key', 'DESC')
       .limit(1)
       .getOne();
 
@@ -320,31 +293,36 @@ export class TransactionQueriesService {
 
   // The statistics reads below take the manager of the block's transaction,
   // so that all reads of one response see the same snapshot.
-  async getStatisticsTotals(spaceId: number, from: Date, to: Date, manager: EntityManager): Promise<StatisticsTotals> {
+  async getStatisticsTotals(
+    spaceId: number,
+    fromDate: string,
+    toDate: string,
+    manager: EntityManager,
+  ): Promise<StatisticsTotals> {
     const row = await this.selectStatisticsTotals(
-      this.statisticsScope(manager, spaceId, from, to),
+      this.statisticsScope(manager, spaceId, fromDate, toDate),
     ).getRawOne<TotalsRow>();
 
     return toStatisticsTotals(row);
   }
 
   // Totals per interval in one query. Intervals are consecutive and the
-  // i-th one ends at intervalEnds[i]; the last end only closes the list,
-  // since the scope already ends at `to`.
+  // i-th one ends with the date intervalEnds[i]; the last end only closes
+  // the list, since the scope already ends at `toDate`.
   async getStatisticsIntervalTotals(
     spaceId: number,
-    from: Date,
-    to: Date,
-    intervalEnds: Date[],
+    fromDate: string,
+    toDate: string,
+    intervalEnds: string[],
   ): Promise<StatisticsTotals[]> {
     const last = intervalEnds.length - 1;
     const cases = intervalEnds
       .slice(0, last)
-      .map((_, i) => `WHEN transaction.timestamp <= :intervalEnd${i} THEN ${i}`)
+      .map((_, i) => `WHEN transaction.date <= :intervalEnd${i} THEN ${i}`)
       .join(' ');
 
     const rows = await this.selectStatisticsTotals(
-      this.statisticsScope(this.transactionRepository.manager, spaceId, from, to),
+      this.statisticsScope(this.transactionRepository.manager, spaceId, fromDate, toDate),
     )
       .addSelect(last > 0 ? `CASE ${cases} ELSE ${last} END` : '0', 'interval_index')
       .setParameters(Object.fromEntries(intervalEnds.slice(0, last).map((end, i) => [`intervalEnd${i}`, end])))
@@ -363,11 +341,11 @@ export class TransactionQueriesService {
   async getStatisticsByCategory(
     spaceId: number,
     transactionType: TransactionType,
-    from: Date,
-    to: Date,
+    fromDate: string,
+    toDate: string,
     manager: EntityManager,
   ): Promise<StatisticsCategoryGroup[]> {
-    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, fromDate, toDate)
       .select('category.id', 'id')
       .addSelect('category.name', 'name')
       .addSelect('category.icon', 'icon')
@@ -380,7 +358,7 @@ export class TransactionQueriesService {
         id: number | string;
         name: string;
         icon: string;
-        color: AppColor;
+        color: CategoryColor;
         is_active: number | string;
         amount: string;
         count: number | string;
@@ -403,11 +381,11 @@ export class TransactionQueriesService {
   async getStatisticsByAssignment(
     spaceId: number,
     transactionType: TransactionType,
-    from: Date,
-    to: Date,
+    fromDate: string,
+    toDate: string,
     manager: EntityManager,
   ): Promise<StatisticsAssignmentGroup[]> {
-    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, from, to)
+    const rows = await this.statisticsTypeScope(manager, spaceId, transactionType, fromDate, toDate)
       .leftJoin('transaction.assignedUser', 'assignedUser')
       .leftJoin(
         SpaceMember,
@@ -501,15 +479,15 @@ export class TransactionQueriesService {
       .getExists();
   }
 
-  // Latest timestamp of any statistics transaction up to `to`, in any period.
-  async getLastStatisticsTimestamp(spaceId: number, to: Date, manager: EntityManager): Promise<Date | null> {
-    const transaction = await this.statisticsScope(manager, spaceId, null, to)
-      .select(['transaction.id', 'transaction.timestamp'])
-      .orderBy('transaction.timestamp', 'DESC')
+  // The latest date of any statistics transaction up to `toDate`, in any period.
+  async getLastStatisticsDate(spaceId: number, toDate: string, manager: EntityManager): Promise<string | null> {
+    const row = await this.statisticsScope(manager, spaceId, null, toDate)
+      .select('transaction.date', 'date')
+      .orderBy('transaction.date', 'DESC')
       .limit(1)
-      .getOne();
+      .getRawOne<{ date: string }>();
 
-    return transaction?.timestamp ?? null;
+    return row?.date ?? null;
   }
 
   private async loadInOrder(ids: string[], manager?: EntityManager): Promise<LoadedTransaction[]> {
@@ -524,27 +502,21 @@ export class TransactionQueriesService {
   }
 
   // The one selection of the feed, its count and every total of it: the
-  // records of the space by their own space_id, archived categories included. The space is a constant, so MySQL ranges over
-  // (space_id, timestamp, ...) instead of scanning other spaces.
+  // records of the space by their own space_id, archived categories
+  // included. The space is a constant and the dates are compared with the
+  // column itself, so MySQL ranges over (space_id, date, ...) instead of
+  // scanning other spaces.
   private selectionScope(
-    { spaceId, from, to, filters = {} }: TransactionSelection,
+    { spaceId, fromDate, toDate, filters = {} }: TransactionSelection,
     manager?: EntityManager,
   ): SelectQueryBuilder<Transaction> {
     const search = filters.search?.trim();
     const query = this.repository(manager)
       .createQueryBuilder('transaction')
       .innerJoin('transaction.category', 'category')
-      .where('transaction.space_id = :spaceId', { spaceId });
-
-    // MySQL is only given the part of the period a TIMESTAMP can hold; a
-    // period wholly outside it selects nothing.
-    if (to < TIMESTAMP_MIN || from > STORED_TIMESTAMP_MAX) {
-      query.andWhere('FALSE');
-    } else {
-      query
-        .andWhere('transaction.timestamp >= :from', { from: clampToStored(from) })
-        .andWhere('transaction.timestamp <= :to', { to: clampToStored(to) });
-    }
+      .where('transaction.space_id = :spaceId', { spaceId })
+      .andWhere('transaction.date >= :fromDate', { fromDate })
+      .andWhere('transaction.date <= :toDate', { toDate });
 
     if (filters.transactionType) {
       query.andWhere('transaction.transaction_type = :transactionType', { transactionType: filters.transactionType });
@@ -592,10 +564,10 @@ export class TransactionQueriesService {
     manager: EntityManager,
     spaceId: number,
     transactionType: TransactionType,
-    from: Date,
-    to: Date,
+    fromDate: string,
+    toDate: string,
   ): SelectQueryBuilder<Transaction> {
-    return this.statisticsScope(manager, spaceId, from, to).andWhere(
+    return this.statisticsScope(manager, spaceId, fromDate, toDate).andWhere(
       'transaction.transaction_type = :transactionType',
       { transactionType },
     );
@@ -613,12 +585,12 @@ export class TransactionQueriesService {
 
   // The selection every statistics block shares (docs/statistics-contract.md):
   // every record of the space, whatever its assignment, without
-  // starting balances, both bounds inclusive.
+  // starting balances, both dates inclusive.
   private statisticsScope(
     manager: EntityManager,
     spaceId: number,
-    from: Date | null,
-    to: Date,
+    fromDate: string | null,
+    toDate: string,
   ): SelectQueryBuilder<Transaction> {
     const query = manager
       .createQueryBuilder(Transaction, 'transaction')
@@ -626,11 +598,11 @@ export class TransactionQueriesService {
       .where('transaction.space_id = :spaceId', { spaceId })
       .andWhere('category.is_system = 0');
 
-    if (from) {
-      query.andWhere('transaction.timestamp >= :from', { from });
+    if (fromDate) {
+      query.andWhere('transaction.date >= :fromDate', { fromDate });
     }
 
-    return query.andWhere('transaction.timestamp <= :to', { to });
+    return query.andWhere('transaction.date <= :toDate', { toDate });
   }
 }
 

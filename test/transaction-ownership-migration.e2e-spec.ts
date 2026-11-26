@@ -4,6 +4,7 @@ import type { QueryRunner } from 'typeorm';
 import { AddTransactionSpaceOwnership1791200000000 } from '../src/migrations/1791200000000-AddTransactionSpaceOwnership';
 import { AddCompatibilityWallet1791300000000 } from '../src/migrations/1791300000000-AddCompatibilityWallet';
 import { DropWallets1791400000000 } from '../src/migrations/1791400000000-DropWallets';
+import { ReplaceTransactionTimestampWithDate1791500000000 } from '../src/migrations/1791500000000-ReplaceTransactionTimestampWithDate';
 import {
   compareLedgers,
   findOwnershipProblems,
@@ -29,7 +30,8 @@ interface OwnedRow {
 // Runs the migration over the whole database, like the CLI would: the schema
 // is taken back to before it (through DropWallets1791400000000, which came
 // later), legacy rows are written the way the previous app wrote them, and
-// the migration runs again. Every test leaves the database fully migrated.
+// the migration runs again. Every test leaves the database fully migrated,
+// the calendar dates of ReplaceTransactionTimestampWithDate1791500000000 included.
 // Only `npm run test:e2e:migrations` runs it, on a disposable database
 // (test/jest-migration-e2e.config.js).
 describe('AddTransactionSpaceOwnership migration (e2e)', () => {
@@ -38,6 +40,7 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   const ownership = new AddTransactionSpaceOwnership1791200000000();
   const compatibility = new AddCompatibilityWallet1791300000000();
   const walletRemoval = new DropWallets1791400000000();
+  const dates = new ReplaceTransactionTimestampWithDate1791500000000();
   let userIds: number[];
   let strayIds: { spaceIds: number[] };
 
@@ -82,15 +85,24 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
     await compatibility.up(runner());
   }
 
-  async function revert(): Promise<void> {
-    if (!(await hasColumn('transactions', 'wallet_id'))) {
-      const queryRunner = testApp.dataSource.createQueryRunner();
+  async function withQueryRunner(work: (queryRunner: QueryRunner) => Promise<void>): Promise<void> {
+    const queryRunner = testApp.dataSource.createQueryRunner();
 
-      try {
-        await walletRemoval.down(queryRunner);
-      } finally {
-        await queryRunner.release();
-      }
+    try {
+      await work(queryRunner);
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  // back through the migrations that came later, newest first
+  async function revert(): Promise<void> {
+    if (await hasColumn('transactions', 'date')) {
+      await withQueryRunner((queryRunner) => dates.down(queryRunner));
+    }
+
+    if (!(await hasColumn('transactions', 'wallet_id'))) {
+      await withQueryRunner((queryRunner) => walletRemoval.down(queryRunner));
     }
 
     await compatibility.down(runner());
@@ -98,13 +110,7 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
   }
 
   async function removeWallets(): Promise<void> {
-    const queryRunner = testApp.dataSource.createQueryRunner();
-
-    try {
-      await walletRemoval.up(queryRunner);
-    } finally {
-      await queryRunner.release();
-    }
+    await withQueryRunner((queryRunner) => walletRemoval.up(queryRunner));
   }
 
   async function insertWallet(spaceId: number, name: string, deleted = false): Promise<number> {
@@ -259,6 +265,10 @@ describe('AddTransactionSpaceOwnership migration (e2e)', () => {
 
     if (await hasColumn('transactions', 'wallet_id')) {
       await removeWallets();
+    }
+
+    if (!(await hasColumn('transactions', 'date'))) {
+      await withQueryRunner((queryRunner) => dates.up(queryRunner));
     }
 
     if (strayIds.spaceIds.length) {

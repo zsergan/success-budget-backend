@@ -7,6 +7,7 @@ import {
   createVerifiedMember,
   deleteUsers,
   insertLegacyTransaction,
+  today,
 } from './support/app';
 import { createOpenApiDocument, okResponseSchema, schemaErrors } from './support/openapi';
 
@@ -40,37 +41,37 @@ describe('Statistics blocks (e2e)', () => {
     const cash = { kind: 'space' };
     const oldCard = { kind: 'unassigned' };
     // a starting balance: income on the system category, never statistics
-    await startingBalance(owner, '1000', new Date());
+    await startingBalance(owner, '1000', today());
 
-    const add = (assignment: object, categoryId: number, type: string, amount: string, timestamp: string) =>
+    const add = (assignment: object, categoryId: number, type: string, amount: string, date: string) =>
       api(owner)
         .post(`${v2(owner)}/transactions`)
-        .send({ assignment, category_id: categoryId, transaction_type: type, amount, timestamp })
+        .send({ assignment, category_id: categoryId, transaction_type: type, amount, date, time_zone: 'Europe/Moscow' })
         .expect(201);
 
-    await add(card, salary.id, 'income', '3000', '2026-09-01T07:00:00.000Z');
-    await add(card, housing.id, 'expense', '450.25', '2026-09-02T16:30:00.000Z');
-    await add(cash, transport.id, 'expense', '120', '2026-09-05T10:00:00.000Z');
-    await add(oldCard, grocery.id, 'expense', '80', '2026-09-12T17:00:00.000Z');
+    await add(card, salary.id, 'income', '3000', '2026-09-01');
+    await add(card, housing.id, 'expense', '450.25', '2026-09-02');
+    await add(cash, transport.id, 'expense', '120', '2026-09-05');
+    await add(oldCard, grocery.id, 'expense', '80', '2026-09-12');
     // a legacy zero amount: refused by the API since the transactions contract
     await insertLegacyTransaction(testApp.dataSource, {
       spaceId: owner.spaceId,
       categoryId: transport.id,
       type: 'expense',
       amount: '0',
-      timestamp: new Date('2026-09-21T06:00:00.000Z'),
+      date: '2026-09-21',
     });
-    // 00:30 on Sep 28 in Moscow, still Sep 27 in UTC
-    await add(cash, housing.id, 'expense', '10', '2026-09-27T21:30:00.000Z');
-    // after as_of
-    await add(card, housing.id, 'expense', '500', '2026-09-29T07:00:00.000Z');
-    // the very last millisecond of July in Moscow
-    await add(card, transport.id, 'expense', '7.77', '2026-07-31T20:59:59.999Z');
+    // entered at 00:30 on Sep 28 in Moscow, while it was still Sep 27 in UTC
+    await add(cash, housing.id, 'expense', '10', '2026-09-28');
+    // after the day of as_of
+    await add(card, housing.id, 'expense', '500', '2026-09-29');
+    // the last day of July
+    await add(card, transport.id, 'expense', '7.77', '2026-07-31');
     // August, the month before
-    await add(card, housing.id, 'expense', '200', '2026-08-10T09:00:00.000Z');
+    await add(card, housing.id, 'expense', '200', '2026-08-10');
     // June: sums a float would get wrong
     for (const amount of ['0.10', '0.20', '99999999.99', '99999999.99', '99999999.99']) {
-      await add(cash, housing.id, 'expense', amount, '2026-06-15T09:00:00.000Z');
+      await add(cash, housing.id, 'expense', amount, '2026-06-15');
     }
 
     // another space with transactions in the same month must not leak in
@@ -84,7 +85,8 @@ describe('Statistics blocks (e2e)', () => {
         category_id: neighbourCategories.body.expenses[0].id,
         transaction_type: 'expense',
         amount: '999',
-        timestamp: '2026-09-10T09:00:00.000Z',
+        date: '2026-09-10',
+        time_zone: 'Europe/Moscow',
       })
       .expect(201);
 
@@ -120,7 +122,7 @@ describe('Statistics blocks (e2e)', () => {
   }
 
   // a starting balance a wallet left in the history of the space
-  async function startingBalance(member: Member, amount: string, timestamp: Date): Promise<void> {
+  async function startingBalance(member: Member, amount: string, date: string): Promise<void> {
     const [system] = await testApp.dataSource.query('SELECT id FROM categories WHERE space_id = ? AND is_system = 1', [
       member.spaceId,
     ]);
@@ -129,7 +131,7 @@ describe('Statistics blocks (e2e)', () => {
       categoryId: system.id,
       type: 'income',
       amount,
-      timestamp,
+      date,
     });
   }
 
@@ -148,26 +150,22 @@ describe('Statistics blocks (e2e)', () => {
         time_zone: 'Europe/Moscow',
         start_date: '2026-09-01',
         end_date: '2026-09-30',
-        from: '2026-08-31T21:00:00.000Z',
-        to: '2026-09-30T20:59:59.999Z',
         as_of: AS_OF,
-        actual_to: AS_OF,
+        actual_end_date: '2026-09-28',
         state: 'current',
       },
       currency: expect.any(String),
       // no starting balance
       income: { amount: '3000.00', count: 1 },
-      // unassigned, archived category and a zero amount included; after as_of excluded
+      // unassigned, archived category, a zero amount and today included; after today excluded
       expense: { amount: '660.25', count: 5 },
       net: '2339.75',
       transactions_count: 6,
-      // August 1 to 28, 15:00: the like-for-like part
+      // August 1 to 28: the like-for-like part, the 28th in full
       previous: {
         start_date: '2026-08-01',
         end_date: '2026-08-31',
-        from: '2026-07-31T21:00:00.000Z',
-        to: '2026-08-31T20:59:59.999Z',
-        actual_to: '2026-08-28T12:00:00.000Z',
+        actual_end_date: '2026-08-28',
         income: { amount: '0.00', count: 0 },
         expense: { amount: '200.00', count: 1 },
         net: '-200.00',
@@ -179,7 +177,7 @@ describe('Statistics blocks (e2e)', () => {
         net: { delta: '2539.75', percent: 1269.9 },
       },
       has_any_transactions: true,
-      // 00:30 on Sep 28 in Moscow; the one after as_of does not count
+      // the one dated after today does not count
       last_transaction_date: '2026-09-28',
     });
   });
@@ -253,30 +251,37 @@ describe('Statistics blocks (e2e)', () => {
         .expect(201);
       const card = { kind: 'member', user_id: member.userId };
       const oldCard = { kind: 'unassigned' };
-      const add = (assignment: object, categoryId: number, type: string, amount: string, timestamp: string) =>
+      const add = (assignment: object, categoryId: number, type: string, amount: string, date: string) =>
         api(member)
           .post(`${v2(member)}/transactions`)
-          .send({ assignment, category_id: categoryId, transaction_type: type, amount, timestamp })
+          .send({
+            assignment,
+            category_id: categoryId,
+            transaction_type: type,
+            amount,
+            date,
+            time_zone: 'Europe/Moscow',
+          })
           .expect(201);
       // assigned to the whole space
-      const insert = (categoryId: number, amount: string, timestamp: string) =>
+      const insert = (categoryId: number, amount: string, date: string) =>
         insertLegacyTransaction(testApp.dataSource, {
           spaceId: member.spaceId,
           categoryId,
           type: 'income',
           amount,
-          timestamp: new Date(timestamp),
+          date,
         });
 
-      await add(card, salary.id, 'income', '3000', '2026-09-01T07:00:00.000Z');
-      await add(oldCard, freelance.id, 'income', '200', '2026-09-05T07:00:00.000Z');
-      await add(card, groceries.id, 'expense', '50', '2026-09-06T07:00:00.000Z');
+      await add(card, salary.id, 'income', '3000', '2026-09-01');
+      await add(oldCard, freelance.id, 'income', '200', '2026-09-05');
+      await add(card, groceries.id, 'expense', '50', '2026-09-06');
       // a refund: counted by its own type, on an expense category
-      await insert(groceries.id, '20', '2026-09-07T07:00:00.000Z');
+      await insert(groceries.id, '20', '2026-09-07');
       // a legacy zero amount: counted, but no segment
-      await insert(zeroCategory.body.id, '0', '2026-09-08T07:00:00.000Z');
+      await insert(zeroCategory.body.id, '0', '2026-09-08');
       // a starting balance inside the period
-      await startingBalance(member, '500', new Date('2026-09-02T07:00:00.000Z'));
+      await startingBalance(member, '500', '2026-09-02');
       await api(member).delete(`${url}/categories/${freelance.id}`).expect(200);
 
       const get = (block: 'summary' | 'breakdown', query: Record<string, string>) =>
@@ -348,7 +353,8 @@ describe('Statistics blocks (e2e)', () => {
             category_id: categoryId,
             transaction_type: 'income',
             amount,
-            timestamp: '2026-09-10T09:00:00.000Z',
+            date: '2026-09-10',
+            time_zone: 'Europe/Moscow',
           })
           .expect(201);
 
@@ -407,9 +413,8 @@ describe('Statistics blocks (e2e)', () => {
         const history = await api(member)
           .get(`${v2(member)}/transactions/feed`)
           .query({
-            from: body.period.from,
-            to: body.period.actual_to,
-            time_zone: 'UTC',
+            from_date: body.period.start_date,
+            to_date: body.period.actual_end_date,
             transaction_type: 'income',
             category_id: categoryId,
           })
@@ -423,7 +428,7 @@ describe('Statistics blocks (e2e)', () => {
     }
   });
 
-  it('trend splits the month into calendar weeks up to as_of', async () => {
+  it('trend splits the month into calendar weeks up to the day of as_of', async () => {
     const res = await getBlock('trend', MONTH).expect(200);
 
     expect(res.body.granularity).toBe('week');
@@ -440,12 +445,19 @@ describe('Statistics blocks (e2e)', () => {
       ['2026-W36', '2026-09-01', '2026-09-06', 'past', '3000.00', '570.25'],
       ['2026-W37', '2026-09-07', '2026-09-13', 'past', '0.00', '80.00'],
       ['2026-W38', '2026-09-14', '2026-09-20', 'past', '0.00', '0.00'],
-      // the zero-amount transaction; the Sunday-night one belongs to the next week in Moscow
+      // the zero-amount transaction
       ['2026-W39', '2026-09-21', '2026-09-27', 'past', '0.00', '0.00'],
-      // the transaction after as_of is left out
+      // today in full; the transaction dated after today is left out
       ['2026-W40', '2026-09-28', '2026-09-30', 'current', '0.00', '10.00'],
     ]);
-    expect(res.body.buckets[0]).toMatchObject({ from: '2026-08-31T21:00:00.000Z', to: '2026-09-06T20:59:59.999Z' });
+    expect(Object.keys(res.body.buckets[0]).sort()).toEqual([
+      'end_date',
+      'expense',
+      'income',
+      'key',
+      'start_date',
+      'state',
+    ]);
   });
 
   it('trend of a future period has only empty future buckets and no comparison anywhere', async () => {
@@ -533,7 +545,7 @@ describe('Statistics blocks (e2e)', () => {
 
       const categories = await api(member).get(`${url}/categories`).expect(200);
       const [salary] = categories.body.incomes;
-      const add = (amount: string, timestamp: string) =>
+      const add = (amount: string, date: string) =>
         api(member)
           .post(`${v2(member)}/transactions`)
           .send({
@@ -541,18 +553,19 @@ describe('Statistics blocks (e2e)', () => {
             category_id: salary.id,
             transaction_type: 'income',
             amount,
-            timestamp,
+            date,
+            time_zone: 'Europe/Moscow',
           })
           .expect(201);
 
       // sums a float would get wrong
       for (const amount of ['0.10', '0.20', '99999999.99', '99999999.99', '99999999.99']) {
-        await add(amount, '2026-09-10T09:00:00.000Z');
+        await add(amount, '2026-09-10');
       }
-      // after as_of, inside September
-      await add('7', '2026-09-29T07:00:00.000Z');
-      // 00:30 on October 1 in Moscow, still September 30 in UTC
-      await add('5', '2026-09-30T21:30:00.000Z');
+      // after the day of as_of, inside September
+      await add('7', '2026-09-29');
+      // entered at 00:30 on October 1 in Moscow, still September 30 in UTC
+      await add('5', '2026-10-01');
 
       const income = { ...MONTH, transaction_type: 'income' };
       const current = await get(income);
@@ -572,7 +585,8 @@ describe('Statistics blocks (e2e)', () => {
 
       const past = { ...income, anchor_date: '2026-09-15', as_of: '2026-10-05T00:00:00.000Z' };
       expect((await get(past)).body.total).toEqual({ amount: '300000007.27', count: 6 });
-      expect((await get({ ...past, time_zone: 'UTC' })).body.total).toEqual({ amount: '300000012.27', count: 7 });
+      // the zone does not move a record to another month: it is dated October 1 for everyone
+      expect((await get({ ...past, time_zone: 'UTC' })).body.total).toEqual({ amount: '300000007.27', count: 6 });
 
       const future = (await get({ ...income, anchor_date: '2026-12-15' })).body;
       expect(future.period.state).toBe('future');
@@ -620,14 +634,19 @@ describe('Statistics blocks (e2e)', () => {
     );
   });
 
-  it('draws day boundaries in the requested zone', async () => {
-    const week = { period: 'week', as_of: AS_OF };
+  it('takes today from as_of in the requested zone, and nothing else from it', async () => {
+    // 01:00 on Monday, September 28 in Moscow; still Sunday the 27th in UTC
+    const week = { period: 'week', as_of: '2026-09-27T22:00:00.000Z' };
 
     const moscow = await getBlock('summary', { ...week, time_zone: 'Europe/Moscow' }).expect(200);
     const utc = await getBlock('summary', { ...week, time_zone: 'UTC' }).expect(200);
 
+    expect(moscow.body.period).toMatchObject({ start_date: '2026-09-28', actual_end_date: '2026-09-28' });
     expect(moscow.body.expense).toEqual({ amount: '10.00', count: 1 });
-    expect(utc.body.expense).toEqual({ amount: '0.00', count: 0 });
+    expect(utc.body.period).toMatchObject({ start_date: '2026-09-21', actual_end_date: '2026-09-27' });
+    // the zero amount of the 21st; the record dated the 28th is after today there
+    expect(utc.body.expense).toEqual({ amount: '0.00', count: 1 });
+    expect([moscow.body.last_transaction_date, utc.body.last_transaction_date]).toEqual(['2026-09-28', '2026-09-21']);
   });
 
   it('reports zero-amount transactions as present', async () => {
@@ -646,7 +665,7 @@ describe('Statistics blocks (e2e)', () => {
   it('returns an empty future period', async () => {
     const res = await getBlock('summary', { ...MONTH, anchor_date: '2026-10-01' }).expect(200);
 
-    expect(res.body.period).toMatchObject({ state: 'future', actual_to: null });
+    expect(res.body.period).toMatchObject({ state: 'future', actual_end_date: null });
     expect(res.body.transactions_count).toBe(0);
   });
 
@@ -687,7 +706,7 @@ describe('Statistics blocks (e2e)', () => {
     const feed = (member: Member, query: Record<string, string | number>) =>
       api(member)
         .get(`${v2(member)}/transactions/feed`)
-        .query({ time_zone: 'UTC', limit: 100, ...query })
+        .query({ limit: 100, ...query })
         .expect(200);
     const history = async (query: Record<string, string | number>) => (await feed(owner, query)).body.items;
 
@@ -699,7 +718,7 @@ describe('Statistics blocks (e2e)', () => {
     }
 
     interface Breakdown {
-      period: { from: string; actual_to: string };
+      period: { start_date: string; actual_end_date: string };
       transaction_type: 'expense' | 'income';
       by_category: { primary_items: OpenableItem[]; other: { children: OpenableItem[] } | null };
       by_assignment: { primary_items: OpenableItem[]; other: { children: OpenableItem[] } | null };
@@ -714,8 +733,8 @@ describe('Statistics blocks (e2e)', () => {
 
     // the one template of docs/transactions-v2-contract.md#statistics-v2 for both groupings
     const drillDownQuery = ({ period, transaction_type }: Breakdown, item: OpenableItem) => ({
-      from: period.from,
-      to: period.actual_to,
+      from_date: period.start_date,
+      to_date: period.actual_end_date,
       transaction_type,
       kind: 'regular',
       ...(item.kind === 'category' ? { category_id: item.id! } : { assignment: item.key }),
@@ -761,7 +780,8 @@ describe('Statistics blocks (e2e)', () => {
               category_id: categoryId,
               transaction_type: type,
               amount,
-              timestamp: '2026-09-10T09:00:00.000Z',
+              date: '2026-09-10',
+              time_zone: 'Europe/Moscow',
             })
             .expect(201);
 
@@ -769,7 +789,7 @@ describe('Statistics blocks (e2e)', () => {
         await add(cash, gifts.id, 'income', '40');
         await add(card, housing.id, 'expense', '70');
         // assigned to the whole space, like Card
-        await startingBalance(member, '500', new Date('2026-09-02T07:00:00.000Z'));
+        await startingBalance(member, '500', '2026-09-02');
 
         for (const [transaction_type, rows] of [
           ['income', 4],
@@ -784,7 +804,12 @@ describe('Statistics blocks (e2e)', () => {
           await expectHistoryToMatch(member, body, openableItems(body));
         }
 
-        const bounds = { from: '2026-08-31T21:00:00.000Z', to: AS_OF, transaction_type: 'income', assignment: 'space' };
+        const bounds = {
+          from_date: '2026-09-01',
+          to_date: '2026-09-28',
+          transaction_type: 'income',
+          assignment: 'space',
+        };
         const amounts = async (query: Record<string, string | number>) => {
           const items = (await feed(member, query)).body.items;
           const count = await api(member)
@@ -831,7 +856,8 @@ describe('Statistics blocks (e2e)', () => {
               category_id: categoryId,
               transaction_type: type,
               amount,
-              timestamp: '2026-09-10T09:00:00.000Z',
+              date: '2026-09-10',
+              time_zone: 'Europe/Moscow',
             })
             .expect(201);
 
@@ -842,7 +868,7 @@ describe('Statistics blocks (e2e)', () => {
           categoryId: mixed.id,
           type: 'income',
           amount: '20',
-          timestamp: new Date('2026-09-10T09:00:00.000Z'),
+          date: '2026-09-10',
         });
         // under 3%: a child of Other among the categories
         await add(cash, small.id, 'expense', '1');
@@ -866,8 +892,8 @@ describe('Statistics blocks (e2e)', () => {
 
         // without the type filter the category would also list the income
         const untyped = await feed(member, {
-          from: body.period.from,
-          to: body.period.actual_to,
+          from_date: body.period.start_date,
+          to_date: body.period.actual_end_date,
           category_id: mixed.id,
         });
         expect(untyped.body.items).toHaveLength(2);
@@ -878,28 +904,31 @@ describe('Statistics blocks (e2e)', () => {
       }
     });
 
-    it('includes the last millisecond of a period on both sides', async () => {
+    it('includes the last day of a period on both sides', async () => {
       const july = { ...MONTH, anchor_date: '2026-07-15' };
       const summary = await getBlock('summary', july).expect(200);
 
-      expect(summary.body.period.to).toBe('2026-07-31T20:59:59.999Z');
+      expect(summary.body.period).toMatchObject({ end_date: '2026-07-31', actual_end_date: '2026-07-31' });
       expect(summary.body.expense).toEqual({ amount: '7.77', count: 1 });
 
-      const inside = await history({ from: summary.body.period.from, to: summary.body.period.to });
-      const before = await history({ from: summary.body.period.from, to: '2026-07-31T20:59:59.998Z' });
+      const inside = await history({
+        from_date: summary.body.period.start_date,
+        to_date: summary.body.period.actual_end_date,
+      });
+      const before = await history({ from_date: summary.body.period.start_date, to_date: '2026-07-30' });
 
       expect(inside.map((tx: { amount: string }) => tx.amount)).toEqual(['7.77']);
       expect(before).toEqual([]);
     });
 
     it('filters by an archived category, only by type or by both', async () => {
-      const bounds = { from: '2026-08-31T21:00:00.000Z', to: AS_OF };
+      const bounds = { from_date: '2026-09-01', to_date: '2026-09-28' };
       const { body } = await getBlock('breakdown', MONTH).expect(200);
       const archived = body.by_category.primary_items.find((item: { is_archived: boolean }) => item.is_archived);
 
       const byCategory = await history({ ...bounds, category_id: archived.id });
-      // the starting balance is dated now
-      const incomes = await history({ ...bounds, to: new Date().toISOString(), transaction_type: 'income' });
+      // the starting balance is dated today
+      const incomes = await history({ ...bounds, to_date: today(), transaction_type: 'income' });
 
       expect(byCategory.map((tx: { amount: string }) => tx.amount)).toEqual(['80.00']);
       // unlike statistics, the history keeps the starting balance
@@ -915,7 +944,7 @@ describe('Statistics blocks (e2e)', () => {
         'SELECT id FROM categories WHERE space_id = ? AND is_system = 1',
         [owner.spaceId],
       );
-      const bounds = { from: '2026-08-31T21:00:00.000Z', to: AS_OF };
+      const bounds = { from_date: '2026-09-01', to_date: '2026-09-28' };
       const count = (query: object) =>
         api(owner)
           .get(`${v2(owner)}/transactions/count`)
@@ -938,9 +967,11 @@ describe('Statistics blocks (e2e)', () => {
         expect(res.body.message).toEqual([expect.objectContaining({ field: Object.keys(query)[0] })]);
       }
 
-      for (const path of [`transactions/feed?time_zone=UTC&`, 'transactions/count?']) {
+      for (const path of ['transactions/feed?', 'transactions/count?']) {
         const res = await api(owner)
-          .get(`${v2(owner)}/${path}from=${bounds.from}&to=${AS_OF}&kind=regular&kind=initial_balance`)
+          .get(
+            `${v2(owner)}/${path}from_date=${bounds.from_date}&to_date=${bounds.to_date}&kind=regular&kind=initial_balance`,
+          )
           .expect(400);
 
         // field is "kind" in the tsc build; under @swc/jest the enum becomes the
@@ -998,7 +1029,7 @@ describe('Statistics blocks (e2e)', () => {
     expect(check(summarySchema, { ...summary, income: null })).toContain('$.income: null is not allowed');
 
     expect(check(summarySchema, { ...summary, previous: {} })).toEqual(
-      expect.arrayContaining(['$.previous: matches no anyOf branch', '$.previous.actual_to: missing']),
+      expect.arrayContaining(['$.previous: matches no anyOf branch', '$.previous.actual_end_date: missing']),
     );
     expect(
       check(breakdownSchema, {

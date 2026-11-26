@@ -55,8 +55,8 @@ export class LimitsService {
     return limits.map((limit) => withRelations(limit, 'categories'));
   }
 
-  // Spending of the current calendar month in the client's zone; without one,
-  // in the server's. The period tells the client which month was counted.
+  // Spending dated in the calendar month current in the client's zone;
+  // without one, in the server's. The period tells which month was counted.
   async getSummary(userId: number, spaceId: number, timeZone = serverTimeZone(), now = new Date()) {
     await this.spaceAccessService.assertMembership(spaceId, userId);
 
@@ -64,7 +64,7 @@ export class LimitsService {
     // the limits and the spending they are compared with come from one snapshot
     const [limits, categoryTotals] = await readSnapshot(this.dataSource, async (manager) => [
       await this.getAll(spaceId, manager),
-      await this.transactionQueriesService.getExpensesByCategory(spaceId, period.from, period.to, manager),
+      await this.transactionQueriesService.getExpensesByCategory(spaceId, period.start_date, period.end_date, manager),
     ]);
 
     return { period, ...this.calculateSpending(limits, categoryTotals) };

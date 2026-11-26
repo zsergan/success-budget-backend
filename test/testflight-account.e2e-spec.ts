@@ -155,9 +155,10 @@ describe('TestFlight account provisioning (e2e)', () => {
 
     const now = new Date();
     const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
-    for (const transaction of state.transactions as { timestamp: Date }[]) {
-      expect(transaction.timestamp.getTime()).toBeGreaterThanOrEqual(Math.min(monthStart, startedAt));
-      expect(transaction.timestamp.getTime()).toBeLessThanOrEqual(now.getTime());
+    const utcDate = (epoch: number) => new Date(epoch).toISOString().slice(0, 10);
+    for (const transaction of state.transactions as { date: string }[]) {
+      expect(transaction.date >= utcDate(Math.min(monthStart, startedAt))).toBe(true);
+      expect(transaction.date <= utcDate(now.getTime())).toBe(true);
     }
 
     testApp.resetThrottling();

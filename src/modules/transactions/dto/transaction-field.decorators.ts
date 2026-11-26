@@ -1,16 +1,17 @@
 import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, ValidateBy } from 'class-validator';
+import { IsOptional, IsString, ValidateBy, type ValidationArguments } from 'class-validator';
 
 import {
   AMOUNT_NOT_POSITIVE,
+  DATE_AFTER_TODAY,
   MAX_DESCRIPTION_LENGTH,
-  TIMESTAMP_IN_FUTURE,
-  isNotInFuture,
+  TIME_ZONE_REQUIRED,
+  isNotAfterToday,
   isPositiveAmount,
   normalizeDescription,
 } from '../transaction-rules';
-import { parseIsoDate, parseMoneyInput } from '@shared/utils';
+import { isCalendarDate, parseMoneyInput, resolveTimeZone } from '@shared/utils';
 
 // Run after the format validators: a malformed value is reported by them.
 export const IsPositiveAmount = () =>
@@ -23,12 +24,37 @@ export const IsPositiveAmount = () =>
     },
   });
 
-export const IsNotInFuture = () =>
+const timeZoneOf = (args: ValidationArguments): string | null => {
+  const { time_zone: timeZone } = args.object as { time_zone?: unknown };
+
+  return typeof timeZone === 'string' ? resolveTimeZone(timeZone) : null;
+};
+
+// Needs a valid time_zone on the same object; without one, time_zone is the error.
+export const IsNotAfterToday = () =>
   ValidateBy({
-    name: 'isNotInFuture',
+    name: 'isNotAfterToday',
     validator: {
-      validate: (value: unknown) => typeof value !== 'string' || parseIsoDate(value) === null || isNotInFuture(value),
-      defaultMessage: () => TIMESTAMP_IN_FUTURE,
+      validate: (value: unknown, args) => {
+        const timeZone = timeZoneOf(args!);
+
+        return typeof value !== 'string' || !isCalendarDate(value) || !timeZone || isNotAfterToday(value, timeZone);
+      },
+      defaultMessage: () => DATE_AFTER_TODAY,
+    },
+  });
+
+// Optional, but required whenever the object carries a date.
+export const IsTimeZoneWithDate = () =>
+  ValidateBy({
+    name: 'isTimeZoneWithDate',
+    validator: {
+      validate: (value: unknown, args) =>
+        value === undefined
+          ? (args!.object as { date?: unknown }).date === undefined
+          : typeof value === 'string' && resolveTimeZone(value) !== null,
+      defaultMessage: (args) =>
+        args?.value === undefined ? TIME_ZONE_REQUIRED : `${args?.property} must be an IANA time zone name`,
     },
   });
 

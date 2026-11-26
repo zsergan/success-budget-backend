@@ -24,6 +24,7 @@ describe('buildDataSourceOptions', () => {
       password: 'pass',
       database: 'success_budget',
       timezone: 'Z',
+      dateStrings: ['DATE'],
       synchronize: false,
       migrationsRun: false,
     });

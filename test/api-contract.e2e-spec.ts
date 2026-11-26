@@ -1,7 +1,7 @@
 import request from 'supertest';
 import type { OpenAPIObject } from '@nestjs/swagger';
 
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers, today } from './support/app';
 import { createOpenApiDocument } from './support/openapi';
 
 // The rules of docs/transactions-contract.md and docs/transactions-v2-contract.md
@@ -73,7 +73,8 @@ describe('API contract (e2e)', () => {
         category_id: categoryId,
         transaction_type: type,
         amount,
-        timestamp: new Date(Date.now() - 1000).toISOString(),
+        date: today(),
+        time_zone: 'UTC',
         assignment: { kind: 'space' },
       });
   }
@@ -121,7 +122,8 @@ describe('API contract (e2e)', () => {
             assignment: { kind: 'space' },
             transaction_type: 'expense',
             amount: '10',
-            timestamp: '2026-09-15T10:00:00.000Z',
+            date: '2026-09-15',
+            time_zone: 'UTC',
             [field]: value,
           })
           .expect(400);
@@ -160,7 +162,7 @@ describe('API contract (e2e)', () => {
       const s = await space();
       const created = await createTransaction(s, s.expenses[0], '10').expect(201);
 
-      for (const query of ['', '?from=2000-01-01T00:00:00.000Z&to=2037-12-31T23:59:59.999Z']) {
+      for (const query of ['', '?from_date=2000-01-01&to_date=2099-12-31']) {
         const list = await api(s.member).get(`/transactions${query}`).expect(404);
         expect(list.body.code).toBe('NOT_FOUND');
       }

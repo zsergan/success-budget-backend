@@ -130,6 +130,7 @@ interface LedgerRow {
   is_system: number;
   transaction_type: string;
   amount: string;
+  // the instant in ms, or the date once ReplaceTransactionTimestampWithDate1791500000000 ran
   timestamp_ms: string | number;
   description: string | null;
   version: number;
@@ -153,7 +154,8 @@ const nullableNumber = (value: number | string | null | undefined): number | nul
   value === null || value === undefined ? null : Number(value);
 
 // Streams the records by id, so a large history is never held in memory.
-// Sums are in exact cents; months are UTC.
+// Sums are in exact cents; months are UTC, or of the stored date once
+// records have one.
 export async function readTransactionLedger(dataSource: DataSource): Promise<TransactionLedger> {
   const { hasOwners } = await readOwnershipSchema(dataSource);
   const spaces = new Map<number, { transactions: number; hash: Hash; owners?: Hash }>();
@@ -161,6 +163,13 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
   const initialBalances = new Map<number, { count: number; amount: bigint }>();
   const space = hasOwners ? 't.space_id' : 'w.space_id';
   const ownerColumns = hasOwners ? ', t.author_user_id, t.author_source, t.assignment_kind, t.assigned_user_id' : '';
+  const [timestampColumn] = await dataSource.query(
+    `SELECT 1 FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transactions' AND COLUMN_NAME = 'timestamp'`,
+  );
+  const when = timestampColumn
+    ? 'CAST(ROUND(UNIX_TIMESTAMP(t.timestamp) * 1000) AS UNSIGNED)'
+    : "DATE_FORMAT(t.date, '%Y-%m-%d')";
   const walletJoin = hasOwners ? '' : 'INNER JOIN wallets w ON w.id = t.wallet_id';
   let after = '';
   let total = 0;
@@ -168,7 +177,7 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
   for (;;) {
     const rows: LedgerRow[] = await dataSource.query(
       `SELECT t.id, ${space} AS space_id, t.category_id, c.is_system, t.transaction_type, t.amount,
-              CAST(ROUND(UNIX_TIMESTAMP(t.timestamp) * 1000) AS UNSIGNED) AS timestamp_ms, t.description,
+              ${when} AS timestamp_ms, t.description,
               t.version${ownerColumns}
        FROM transactions t
        ${walletJoin}
@@ -213,7 +222,9 @@ export async function readTransactionLedger(dataSource: DataSource): Promise<Tra
         const balances = initialBalances.get(spaceId) ?? { count: 0, amount: 0n };
         initialBalances.set(spaceId, { count: balances.count + 1, amount: balances.amount + amount });
       } else {
-        const month = new Date(Number(row.timestamp_ms)).toISOString().slice(0, 7);
+        const month = timestampColumn
+          ? new Date(Number(row.timestamp_ms)).toISOString().slice(0, 7)
+          : String(row.timestamp_ms).slice(0, 7);
         const key = `${String(spaceId).padStart(10, '0')}/${month}`;
         const sums = months.get(key) ?? { space_id: spaceId, month, income: 0n, expense: 0n, count: 0 };
 

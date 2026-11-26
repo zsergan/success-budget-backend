@@ -188,7 +188,8 @@ requires TLS is a few extra env vars (`DB_SSL`, `DB_SSL_CA`,
 
 MySQL sessions must use UTC (`time_zone = '+00:00'`, or `SYSTEM` on a UTC
 database host). The driver uses UTC independently of Node's local zone,
-so transaction dates and audit timestamps keep their exact instants.
+so audit timestamps keep their exact instants; transaction dates are `DATE`
+values read as `YYYY-MM-DD` strings, never placed in a zone.
 Changing the driver does not repair records previously written by a
 non-UTC Node process; audit those records separately before correcting data.
 
@@ -328,6 +329,13 @@ and [Rolling out the removal of wallets](docs/deployment.md#rolling-out-the-remo
 (`npm run ownership:check -- preflight | snapshot <file> | verify <file>`,
 `:prod` variant in the image). Release B also makes app builds older than
 mobile v2 incompatible: ship it only once its readiness checks pass.
+
+The calendar-date release (Release C) replaces transaction timestamps with
+dates and is a coordinated breaking change for the mobile app: deploy it
+with the compatible mobile build, in a write pause, with
+[Rolling out calendar dates](docs/deployment.md#rolling-out-calendar-dates)
+(`npm run dates:check -- snapshot <file> | verify <file>`, `:prod` variant
+in the image).
 
 The release that replaces the starter categories rewrites existing tester
 data and cannot be reverted, only restored from a backup. Deploy it with

@@ -206,18 +206,17 @@ describe('App (e2e)', () => {
       .getRepository(Category)
       .findOneOrFail({ where: { space_id: personalSpaceId, is_system: 1 } });
     await dataSource.query(
-      `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, timestamp, version,
+      `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, date, version,
          author_user_id, author_source, assignment_kind)
        VALUES (UUID(), ?, ?, 'income', '200.00', ?, 1, ?, 'imported', 'space')`,
-      [personalSpaceId, systemCategory.id, new Date(Date.now() - 60_000), userId],
+      [personalSpaceId, systemCategory.id, new Date().toISOString().slice(0, 10), userId],
     );
 
     const transactionsResponse = await request(app.getHttpServer())
       .get(`/api/v2/spaces/${personalSpaceId}/transactions/feed`)
       .query({
-        from: new Date(Date.now() - 86400000).toISOString(),
-        to: new Date(Date.now() + 86400000).toISOString(),
-        time_zone: 'UTC',
+        from_date: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+        to_date: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
       })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
@@ -242,7 +241,8 @@ describe('App (e2e)', () => {
         category_id: systemCategory.id,
         transaction_type: 'income',
         amount: '1.00',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
       })
       .expect(403);
 
@@ -296,7 +296,8 @@ describe('App (e2e)', () => {
         category_id: salaryCategoryId,
         transaction_type: 'income',
         amount: '500.00',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
         description: 'e2e salary',
       })
       .expect(201);
@@ -314,7 +315,8 @@ describe('App (e2e)', () => {
         category_id: groceriesCategoryId,
         transaction_type: 'expense',
         amount: '120.50',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
       })
       .expect(201);
 
@@ -323,9 +325,8 @@ describe('App (e2e)', () => {
     const withinRange = await request(app.getHttpServer())
       .get(`/api/v2/spaces/${personalSpaceId}/transactions/feed`)
       .query({
-        from: new Date(Date.now() - 86400000).toISOString(),
-        to: new Date(Date.now() + 86400000).toISOString(),
-        time_zone: 'UTC',
+        from_date: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+        to_date: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
       })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
@@ -339,7 +340,7 @@ describe('App (e2e)', () => {
 
     const outsideRange = await request(app.getHttpServer())
       .get(`/api/v2/spaces/${personalSpaceId}/transactions/feed`)
-      .query({ from: '2000-01-01T00:00:00.000Z', to: '2000-01-31T23:59:59.999Z', time_zone: 'UTC' })
+      .query({ from_date: '2000-01-01', to_date: '2000-01-31' })
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
@@ -395,7 +396,8 @@ describe('App (e2e)', () => {
         category_id: healthCategoryId,
         transaction_type: 'expense',
         amount: '40.00',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
       })
       .expect(201);
 
@@ -517,7 +519,8 @@ describe('App (e2e)', () => {
         category_id: usedCategoryId,
         transaction_type: 'expense',
         amount: '10.00',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
       })
       .expect(201);
 
@@ -578,7 +581,8 @@ describe('App (e2e)', () => {
         category_id: limitedCategoryId,
         transaction_type: 'expense',
         amount: '5.00',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
       })
       .expect(201);
 
@@ -849,7 +853,8 @@ describe('App (e2e)', () => {
         category_id: groupCategories.body.expenses[0].id,
         transaction_type: 'expense',
         amount: '3.00',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
         assignment: { kind: 'member', user_id: userId },
       })
       .expect(201);
@@ -898,10 +903,11 @@ describe('App (e2e)', () => {
     const transactionBody = {
       transaction_type: 'expense',
       amount: '1.00',
-      timestamp: new Date().toISOString(),
+      date: new Date().toISOString().slice(0, 10),
+      time_zone: 'UTC',
       assignment: { kind: 'space' },
     };
-    const bounds = `from=2000-01-01T00:00:00Z&to=2037-01-01T00:00:00Z`;
+    const bounds = `from_date=2000-01-01&to_date=2099-12-31`;
 
     const cases: [() => request.Test, string][] = [
       [

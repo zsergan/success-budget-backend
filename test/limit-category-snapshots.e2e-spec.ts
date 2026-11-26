@@ -2,7 +2,7 @@ import request from 'supertest';
 import { SelectQueryBuilder } from 'typeorm';
 import { Category } from '@entities/category.entity';
 
-import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
+import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers, today } from './support/app';
 import { TransactionQueriesService } from '@modules/transaction-queries/transaction-queries.service';
 import { pauseAfterFirstCall } from './support/concurrency';
 
@@ -70,7 +70,8 @@ describe('Limits and categories under concurrent writes (e2e)', () => {
         category_id: categoryId,
         transaction_type: 'expense',
         amount,
-        timestamp: new Date(Date.now() - 1000).toISOString(),
+        date: today(),
+        time_zone: 'UTC',
         assignment: { kind: 'space' },
       })
       .expect(201);

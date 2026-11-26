@@ -41,7 +41,9 @@
     "schema:check": "ts-node -r tsconfig-paths/register src/database/check-schema.ts",
     "schema:check:prod": "node dist/database/check-schema.js",
     "ownership:check": "ts-node -r tsconfig-paths/register src/database/transaction-ownership-check.ts",
-    "ownership:check:prod": "node dist/database/transaction-ownership-check.js"
+    "ownership:check:prod": "node dist/database/transaction-ownership-check.js",
+    "dates:check": "ts-node -r tsconfig-paths/register src/database/transaction-dates-check.ts",
+    "dates:check:prod": "node dist/database/transaction-dates-check.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.1",

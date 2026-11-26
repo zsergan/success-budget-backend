@@ -106,7 +106,7 @@ describe('Statistics OpenAPI', () => {
   });
 
   it('marks exactly the nullable fields', () => {
-    expect(nullableFields('StatisticsPeriod')).toEqual(['actual_to']);
+    expect(nullableFields('StatisticsPeriod')).toEqual(['actual_end_date']);
     expect(nullableFields('Change')).toEqual(['percent']);
     expect(nullableFields('StatisticsSummary')).toEqual(['previous', 'change', 'last_transaction_date']);
     expect(nullableFields('PreviousPeriod')).toEqual([]);
@@ -205,7 +205,10 @@ describe('Statistics OpenAPI', () => {
     expect(schemas.StatisticsTimeState.enum).toEqual(['past', 'current', 'future']);
     expect(schemas.StatisticsTrendGranularity.enum).toEqual(['day', 'week', 'month']);
     expect(refName(schemas.CategoryItem.properties!.icon)).toBe('CategoryIcon');
-    expect(refName(schemas.CategoryItem.properties!.color)).toBe('AppColor');
+    expect(schemas.CategoryItem.properties!.color).toMatchObject({
+      type: 'string',
+      pattern: '^(slate|amber|evergreen|indigo|clay|plum|#[0-9A-F]{6})$',
+    });
 
     expect(
       ['CategoryItem', 'CategoryOtherItem', 'AssignmentOtherItem'].map((name) => schemas[name].properties!.kind.enum),

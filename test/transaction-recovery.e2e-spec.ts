@@ -4,8 +4,17 @@ import request from 'supertest';
 import { TransactionWrites } from '@modules/transactions/transaction-writes';
 import { type Member, type TestApp, createTestApp, createVerifiedMember, deleteUsers } from './support/app';
 import { overlap, pauseAfterFirstCall } from './support/concurrency';
+import { calendarDateIn } from '@shared/utils';
 
 const INSERT_OPERATION = 'INSERT INTO `transaction_operations`%';
+const DEVICE_ZONE = 'Europe/Moscow';
+
+// The date a build of the calendar-date release sends for a stored timestamp
+// (docs/transactions-v2-contract.md#pending-writes-across-release-c): the day
+// as written when the string carries an offset, otherwise the day of the
+// instant in the device's zone.
+const dateOfStored = (timestamp: string, deviceZone = DEVICE_ZONE): string =>
+  /[+-]\d{2}:?\d{2}$/.test(timestamp) ? timestamp.slice(0, 10) : calendarDateIn(new Date(timestamp), deviceZone);
 
 // A write as the older app build keeps it on the device: the v1 body, with
 // client_operation_id equal to the Idempotency-Key. Its wallet no longer exists.
@@ -116,11 +125,12 @@ describe('Pending writes across the upgrade (e2e)', () => {
       .send(stored.data);
 
   // a create the old build committed before the upgrade, as Release A stored
-  // it: the record, by the caller for the whole space, and its operation
+  // it and the date migration left it: the record, by the caller for the
+  // whole space, dated its Chicago day, and its operation
   async function committedBeforeUpgrade(member: Member, stored: StoredCreate): Promise<string> {
     const id = randomUUID();
     await testApp.dataSource.query(
-      `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, timestamp, description,
+      `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, date, description,
          version, author_user_id, author_source, assignment_kind, assigned_user_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'recorded', 'space', NULL)`,
       [
@@ -129,7 +139,7 @@ describe('Pending writes across the upgrade (e2e)', () => {
         stored.data.category_id,
         stored.data.transaction_type,
         stored.data.amount,
-        new Date(stored.data.timestamp),
+        calendarDateIn(new Date(stored.data.timestamp), 'America/Chicago'),
         stored.data.description,
         member.userId,
       ],
@@ -143,12 +153,21 @@ describe('Pending writes across the upgrade (e2e)', () => {
     return id;
   }
 
-  // what the v2 build sends instead: the same id and key, no wallet, the whole space
+  // what the current build sends instead: the same id and key, no wallet,
+  // the whole space, the stored timestamp as a date with the device's zone
+  const converted = (stored: StoredCreate) => ({
+    ...stored.data,
+    wallet_id: undefined,
+    timestamp: undefined,
+    date: dateOfStored(stored.data.timestamp),
+    time_zone: DEVICE_ZONE,
+    assignment: { kind: 'space' },
+  });
   const convertedCreate = (member: Member, stored: StoredCreate, overrides: object = {}) =>
     api(member)
       .post(`/api/v2/spaces/${stored.spaceId}/transactions`)
       .set('Idempotency-Key', stored.idempotencyKey)
-      .send({ ...stored.data, wallet_id: undefined, assignment: { kind: 'space' }, ...overrides });
+      .send({ ...converted(stored), ...overrides });
 
   const lookUp = (member: Member, stored: StoredCreate) =>
     api(member).get(`/api/v2/spaces/${stored.spaceId}/transactions/operations/${stored.idempotencyKey}`);
@@ -173,10 +192,12 @@ describe('Pending writes across the upgrade (e2e)', () => {
       expect(created.body.transaction).toEqual(
         expect.objectContaining({
           amount: '12.30',
+          date: '2026-10-08',
           author: expect.objectContaining({ user_id: s.phone.userId, source: 'recorded' }),
           assignment: expect.objectContaining({ kind: 'space' }),
         }),
       );
+      expect(created.body.transaction).not.toHaveProperty('timestamp');
       expect(repeat.body).toEqual(created.body);
       const found = await lookUp(s.phone, stored).expect(200);
       expect(found.body).toEqual(
@@ -198,6 +219,7 @@ describe('Pending writes across the upgrade (e2e)', () => {
           status: 'applied',
           transaction: expect.objectContaining({
             id,
+            date: '2026-10-08',
             author: expect.objectContaining({ user_id: s.phone.userId, source: 'recorded' }),
           }),
         }),
@@ -271,10 +293,7 @@ describe('Pending writes across the upgrade (e2e)', () => {
         checkpoint,
         INSERT_OPERATION,
         () => convertedCreate(s.phone, stored),
-        () =>
-          api(s.phone)
-            .post(`/api/v2/spaces/${stored.spaceId}/transactions`)
-            .send({ ...stored.data, wallet_id: undefined, assignment: { kind: 'space' } }),
+        () => api(s.phone).post(`/api/v2/spaces/${stored.spaceId}/transactions`).send(converted(stored)),
       );
 
       expect(first.status).toBe(201);
@@ -292,6 +311,141 @@ describe('Pending writes across the upgrade (e2e)', () => {
       const resent = await convertedCreate(s.phone, stored).expect(403);
 
       expect([found.body.code, resent.body.code]).toEqual(['FORBIDDEN_SPACE', 'FORBIDDEN_SPACE']);
+    });
+  });
+
+  describe('a pending write of a build before calendar dates', () => {
+    // as the v2 build before the calendar-date release kept it
+    const timestampCreate = (s: Setup, timestamp: string) => {
+      const id = randomUUID();
+
+      return {
+        key: id,
+        body: {
+          category_id: s.categoryId,
+          transaction_type: 'expense',
+          amount: '12.30',
+          timestamp,
+          description: `Dated ${id}`,
+          client_operation_id: id,
+          assignment: { kind: 'space' },
+        },
+      };
+    };
+    const send = (s: Setup, key: string, body: object) =>
+      api(s.phone).post(`/api/v2/spaces/${s.spaceId}/transactions`).set('Idempotency-Key', key).send(body);
+    const withDate = (body: { timestamp: string }) => ({
+      ...body,
+      timestamp: undefined,
+      date: dateOfStored(body.timestamp),
+      time_zone: DEVICE_ZONE,
+    });
+
+    it('is refused while it carries a timestamp, writing and storing nothing', async () => {
+      const s = await setup();
+      const { key, body } = timestampCreate(s, '2026-10-08T21:30:00+03:00');
+
+      const refused = await send(s, key, body).expect(400);
+
+      expect(refused.body).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        message: expect.arrayContaining([expect.objectContaining({ field: 'timestamp' })]),
+      });
+      const [keys] = await testApp.dataSource.query(
+        'SELECT COUNT(*) AS count FROM idempotency_keys WHERE idempotency_key = ?',
+        [key],
+      );
+      expect(Number(keys.count)).toBe(0);
+      await api(s.phone).get(`/api/v2/spaces/${s.spaceId}/transactions/operations/${key}`).expect(404);
+    });
+
+    it('converted, creates the record once with the day the user picked', async () => {
+      const s = await setup();
+      // 21:30 in Moscow on October 8 is October 8 there, whatever UTC says
+      const { key, body } = timestampCreate(s, '2026-10-08T21:30:00+03:00');
+
+      const created = await send(s, key, withDate(body)).expect(201);
+      const repeat = await send(s, key, { ...withDate(body), time_zone: 'Asia/Tokyo' }).expect(201);
+
+      expect(created.body.transaction.date).toBe('2026-10-08');
+      expect(repeat.body).toEqual(created.body);
+    });
+
+    it('committed before the upgrade under the same key: the converted resend creates nothing', async () => {
+      const s = await setup();
+      const { key, body } = timestampCreate(s, '2026-10-08T18:30:00.000Z');
+      const stored: StoredCreate = { spaceId: s.spaceId, idempotencyKey: key, data: { ...body, wallet_id: 7 } };
+      const id = await committedBeforeUpgrade(s.phone, stored);
+      // the result the old build stored under its key, as the migration left it
+      await testApp.dataSource.query(
+        `INSERT INTO idempotency_keys (user_id, space_id, operation, idempotency_key, request_hash, response_body,
+           created_at, expires_at)
+         VALUES (?, ?, 'transactions.v2.create', ?, ?, ?, NOW(3), NOW(3) + INTERVAL 1 DAY)`,
+        [s.phone.userId, s.spaceId, key, 'f'.repeat(64), JSON.stringify({ transaction: { id, date: '2026-10-08' } })],
+      );
+
+      const resent = await send(s, key, withDate(body)).expect(409);
+      const found = await api(s.phone).get(`/api/v2/spaces/${s.spaceId}/transactions/operations/${key}`).expect(200);
+
+      expect(resent.body.code).toBe('TRANSACTION_OPERATION_EXISTS');
+      expect(found.body).toMatchObject({ status: 'applied', transaction: { id, date: '2026-10-08', version: 1 } });
+      expect(found.body.transaction).not.toHaveProperty('timestamp');
+      expect(await recordsOf(stored)).toBe(1);
+    });
+
+    it('a converted date after today in the device zone is refused, for the user to pick again', async () => {
+      const s = await setup();
+      const tomorrow = new Date(Date.now() + 36 * 3_600_000).toISOString().slice(0, 10);
+      const { key, body } = timestampCreate(s, `${tomorrow}T09:00:00+14:00`);
+
+      const refused = await send(s, key, { ...withDate(body), time_zone: 'Pacific/Pago_Pago' }).expect(400);
+
+      expect(refused.body.message).toEqual([{ field: 'date', error: 'date must not be after today in time_zone' }]);
+    });
+
+    it('converts a stored edit of the timestamp, and keeps the version rules', async () => {
+      const s = await setup();
+      const path = `/api/v2/spaces/${s.spaceId}/transactions/${await committedBeforeUpgrade(s.phone, storedCreate(s))}`;
+      const key = randomUUID();
+
+      const unconverted = await api(s.phone)
+        .patch(path)
+        .set('If-Match', '1')
+        .set('Idempotency-Key', key)
+        .send({ timestamp: '2026-10-01T10:00:00.000Z', amount: '20' })
+        .expect(400);
+      const applied = await api(s.phone)
+        .patch(path)
+        .set('If-Match', '1')
+        .set('Idempotency-Key', key)
+        .send({ date: dateOfStored('2026-10-01T10:00:00.000Z'), time_zone: DEVICE_ZONE, amount: '20' })
+        .expect(200);
+      const stale = await api(s.phone)
+        .patch(path)
+        .set('If-Match', '1')
+        .send({ date: '2026-10-02', time_zone: DEVICE_ZONE })
+        .expect(409);
+
+      expect(unconverted.body.message).toEqual([expect.objectContaining({ field: 'timestamp' })]);
+      expect(applied.body.transaction).toMatchObject({ date: '2026-10-01', amount: '20.00', version: 2 });
+      expect(stale.body.code).toBe('TRANSACTION_VERSION_CONFLICT');
+    });
+
+    it('answers a repeat of a delete sent before the upgrade with its stored result', async () => {
+      const s = await setup();
+      const id = await committedBeforeUpgrade(s.phone, storedCreate(s));
+      const path = `/api/v2/spaces/${s.spaceId}/transactions/${id}`;
+      const key = randomUUID();
+
+      await api(s.phone).delete(path).set('If-Match', '1').set('Idempotency-Key', key).expect(200);
+      const repeated = await api(s.phone).delete(path).set('If-Match', '1').set('Idempotency-Key', key).expect(200);
+
+      expect(repeated.text).toBe('true');
+      const [stored] = await testApp.dataSource.query(
+        'SELECT operation FROM idempotency_keys WHERE idempotency_key = ?',
+        [key],
+      );
+      expect(stored.operation).toBe('transactions.v2.delete');
     });
   });
 

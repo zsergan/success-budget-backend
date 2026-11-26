@@ -14,7 +14,7 @@ export function toTransactionViewV2(transaction: LoadedTransaction, members: Rea
     kind: transaction.category.is_system ? TransactionKind.INITIAL_BALANCE : TransactionKind.REGULAR,
     transaction_type: transaction.transaction_type,
     amount: transaction.amount,
-    timestamp: transaction.timestamp,
+    date: transaction.date,
     description: transaction.description?.trim() ? transaction.description : null,
     version: transaction.version,
     category: toCategory(transaction.category),

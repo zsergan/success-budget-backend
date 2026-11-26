@@ -87,7 +87,8 @@ describe('Transactions v2 (e2e)', () => {
     category_id: s.categoryId,
     transaction_type: 'expense',
     amount: '12.3',
-    timestamp: '2026-09-15T10:00:00.000Z',
+    date: '2026-09-15',
+    time_zone: 'UTC',
     assignment,
     ...extra,
   });
@@ -167,7 +168,8 @@ describe('Transactions v2 (e2e)', () => {
           category_id: categories.body.expenses[0].id,
           transaction_type: 'expense',
           amount: '5',
-          timestamp: '2026-09-15T10:00:00.000Z',
+          date: '2026-09-15',
+          time_zone: 'UTC',
           assignment: forMember(owner),
         })
         .expect(201);
@@ -196,7 +198,8 @@ describe('Transactions v2 (e2e)', () => {
         .set('If-Match', '1')
         .send({
           amount: '20',
-          timestamp: '2026-09-17T10:00:00.000Z',
+          date: '2026-09-17',
+          time_zone: 'UTC',
           category_id: categories.body.expenses[1].id,
         })
         .expect(200);
@@ -479,10 +482,10 @@ describe('Transactions v2 (e2e)', () => {
       const legacyId = randomUUID();
       // what a v1 create committed under Release A left: the record, its operation and the stored result
       await testApp.dataSource.query(
-        `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, timestamp, version,
+        `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, date, version,
            author_user_id, author_source, assignment_kind)
          VALUES (?, ?, ?, 'expense', '7.00', ?, 1, ?, 'recorded', 'space')`,
-        [legacyId, s.id, s.categoryId, new Date('2026-09-16T10:00:00.000Z'), s.owner.userId],
+        [legacyId, s.id, s.categoryId, '2026-09-16', s.owner.userId],
       );
       await testApp.dataSource.query(
         'INSERT INTO transaction_operations (space_id, operation_id, transaction_id, created_at) VALUES (?, ?, ?, ?)',

@@ -116,7 +116,8 @@ describe('Boundary type contract (e2e)', () => {
         category_id: expenseCategoryId,
         transaction_type: 'expense',
         amount: '1',
-        timestamp: new Date().toISOString(),
+        date: new Date().toISOString().slice(0, 10),
+        time_zone: 'UTC',
         assignment: { kind: 'space' },
         ...overrides,
       });
@@ -229,7 +230,7 @@ describe('Boundary type contract (e2e)', () => {
             category_id: categories.body.incomes[0].id,
             transaction_type: 'income',
             amount,
-            timestamp: '2026-01-15T12:00:00.000Z',
+            date: '2026-01-15',
           },
           space,
         ).expect(201);
@@ -239,7 +240,7 @@ describe('Boundary type contract (e2e)', () => {
       }
 
       const feed = await api()
-        .get(`${transactions(space)}/feed?from=2026-01-01T00:00:00Z&to=2026-01-31T23:59:59.999Z&time_zone=UTC`)
+        .get(`${transactions(space)}/feed?from_date=2026-01-01&to_date=2026-01-31`)
         .expect(200);
       const summary = await api()
         .get(`/api/v2/spaces/${space}/statistics/summary?period=month&anchor_date=2026-01-15&time_zone=UTC`)
@@ -308,87 +309,74 @@ describe('Boundary type contract (e2e)', () => {
   });
 
   describe('dates', () => {
-    it('serializes timestamps as ISO-8601 UTC strings', async () => {
-      const created = await createTransaction().expect(201);
+    const DATE_ERROR = 'must be a calendar date as YYYY-MM-DD from 1000-01-01 to 9999-12-31';
+
+    it('serializes a transaction date as YYYY-MM-DD and technical timestamps as ISO-8601 UTC strings', async () => {
+      const created = await createTransaction({ date: '2026-01-15' }).expect(201);
       const read = await readTransaction(created.body.transaction.id);
 
-      expect(read.timestamp).toMatch(ISO_DATE);
+      expect(read.date).toBe('2026-01-15');
+      expect(read).not.toHaveProperty('timestamp');
       expect(read.category.created_at).toMatch(ISO_DATE);
     });
 
-    it('converts query from/to to instants, whatever offset they were sent with', async () => {
+    it('passes query dates to the selection as they were sent', async () => {
       const spy = jest.spyOn(transactionQueriesService, 'countSelection');
 
-      await api()
-        .get(`${transactions()}/count`)
-        .query({ from: '2026-01-01T03:00:00+03:00', to: '2026-01-31T23:59:59.999Z' })
-        .expect(200);
+      await api().get(`${transactions()}/count`).query({ from_date: '2026-01-01', to_date: '2026-01-31' }).expect(200);
       expect(spy).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          spaceId,
-          from: new Date('2026-01-01T00:00:00.000Z'),
-          to: new Date('2026-01-31T23:59:59.999Z'),
-        }),
+        expect.objectContaining({ spaceId, fromDate: '2026-01-01', toDate: '2026-01-31' }),
       );
     });
 
-    it('keeps inclusive period boundaries for offset and millisecond values', async () => {
+    it('keeps both dates of a period inclusive, whole days', async () => {
       const space = await createExtraSpace('Period');
       const categories = await api().get(`/api/v1/spaces/${space}/categories`).expect(200);
       const category_id = categories.body.expenses[0].id;
-      await createTransaction({ category_id, timestamp: '2026-03-10T09:00:00.000Z' }, space).expect(201);
-      await createTransaction({ category_id, timestamp: '2026-03-12T08:00:00.250Z' }, space).expect(201);
+      await createTransaction({ category_id, date: '2026-03-10' }, space).expect(201);
+      await createTransaction({ category_id, date: '2026-03-12', time_zone: 'Pacific/Kiritimati' }, space).expect(201);
 
-      const select = async (from: string, to: string): Promise<number> => {
+      const select = async (from_date: string, to_date: string): Promise<number> => {
         const res = await api()
           .get(`${transactions(space)}/count`)
-          .query({ from, to })
+          .query({ from_date, to_date })
           .expect(200);
 
         return res.body.count;
       };
 
-      expect(await select('2026-03-10T09:00:00.001Z', '2026-03-12T08:00:00.249Z')).toBe(0);
-      expect(await select('2026-03-10T09:00:00.000Z', '2026-03-10T09:00:00.000Z')).toBe(1);
-      expect(await select('2026-03-12T08:00:00.250Z', '2026-03-12T08:00:00.250Z')).toBe(1);
-      expect(await select('2026-03-12T11:00:00.250+03:00', '2026-03-12T11:00:00.250+03:00')).toBe(1);
-      expect(await select('2026-03-01T00:00:00Z', '2026-03-31T23:59:59.999Z')).toBe(2);
+      expect(await select('2026-03-11', '2026-03-11')).toBe(0);
+      expect(await select('2026-03-10', '2026-03-10')).toBe(1);
+      expect(await select('2026-03-12', '2026-03-12')).toBe(1);
+      expect(await select('2026-03-01', '2026-03-31')).toBe(2);
     });
 
-    it('normalizes a created transaction timestamp to ISO-8601 UTC, whatever offset it was sent with', async () => {
-      const created = await createTransaction({ timestamp: '2026-03-12T11:00:00.250+03:00' }).expect(201);
+    it('stores the date as sent, whatever the zone of the writer', async () => {
+      for (const time_zone of ['UTC', 'Asia/Tokyo', 'America/Los_Angeles', 'Pacific/Kiritimati']) {
+        const created = await createTransaction({ date: '2026-03-12', time_zone }).expect(201);
 
-      expect(created.body.transaction.timestamp).toBe('2026-03-12T08:00:00.250Z');
-      expect((await readTransaction(created.body.transaction.id)).timestamp).toBe('2026-03-12T08:00:00.250Z');
+        expect(created.body.transaction.date).toBe('2026-03-12');
+        expect((await readTransaction(created.body.transaction.id)).date).toBe('2026-03-12');
+      }
     });
 
-    it.each(['garbage', '', '2026-02-30T00:00:00Z', '2026-01-01', '2026-01-01T10:00:00', '1700000000000'])(
-      'rejects query from=%p on the feed and the count with a 400',
-      async (from) => {
-        const to = '2026-12-31T00:00:00Z';
-
-        for (const query of [
-          { from, to },
-          { from, to, time_zone: 'UTC' },
-        ]) {
-          const path = 'time_zone' in query ? 'feed' : 'count';
-          const res = await api().get(`${transactions()}/${path}`).query(query).expect(400);
-          expect(res.body.message).toEqual([
-            { field: 'from', error: 'from must be an ISO 8601 date-time with Z or a UTC offset' },
-          ]);
+    it.each(['garbage', '', '2026-02-30', '2026-01-01T00:00:00Z', '2026-01-01T10:00:00', '2026-1-1', '1700000000000'])(
+      'rejects query from_date=%p on the feed and the count with a 400',
+      async (from_date) => {
+        for (const path of ['feed', 'count']) {
+          const res = await api()
+            .get(`${transactions()}/${path}`)
+            .query({ from_date, to_date: '2026-12-31' })
+            .expect(400);
+          expect(res.body.message).toEqual([{ field: 'from_date', error: `from_date ${DATE_ERROR}` }]);
         }
       },
     );
 
-    it('rejects a malformed or missing to with a 400', async () => {
-      for (const query of [
-        { from: '2026-01-01T00:00:00Z', to: '2026-01-01T25:00:00Z' },
-        { from: '2026-01-01T00:00:00Z' },
-      ]) {
+    it('rejects a malformed or missing to_date with a 400', async () => {
+      for (const query of [{ from_date: '2026-01-01', to_date: '2026-01-32' }, { from_date: '2026-01-01' }]) {
         const res = await api().get(`${transactions()}/count`).query(query).expect(400);
-        expect(res.body.message).toEqual([
-          { field: 'to', error: 'to must be an ISO 8601 date-time with Z or a UTC offset' },
-        ]);
+        expect(res.body.message).toEqual([{ field: 'to_date', error: `to_date ${DATE_ERROR}` }]);
       }
     });
 
@@ -398,14 +386,22 @@ describe('Boundary type contract (e2e)', () => {
       'garbage',
       '2026-02-30',
       '2026-W03',
-      '2099-01-01T00:00:00Z',
-      '1969-12-31T00:00:00Z',
-      '2026-01-15',
+      '2099-01-01',
+      '2026-01-15T00:00:00Z',
       '2026-01-15T10:00:00',
-    ])('rejects a transaction timestamp of %p without creating it', async (timestamp) => {
+      '2026-01-15+03:00',
+    ])('rejects a transaction date of %p without creating it', async (date) => {
       const before = await countTransactions();
 
-      const res = await createTransaction({ timestamp }).expect(400);
+      const res = await createTransaction({ date }).expect(400);
+      expectFieldError(res, 'date');
+      expect(await countTransactions()).toBe(before);
+    });
+
+    it('rejects a transaction timestamp, the field of earlier releases, without creating it', async () => {
+      const before = await countTransactions();
+
+      const res = await createTransaction({ timestamp: '2026-01-15T10:00:00.000Z' }).expect(400);
       expectFieldError(res, 'timestamp');
       expect(await countTransactions()).toBe(before);
     });
@@ -463,7 +459,8 @@ describe('Boundary type contract (e2e)', () => {
         [{ category_id: null }, 'category_id'],
         [{ transaction_type: null }, 'transaction_type'],
         [{ amount: null }, 'amount'],
-        [{ timestamp: null }, 'timestamp'],
+        [{ date: null, time_zone: 'UTC' }, 'date'],
+        [{ date: '2026-01-15' }, 'time_zone'],
         [{ assignment: null }, 'assignment'],
         [{ amount: 5 }, 'amount'],
         [{ assignment: { kind: 'space', user_id: 1 } }, 'assignment.user_id'],
@@ -670,7 +667,7 @@ describe('Boundary type contract (e2e)', () => {
 
   describe('response shapes', () => {
     const keys = (value: object): string[] => Object.keys(value).sort();
-    const TRANSACTION = ['amount', 'description', 'id', 'timestamp', 'transaction_type', 'version'];
+    const TRANSACTION = ['amount', 'date', 'description', 'id', 'transaction_type', 'version'];
     const CATEGORY = ['color', 'created_at', 'icon', 'id', 'is_active', 'name', 'transaction_type', 'updated_at'];
     const TRANSACTION_VIEW = [...TRANSACTION, 'assignment', 'author', 'category', 'kind'].sort();
     const TRANSACTION_CATEGORY = [...CATEGORY, 'is_archived'].sort();
@@ -689,9 +686,7 @@ describe('Boundary type contract (e2e)', () => {
       expect(read.category.is_archived).toBe(false);
 
       const document = createOpenApiDocument(app);
-      const feed = await api()
-        .get(`${transactions()}/feed?from=2000-01-01T00:00:00Z&to=2037-12-31T23:59:59Z&time_zone=UTC`)
-        .expect(200);
+      const feed = await api().get(`${transactions()}/feed?from_date=2000-01-01&to_date=2099-12-31`).expect(200);
       expect(feed.body.items.length).toBeGreaterThan(0);
       expect(schemaErrors(document, okResponseSchema(document, '/transactions/feed'), feed.body)).toEqual([]);
       const latest = await api().get(`${transactions()}/latest`).expect(200);
@@ -704,10 +699,10 @@ describe('Boundary type contract (e2e)', () => {
       ]);
       const [{ id }] = await dataSource.query('SELECT UUID() AS id');
       await dataSource.query(
-        `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, timestamp, version,
+        `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, date, version,
            author_user_id, author_source, assignment_kind)
          VALUES (?, ?, ?, 'income', '5.00', ?, 1, ?, 'imported', 'space')`,
-        [id, spaceId, system.id, new Date(), userId],
+        [id, spaceId, system.id, new Date().toISOString().slice(0, 10), userId],
       );
       await dataSource.query('UPDATE categories SET name = ? WHERE space_id = ? AND is_system = 1', [
         'Renamed',
@@ -754,7 +749,7 @@ describe('Boundary type contract (e2e)', () => {
 
       const summary = await api().get(`${base()}/limits`).expect(200);
       expect(keys(summary.body)).toEqual(['categories', 'over_allocation', 'period', 'total']);
-      expect(keys(summary.body.period)).toEqual(['end_date', 'from', 'start_date', 'time_zone', 'to']);
+      expect(keys(summary.body.period)).toEqual(['end_date', 'start_date', 'time_zone']);
       const view = summary.body.categories.find((item: { id: number }) => item.id === limit.body.id);
       expect(keys(view)).toEqual(['amount', 'categories', 'id', 'in_percent', 'name', 'spent']);
       expect(keys(view.categories[0])).toEqual(['color', 'icon', 'id', 'name']);

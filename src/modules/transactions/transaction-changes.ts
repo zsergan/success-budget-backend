@@ -2,13 +2,13 @@ import { BadRequestException } from '@nestjs/common';
 
 import type { Transaction } from '@entities/transaction.entity';
 import type { TransactionType } from '@shared/enums';
-import { parseMoney, toDate } from '@shared/utils';
+import { parseMoney, resolveTimeZone } from '@shared/utils';
 import type { TransactionAssignmentDto } from './dto/transaction-assignment.dto';
 import { type AssignmentColumns, isSameAssignment, toAssignmentColumns } from './transaction-assignment';
 import {
   AMOUNT_NOT_POSITIVE,
-  TIMESTAMP_IN_FUTURE,
-  isNotInFuture,
+  DATE_AFTER_TODAY,
+  isNotAfterToday,
   isPositiveAmount,
   normalizeDescription,
 } from './transaction-rules';
@@ -17,13 +17,15 @@ export interface TransactionEdit {
   category_id?: number;
   transaction_type?: TransactionType;
   amount?: string;
-  timestamp?: string;
+  date?: string;
+  // required with date: tells which day is today for the writer
+  time_zone?: string;
   description?: string | null;
   assignment?: TransactionAssignmentDto;
 }
 
 export type TransactionChanges = Partial<
-  Pick<Transaction, 'category_id' | 'transaction_type' | 'amount' | 'timestamp' | 'description'> & AssignmentColumns
+  Pick<Transaction, 'category_id' | 'transaction_type' | 'amount' | 'date' | 'description'> & AssignmentColumns
 >;
 
 // Equality is by value: a field equal to the stored one is not a change.
@@ -43,8 +45,8 @@ export function changedFields(original: Transaction, edit: TransactionEdit): Tra
     changes.amount = edit.amount;
   }
 
-  if (edit.timestamp !== undefined && toDate(edit.timestamp).getTime() !== original.timestamp.getTime()) {
-    changes.timestamp = toDate(edit.timestamp);
+  if (edit.date !== undefined && edit.date !== original.date) {
+    changes.date = edit.date;
   }
 
   const description = normalizeDescription(edit.description);
@@ -64,12 +66,13 @@ export function changedFields(original: Transaction, edit: TransactionEdit): Tra
   return changes;
 }
 
-export function assertNewValues(changes: TransactionChanges): void {
+// `edit` is the request the changes come from: a changed date has its time_zone.
+export function assertNewValues(changes: TransactionChanges, edit: TransactionEdit): void {
   if (changes.amount !== undefined && !isPositiveAmount(changes.amount)) {
     throw new BadRequestException([{ field: 'amount', error: AMOUNT_NOT_POSITIVE }]);
   }
 
-  if (changes.timestamp !== undefined && !isNotInFuture(changes.timestamp.toISOString())) {
-    throw new BadRequestException([{ field: 'timestamp', error: TIMESTAMP_IN_FUTURE }]);
+  if (changes.date !== undefined && !isNotAfterToday(changes.date, resolveTimeZone(edit.time_zone!)!)) {
+    throw new BadRequestException([{ field: 'date', error: DATE_AFTER_TODAY }]);
   }
 }

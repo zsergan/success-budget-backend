@@ -76,7 +76,8 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
         category_id: categoryIds[type],
         transaction_type: type,
         amount,
-        timestamp: '2026-09-20T10:00:00.000Z',
+        date: '2026-09-20',
+        time_zone: 'UTC',
         assignment: { kind: 'space' },
       })
       .expect(201);
@@ -84,7 +85,7 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
     return res.body.transaction.id;
   }
 
-  function pauseBefore(method: 'getStatisticsByAssignment' | 'getLastStatisticsTimestamp'): Pause {
+  function pauseBefore(method: 'getStatisticsByAssignment' | 'getLastStatisticsDate'): Pause {
     let reached!: () => void;
     let release!: () => void;
     const reachedPromise = new Promise<void>((resolve) => (reached = resolve));
@@ -148,7 +149,7 @@ describe('Statistics blocks under concurrent writes (e2e)', () => {
   it('summary: the last transaction deleted between the totals and the last date reads is still in both', async () => {
     const space = await createSpace('statistics-summary-race');
     const transactionId = await addTransaction(space, '100');
-    const pause = pauseBefore('getLastStatisticsTimestamp');
+    const pause = pauseBefore('getLastStatisticsDate');
 
     const { response } = await startHeld(space.member, 'summary', pause);
     await api(space.member).delete(`/transactions/${transactionId}`).set('If-Match', '"1"').expect(200);

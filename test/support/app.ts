@@ -7,6 +7,7 @@ import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/app.config';
 import { UsersService } from '@modules/users/users.service';
 import { AssignmentKind } from '@shared/enums';
+import { calendarDateIn } from '@shared/utils';
 
 export const PASSWORD = 'DevTest#2026';
 
@@ -95,7 +96,8 @@ export interface LegacyTransaction {
   categoryId: number;
   type: 'income' | 'expense';
   amount: string;
-  timestamp: Date;
+  // YYYY-MM-DD
+  date: string;
   description?: string | null;
   version?: number;
 }
@@ -105,7 +107,7 @@ export interface LegacyTransaction {
 // earliest member as the imported author, the whole space.
 export async function insertLegacyTransaction(dataSource: DataSource, row: LegacyTransaction): Promise<void> {
   await dataSource.query(
-    `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, timestamp,
+    `INSERT INTO transactions (id, space_id, category_id, transaction_type, amount, date,
        description, version, author_user_id, author_source, assignment_kind, assigned_user_id)
      SELECT COALESCE(?, UUID()), ?, ?, ?, ?, ?, ?, ?,
        (SELECT m.user_id FROM space_members m WHERE m.space_id = ? ORDER BY m.created_at, m.id LIMIT 1),
@@ -116,7 +118,7 @@ export async function insertLegacyTransaction(dataSource: DataSource, row: Legac
       row.categoryId,
       row.type,
       row.amount,
-      row.timestamp,
+      row.date,
       row.description ?? null,
       row.version ?? 1,
       row.spaceId,
@@ -126,3 +128,9 @@ export async function insertLegacyTransaction(dataSource: DataSource, row: Legac
 
 // The assignment columns of a record for the whole space.
 export const SPACE_ASSIGNMENT = { assignment_kind: AssignmentKind.SPACE, assigned_user_id: null } as const;
+
+// Calendar dates (YYYY-MM-DD) for the requests of a test.
+export const today = (timeZone = 'UTC'): string => calendarDateIn(new Date(), timeZone);
+
+export const shiftDate = (date: string, days: number): string =>
+  new Date(Date.parse(`${date}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
