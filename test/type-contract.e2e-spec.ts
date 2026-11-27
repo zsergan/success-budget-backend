@@ -765,6 +765,7 @@ describe('Boundary type contract (e2e)', () => {
         'is_active',
         'limit',
         'name',
+        'own_recent_count',
         'transaction_count',
         'transaction_type',
       ]);
