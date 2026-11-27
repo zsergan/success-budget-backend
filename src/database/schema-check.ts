@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 
 // The newest migration this code needs. Kept equal to the newest file in
 // src/migrations by schema-check.spec.ts.
-export const REQUIRED_MIGRATION = 'AllowCustomCategoryColors1791600000000';
+export const REQUIRED_MIGRATION = 'AddCirculatingCurrencies1791700000000';
 
 export interface SchemaState {
   // migrations of this build the database has not run yet
