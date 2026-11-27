@@ -12,6 +12,7 @@ export const ErrorMessages = {
   INVALID_REORDER: 'Categories must share one type and not be archived',
   EMAIL_ALREADY_EXISTS: 'Email already exists',
   NOT_FOUND: 'Not found',
+  CURRENCY_NOT_FOUND: 'Currency not found',
   TOO_MANY_ATTEMPTS: 'Too many attempts, request a new confirmation code',
   CONFIRMATION_EMAIL_RATE_LIMITED: 'A confirmation email was already requested, please try again shortly',
   PASSWORD_RESET_CODE_INVALID: 'The code is incorrect',

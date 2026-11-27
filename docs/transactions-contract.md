@@ -626,6 +626,7 @@ them in the order above, so two writes never wait on each other crosswise:
 | Transaction `POST` / `PATCH` / `DELETE`                                     | member rows (S, ascending id: the actor's and a newly assigned member's), space (S), key, transaction (X), categories (S), operation row |
 | Category create, edit, archive, delete, reorder; limit create, edit, delete | member (S), space (X), then their own rows                                                                          |
 | Space create                                                                | key (with `Idempotency-Key`), then the new rows only                                                                |
+| Space currency change                                                       | member (S), space (X)                                                                                               |
 | Space delete, leave, member removal                                         | member rows (X, ascending id), space (X), then the set is checked; a deleted space's transactions (X); see below   |
 | Invitation create                                                           | member (S), space (X), the new invitation                                                                           |
 | Invitation resend                                                           | member (S), space (X), invitation (X)                                                                               |

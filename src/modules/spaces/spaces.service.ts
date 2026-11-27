@@ -6,6 +6,7 @@ import { Space } from '@entities/space.entity';
 import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { Transaction } from '@entities/transaction.entity';
+import { Currency } from '@entities/currency.entity';
 import type { CreateSpaceDto } from './dto/create-space.dto';
 import { SpaceRole, SpaceType } from '@shared/enums';
 import { SPACE_LIMITS } from '@shared/constants';
@@ -159,6 +160,29 @@ export class SpacesService {
 
   async getForMember(userId: number, spaceId: number): Promise<SpaceWithCurrency> {
     await this.spaceAccessService.assertMembership(spaceId, userId);
+
+    return this.getExisting(spaceId);
+  }
+
+  // Only the label changes: amounts are stored without a currency and are
+  // never converted.
+  async updateCurrency(userId: number, spaceId: number, currencyId: number): Promise<SpaceWithCurrency> {
+    await this.spaceAccessService.assertMembership(spaceId, userId, SpaceRole.OWNER);
+    await runWriteTransaction(this.dataSource, async (manager) => {
+      const actor = await this.spaceAccessService.lockMembership(spaceId, userId, manager);
+
+      if (actor.role !== SpaceRole.OWNER) {
+        throw new ApiException('FORBIDDEN_SPACE', HttpStatus.FORBIDDEN);
+      }
+
+      await this.spaceAccessService.lockSpace(spaceId, manager);
+
+      if (!(await manager.getRepository(Currency).exists({ where: { id: currencyId } }))) {
+        throw new ApiException('CURRENCY_NOT_FOUND', HttpStatus.BAD_REQUEST);
+      }
+
+      await manager.getRepository(Space).update(spaceId, { currency_id: currencyId });
+    });
 
     return this.getExisting(spaceId);
   }
