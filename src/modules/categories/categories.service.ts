@@ -20,9 +20,16 @@ export interface CategoryView {
   color: Category['color'];
   is_active: number;
   transaction_count: number;
+  own_recent_count: number;
   limit: { id: number; name: string | null } | null;
   archived_at: Date | null;
 }
+
+export const OWN_RECENT_DAYS = 90;
+
+// The first calendar date counted by own_recent_count, in UTC.
+export const ownRecentSince = (now = new Date()) =>
+  new Date(now.getTime() - OWN_RECENT_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 @Injectable()
 export class CategoriesService {
@@ -70,12 +77,15 @@ export class CategoriesService {
         .getMany();
 
       const categoryIds = categories.map((category) => category.id);
-      const [counts, limitMembership] = await Promise.all([
+      const [counts, ownRecentCounts, limitMembership] = await Promise.all([
         this.getTransactionCounts(categoryIds, manager),
+        this.getOwnRecentCounts(categoryIds, userId, manager),
         this.getLimitMembership(spaceId, manager),
       ]);
 
-      const views = categories.map((category) => this.buildCategoryView(category, counts, limitMembership));
+      const views = categories.map((category) =>
+        this.buildCategoryView(category, counts, limitMembership, ownRecentCounts),
+      );
 
       return {
         incomes: views.filter((view) => view.is_active === 1 && view.transaction_type === TransactionType.INCOME),
@@ -212,6 +222,29 @@ export class CategoriesService {
     return new Map(rows.map((row) => [Number(row.category_id), Number(row.count)]));
   }
 
+  private async getOwnRecentCounts(
+    categoryIds: number[],
+    userId: number,
+    manager: EntityManager,
+  ): Promise<Map<number, number>> {
+    if (categoryIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('transaction.category_id', 'category_id')
+      .addSelect('COUNT(*)', 'count')
+      .where('transaction.category_id IN (:...categoryIds)', { categoryIds })
+      .andWhere('transaction.author_user_id = :userId', { userId })
+      .andWhere('transaction.date >= :since', { since: ownRecentSince() })
+      .groupBy('transaction.category_id')
+      .getRawMany<{ category_id: number; count: string }>();
+
+    return new Map(rows.map((row) => [Number(row.category_id), Number(row.count)]));
+  }
+
   private async getLimitMembership(
     spaceId: number,
     manager: EntityManager,
@@ -256,6 +289,7 @@ export class CategoriesService {
     category: Category,
     counts: Map<number, number>,
     limitMembership: Map<number, { id: number; name: string | null }>,
+    ownRecentCounts: Map<number, number>,
   ): CategoryView {
     return {
       id: category.id,
@@ -265,6 +299,7 @@ export class CategoriesService {
       color: category.color,
       is_active: category.is_active,
       transaction_count: counts.get(category.id) ?? 0,
+      own_recent_count: ownRecentCounts.get(category.id) ?? 0,
       limit: limitMembership.get(category.id) ?? null,
       archived_at: category.archived_at,
     };

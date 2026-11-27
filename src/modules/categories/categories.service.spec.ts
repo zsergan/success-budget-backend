@@ -40,6 +40,7 @@ describe('CategoriesService', () => {
       select: jest.fn().mockReturnThis(),
       addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
       groupBy: jest.fn().mockReturnThis(),
       getRawMany: jest.fn().mockResolvedValue([]),
     };
@@ -217,6 +218,34 @@ describe('CategoriesService', () => {
 
       expect(result.expenses[0].transaction_count).toBe(4);
       expect(result.expenses[0].limit).toEqual({ id: 7, name: 'Fun' });
+    });
+
+    it("counts the caller's own transactions of the last 90 days per category apart from the space's total", async () => {
+      jest.useFakeTimers({ now: new Date('2026-11-27T10:00:00Z') });
+      categoryQueryBuilder.getMany.mockResolvedValue([
+        { id: 1, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+        { id: 2, transaction_type: TransactionType.EXPENSE, is_active: 1 },
+      ]);
+      transactionQueryBuilder.getRawMany
+        .mockResolvedValueOnce([
+          { category_id: '1', count: '9' },
+          { category_id: '2', count: '5' },
+        ])
+        .mockResolvedValueOnce([{ category_id: '2', count: '3' }]);
+
+      const result = await service.getAll(userId, 1);
+
+      expect(result.expenses.map((c) => [c.id, c.transaction_count, c.own_recent_count])).toEqual([
+        [1, 9, 0],
+        [2, 5, 3],
+      ]);
+      expect(transactionQueryBuilder.andWhere).toHaveBeenCalledWith('transaction.author_user_id = :userId', {
+        userId,
+      });
+      expect(transactionQueryBuilder.andWhere).toHaveBeenCalledWith('transaction.date >= :since', {
+        since: '2026-08-29',
+      });
+      jest.useRealTimers();
     });
   });
 

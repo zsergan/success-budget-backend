@@ -856,7 +856,10 @@ a write committed during the request is in none of its figures or in all of
 them.
 
 `GET /categories` likewise reads category state, transaction counts and
-limit links from one snapshot. Concurrent archival cannot return an active
+limit links from one snapshot. Next to the space-wide `transaction_count`,
+each category carries `own_recent_count`: the transactions the caller
+authored in it, dated within the last 90 days. Clients order quick category
+choices by it. Concurrent archival cannot return an active
 category combined with the link removals of the archived state.
 
 | Figure                                    | Starting balance | Regular transactions                               |
@@ -867,6 +870,7 @@ category combined with the link removals of the archived state.
 | Statistics Income / Expense / Net         | excluded         | dated up to `actual_end_date`, by type             |
 | Limits `spent`                            | excluded         | expenses dated in the month, by category           |
 | Category `transaction_count`              | not shown        | all, whatever their date                           |
+| Category `own_recent_count`               | not shown        | the caller's own, dated in the last 90 days (UTC)  |
 
 Changing a record's type, category, amount, date or assignment moves it
 between Income and Expense, categories, limits, periods and assignment
