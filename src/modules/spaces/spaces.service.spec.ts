@@ -14,6 +14,7 @@ import { SpaceMember } from '@entities/space-member.entity';
 import { SpaceInvite } from '@entities/space-invite.entity';
 import { Category } from '@entities/category.entity';
 import { Transaction } from '@entities/transaction.entity';
+import { Currency } from '@entities/currency.entity';
 import { SpaceInviteEmailStatus, SpaceRole, SpaceType } from '@shared/enums';
 import { ErrorMessages } from '@shared/error-messages';
 import { SPACE_LIMITS } from '@shared/constants';
@@ -24,7 +25,14 @@ describe('SpacesService', () => {
   let service: SpacesService;
   let spaceRepository: jest.Mocked<Repository<Space>>;
   let spaceMemberRepository: jest.Mocked<Repository<SpaceMember>>;
-  let spaceRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock; findOne: jest.Mock };
+  let spaceRepositoryInTx: {
+    create: jest.Mock;
+    save: jest.Mock;
+    delete: jest.Mock;
+    findOne: jest.Mock;
+    update: jest.Mock;
+  };
+  let currencyRepositoryInTx: { exists: jest.Mock };
   let spaceMemberRepositoryInTx: { create: jest.Mock; save: jest.Mock; delete: jest.Mock };
   let spaceInviteRepositoryInTx: { insert: jest.Mock };
   let idempotencyService: { run: jest.Mock };
@@ -33,7 +41,9 @@ describe('SpacesService', () => {
   let transactionRepositoryInTx: { delete: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let manager: EntityManager;
-  let spaceAccessService: jest.Mocked<Pick<SpaceAccessService, 'assertMembership' | 'lockMembers'>>;
+  let spaceAccessService: jest.Mocked<
+    Pick<SpaceAccessService, 'assertMembership' | 'lockMembers' | 'lockMembership' | 'lockSpace'>
+  >;
   let memberQueryBuilder: {
     select: jest.Mock;
     addSelect: jest.Mock;
@@ -56,7 +66,9 @@ describe('SpacesService', () => {
       save: jest.fn(),
       delete: jest.fn(),
       findOne: jest.fn(),
+      update: jest.fn(),
     };
+    currencyRepositoryInTx = { exists: jest.fn().mockResolvedValue(true) };
     spaceMemberRepositoryInTx = { create: jest.fn((entity) => entity), save: jest.fn(), delete: jest.fn() };
     spaceInviteRepositoryInTx = {
       insert: jest.fn(async (rows: unknown[]) => ({ identifiers: rows.map((_row, index) => ({ id: 500 + index })) })),
@@ -72,6 +84,7 @@ describe('SpacesService', () => {
         if (entity === SpaceInvite) return spaceInviteRepositoryInTx;
         if (entity === Category) return categoryRepositoryInTx;
         if (entity === Transaction) return transactionRepositoryInTx;
+        if (entity === Currency) return currencyRepositoryInTx;
         throw new Error(`Unexpected entity: ${entity}`);
       }),
     } as unknown as EntityManager;
@@ -81,6 +94,8 @@ describe('SpacesService', () => {
     spaceAccessService = {
       assertMembership: jest.fn().mockResolvedValue(buildSpaceMember()),
       lockMembers: jest.fn(),
+      lockMembership: jest.fn(),
+      lockSpace: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -344,6 +359,51 @@ describe('SpacesService', () => {
       spaceRepository.findOne.mockResolvedValue(null);
 
       await expect(service.getForMember(1, 10)).rejects.toMatchObject(new HttpException(ErrorMessages.NOT_FOUND, 404));
+    });
+  });
+
+  describe('updateCurrency', () => {
+    const owner = buildSpaceMember({ id: 1, space_id: 10, user_id: 1, role: SpaceRole.OWNER });
+
+    it('rejects a plain member before taking any lock', async () => {
+      spaceAccessService.assertMembership.mockRejectedValue(new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403));
+
+      await expect(service.updateCurrency(1, 10, 2)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
+      );
+      expect(spaceAccessService.assertMembership).toHaveBeenCalledWith(10, 1, SpaceRole.OWNER);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('relabels the space under the member and space locks and returns it with the new currency', async () => {
+      spaceAccessService.lockMembership.mockResolvedValue(owner);
+      const updated = buildSpace({ id: 10, currency: buildCurrency({ id: 2, code: 'EUR', name: 'Euro' }) });
+      spaceRepository.findOne.mockResolvedValue(updated);
+
+      await expect(service.updateCurrency(1, 10, 2)).resolves.toEqual(updated);
+      expect(dataSource.transaction).toHaveBeenCalledWith('READ COMMITTED', expect.any(Function));
+      expect(spaceAccessService.lockMembership).toHaveBeenCalledWith(10, 1, manager);
+      expect(spaceAccessService.lockSpace).toHaveBeenCalledWith(10, manager);
+      expect(spaceRepositoryInTx.update).toHaveBeenCalledWith(10, { currency_id: 2 });
+    });
+
+    it('rejects an owner who lost ownership before the locks', async () => {
+      spaceAccessService.lockMembership.mockResolvedValue({ ...owner, role: SpaceRole.MEMBER });
+
+      await expect(service.updateCurrency(1, 10, 2)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.FORBIDDEN_SPACE, 403),
+      );
+      expect(spaceRepositoryInTx.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a currency that does not exist', async () => {
+      spaceAccessService.lockMembership.mockResolvedValue(owner);
+      currencyRepositoryInTx.exists.mockResolvedValue(false);
+
+      await expect(service.updateCurrency(1, 10, 999)).rejects.toMatchObject(
+        new HttpException(ErrorMessages.CURRENCY_NOT_FOUND, 400),
+      );
+      expect(spaceRepositoryInTx.update).not.toHaveBeenCalled();
     });
   });
 

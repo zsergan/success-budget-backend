@@ -23,7 +23,13 @@ describe('SpacesController', () => {
       providers: [
         {
           provide: SpacesService,
-          useValue: { create: jest.fn(), getAllForUser: jest.fn(), getForMember: jest.fn(), remove: jest.fn() },
+          useValue: {
+            create: jest.fn(),
+            getAllForUser: jest.fn(),
+            getForMember: jest.fn(),
+            updateCurrency: jest.fn(),
+            remove: jest.fn(),
+          },
         },
         {
           provide: SpaceMembersService,
@@ -62,6 +68,13 @@ describe('SpacesController', () => {
 
     await expect(controller.getMembers(req, 10)).resolves.toEqual([]);
     expect(spaceMembersService.getMembersWithInvites).toHaveBeenCalledWith(1, 10);
+  });
+
+  it('updateCurrency delegates to SpacesService.updateCurrency', async () => {
+    spacesService.updateCurrency.mockResolvedValue({ id: 10 } as never);
+
+    await expect(controller.updateCurrency(req, 10, { currency_id: 2 })).resolves.toEqual({ id: 10 });
+    expect(spacesService.updateCurrency).toHaveBeenCalledWith(1, 10, 2);
   });
 
   it('remove delegates to SpacesService.remove and returns true', async () => {

@@ -23,7 +23,7 @@ password reset, currencies, health check, the invitation page).
 | Module                | Purpose                                                              |
 | ---------------------- | --------------------------------------------------------------------- |
 | `users`                | Registration, email verification, login, profile                    |
-| `spaces`               | Shared/personal budget spaces - membership, emailed invitations, single space-level currency |
+| `spaces`               | Shared/personal budget spaces - membership, emailed invitations, single space-level currency the owner can change (relabels amounts, no conversion) |
 | `transactions`         | Income/expense entries of a space, with an author and an assignment (`/api/v2`) |
 | `transaction-queries`  | The reads behind history, statistics and limits (internal)          |
 | `statistics`           | Summary, trend and breakdown by category and assignment of a period (`/api/v2`) |

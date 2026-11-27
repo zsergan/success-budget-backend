@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Request,
   UseInterceptors,
@@ -32,6 +33,7 @@ import { SpacesService } from './spaces.service';
 import { SpaceMembersService, SpaceMemberView } from './space-members.service';
 import { SpaceInvitesService, CreatedSpaceInvite, type SpaceInviteState } from './space-invites.service';
 import { CreateSpaceDto } from './dto/create-space.dto';
+import { UpdateSpaceCurrencyDto } from './dto/update-space-currency.dto';
 import { CreateSpaceInviteDto } from './dto/create-space-invite.dto';
 import { AcceptSpaceInviteDto } from './dto/accept-space-invite.dto';
 import { PreviewSpaceInviteDto } from './dto/preview-space-invite.dto';
@@ -117,6 +119,22 @@ export class SpacesController {
   @Get(':id')
   async getOne(@Request() req: AuthedRequest, @Param('id', ParseIntPipe) id: number) {
     return this.spacesService.getForMember(req.user.id, id);
+  }
+
+  @ApiOperation({
+    summary: "Change the space's currency (owner only). Amounts keep their numbers; nothing is converted.",
+  })
+  @ApiOkResponse({ description: 'The space with its new currency.' })
+  @ApiBadRequestResponse({ description: 'VALIDATION_FAILED or CURRENCY_NOT_FOUND.' })
+  @ApiForbiddenResponse({ description: 'FORBIDDEN_SPACE: not a member, or not the owner.' })
+  @UseInterceptors(ClassSerializerInterceptor)
+  @Patch(':id/currency')
+  async updateCurrency(
+    @Request() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateSpaceCurrencyDto: UpdateSpaceCurrencyDto,
+  ) {
+    return this.spacesService.updateCurrency(req.user.id, id, updateSpaceCurrencyDto.currency_id);
   }
 
   @ApiOkResponse({ type: [SpaceMemberViewResponse] })
